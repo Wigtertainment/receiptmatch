@@ -38,3 +38,7 @@ yarn-error.log*
 *.receiptmatch-journal
 *.receiptmatch-wal
 *.receiptmatch-shm
+
+# Local development instructions and documentation
+/AGENTS.md
+/docs/
