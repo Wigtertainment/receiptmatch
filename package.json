@@ -1,0 +1,65 @@
+{
+  "name": "receiptmatch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Local-first financial reconciliation desktop application",
+  "main": ".build/main.cjs",
+  "scripts": {
+    "lint": "eslint . --max-warnings 0",
+    "lint:fix": "eslint . --fix --max-warnings 0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run lint && npm run format:check",
+    "build": "node scripts/build.mjs",
+    "package": "node scripts/package.mjs",
+    "start": "node scripts/start.mjs",
+    "test:unit": "node --test .build/node/tests/unit/*.test.js",
+    "test:packaged": "node tests/packaged.mjs",
+    "test": "npm run test:unit && npm run test:packaged"
+  },
+  "dependencies": {
+    "better-sqlite3": "13.0.3",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@angular/build": "22.2.6",
+    "@angular/cli": "22.2.6",
+    "@angular/common": "22.2.5",
+    "@angular/compiler": "22.2.5",
+    "@angular/compiler-cli": "22.2.5",
+    "@angular/core": "22.2.5",
+    "@angular/platform-browser": "22.2.5",
+    "@electron/packager": "20.3.0",
+    "@eslint/js": "10.0.1",
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "26.6.6",
+    "angular-eslint": "22.6.0",
+    "electron": "45.2.3",
+    "esbuild": "0.25.12",
+    "eslint": "10.14.0",
+    "globals": "17.14.0",
+    "playwright": "1.65.0",
+    "prettier": "3.9.10",
+    "rxjs": "7.8.2",
+    "tslib": "2.8.1",
+    "typescript": "6.0.2",
+    "typescript-eslint": "8.72.2"
+  },
+  "overrides": {
+    "eslint": {
+      "minimatch": "11.0.5"
+    },
+    "@eslint/config-array": {
+      "minimatch": "11.0.5"
+    },
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "11.0.5"
+    },
+    "@electron/asar": {
+      "glob": "14.0.4",
+      "minimatch": "11.0.5"
+    }
+  }
+}

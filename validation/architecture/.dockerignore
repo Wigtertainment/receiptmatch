@@ -1,0 +1,8 @@
+node_modules
+.angular
+.build
+dist
+artifacts
+results
+*.log
+.npmrc

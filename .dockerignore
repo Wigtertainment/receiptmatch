@@ -1,0 +1,14 @@
+.git
+.agents
+.codex
+.angular
+.build
+node_modules
+dist
+artifacts
+coverage
+validation
+docs
+.env*
+.npmrc
+*.log

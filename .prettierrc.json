@@ -1,0 +1,12 @@
+{
+    "printWidth": 180,
+    "useTabs": true,
+    "tabWidth": 4,
+    "embeddedLanguageFormatting": "off",
+    "overrides": [
+        {
+            "files": "src/app/**/*.html",
+            "options": { "parser": "angular" }
+        }
+    ]
+}
