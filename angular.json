@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "cli": { "analytics": false },
+  "projects": {
+    "receiptmatch": {
+      "projectType": "application",
+      "root": "",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:application",
+          "options": {
+            "browser": "src/app.ts",
+            "index": "src/index.html",
+            "styles": ["src/styles.css"],
+            "tsConfig": "tsconfig.app.json",
+            "outputPath": ".build/ui",
+            "baseHref": "./",
+            "optimization": { "scripts": true, "styles": { "minify": true, "inlineCritical": false }, "fonts": false },
+            "sourceMap": false
+          }
+        }
+      }
+    }
+  }
+}

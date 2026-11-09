@@ -9,11 +9,13 @@
 
 # Node modules and dependency files
 /node_modules/
-/package-lock.json
 /yarn.lock
 
 # Environment files
 /.env
+/.env.*
+!/.env.example
+/.npmrc
 
 # Angular CLI and build artefacts
 /.angular-cli.json
@@ -26,3 +28,13 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Desktop build and local test outputs
+/.build/
+/artifacts/
+
+# Local financial workspaces and SQLite sidecars
+*.receiptmatch
+*.receiptmatch-journal
+*.receiptmatch-wal
+*.receiptmatch-shm
