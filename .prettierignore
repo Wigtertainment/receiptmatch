@@ -1,0 +1,13 @@
+*
+!*/
+!**/*.html
+/node_modules/
+/dist/
+/release/
+/.angular/
+/coverage/
+/tmp/
+**/.build/
+**/artifacts/
+**/.angular/
+**/coverage/
