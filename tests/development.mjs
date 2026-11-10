@@ -198,7 +198,7 @@ try {
             completion = run.result.then(events => events, events => events);
             const events = await bounded('Waiting for actual npm start to reject an occupied port', completion, 45000);
             assert.equal(events.length, 1); assert.equal(events[0].exitCode, 1);
-            assert.match(output, /Cannot start ReceiptMatch on 127\.0\.0\.1:4310/);
+            assert.match(output, /Timed out waiting for: tcp:127\.0\.0\.1:4310/);
             assert.equal(requests, 0, 'The actual start command must not navigate to another application.');
             assert.equal(run.commands[0].state, 'exited');
         } finally {

@@ -15,6 +15,8 @@ npm start
 
 `npm start` prepares Electron and the local PDF/OCR resources, then runs the Angular development server with HMR and Electron together. Closing Electron also stops the development server. UI templates and styles update while the app is running; restart the command after changing Electron code. The development server listens only on `127.0.0.1:4310`; an occupied port stops startup instead of loading another application.
 
+The Angular UI uses `angular.json`. Electron, preloads and the isolated extraction renderer use standard targets in `webpack.config.cjs`, TypeScript compilation through `ts-loader` and Webpack's built-in `output.copy` for offline assets. Add code entry points under `entry` and resource mappings under `output.copy`. Runtime packaging is configured in `electron-builder.yml`; startup and readiness use the standard `concurrently`, `cross-env` and `wait-on` commands.
+
 Development enables CSS source maps. JavaScript source maps are disabled because Angular 22.2.6 changes their debug identifier during the first rebuild, causing a full reload instead of CSS HMR.
 
 To build and start the compiled application without a development server or distribution package:
