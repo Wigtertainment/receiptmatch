@@ -1,0 +1,215 @@
+<section class="statement-imports" aria-labelledby="statements-heading">
+	<div class="section-heading">
+		<div>
+			<div class="eyebrow">BANK STATEMENTS</div>
+			<h2 id="statements-heading">Read your records.</h2>
+		</div>
+		<button class="button-primary compact" (click)="workspaceCommand.emit({type:'import-statement'})" [disabled]="state().busy">Import statement</button>
+	</div>
+	@if (state().statementImport; as active) {
+		<div class="import-progress" data-testid="import-progress" role="status" aria-live="polite">
+			<div>
+				<p>{{ progressText() }}</p>
+				@if (active.progress?.pageCount) {
+					<p class="muted">{{ active.progress!.completedPages }} of {{ active.progress!.pageCount }} pages completed</p>
+				}
+			</div>
+			<button class="button-secondary" (click)="workspaceCommand.emit({type:'cancel-import'})" [disabled]="active.cancelling">Cancel import</button>
+		</div>
+	}
+	@if (state().importOutcome; as outcome) {
+		<div
+			class="import-feedback"
+			[class.import-feedback-error]="outcome.status === 'failed' || outcome.status === 'unsupported'"
+			data-testid="import-outcome"
+			role="status"
+			aria-live="polite"
+		>
+			@switch (outcome.status) {
+				@case ('imported') {
+					<p>Statement imported.</p>
+					@if (state().workspace?.dirty) {
+						<p>Save your workspace to keep these changes.</p>
+					}
+				}
+				@case ('skipped') {
+					<p>This PDF is already in the workspace.</p>
+				}
+				@case ('cancelled') {
+					<p>Import cancelled.</p>
+				}
+				@case ('failed') {
+					<p>The statement could not be imported.</p>
+				}
+				@case ('unsupported') {
+					<p>This statement is not supported.</p>
+				}
+			}
+			@if (outcome.status === 'failed' || outcome.status === 'unsupported') {
+				<ul>
+					@for (issue of outcome.issues; track $index) {
+						<li>{{ issue.message }}</li>
+					}
+				</ul>
+			}
+		</div>
+	}
+	@if (!state().workspace?.imports?.length) {
+		<div class="import-empty">
+			<p>Import a PDF bank statement to read its transactions here.</p>
+			<p class="muted">Files are read on this computer. Save your workspace to keep imported records.</p>
+		</div>
+	} @else if (loading()) {
+		<p class="details-loading" role="status">Loading statement details…</p>
+	} @else if (detailsError()) {
+		<div class="details-error" role="alert">
+			<p>{{ detailsError() }}</p>
+			<button class="button-secondary" (click)="retryDetails()" [disabled]="state().busy">Retry details</button>
+		</div>
+	} @else {
+		<div class="statement-picker">
+			<label for="statement-select">Statement</label
+			><select id="statement-select" (change)="select($event)" [disabled]="state().busy">
+				@for (record of records(); track record.id) {
+					<option [value]="record.id" [selected]="record.id === selectedId()">
+						{{ filename(record.filePath) }} · {{ record.result.transactions.length }} transactions ·
+						{{ record.result.status === 'partial' ? 'Partial import' : 'Complete import' }}
+					</option>
+				}
+			</select>
+		</div>
+		@if (selected(); as record) {
+			<div class="statement-summary">
+				<h3>{{ filename(record.filePath) }}</h3>
+				<p class="muted">
+					{{ record.result.adapter?.bankId }} · {{ record.result.transactions.length }} transactions · {{ record.result.unresolvedDrafts.length }} unresolved drafts
+				</p>
+				<p class="import-status-label">{{ record.result.status === 'partial' ? 'Partial import · review needed' : 'Complete import' }}</p>
+				<details class="source-location">
+					<summary>Source location</summary>
+					<p class="file-location">{{ record.filePath }}</p>
+				</details>
+				<dl class="account-list">
+					@for (account of record.result.accountSections; track account.sectionId) {
+						<div>
+							<dt>Account · {{ account.currency.value }}</dt>
+							<dd>{{ account.accountReference?.value || 'Unknown account reference' }}</dd>
+						</div>
+					}
+				</dl>
+			</div>
+			@if (record.result.status === 'partial' || record.result.issues.length) {
+				<aside class="statement-warnings" aria-labelledby="statement-notes-heading" data-testid="statement-warnings">
+					<h3 id="statement-notes-heading">Review needed</h3>
+					@if (record.result.unresolvedDrafts.length) {
+						<p>Unresolved drafts are listed separately and need review.</p>
+					}
+					<ul>
+						@for (issue of generalIssues(); track $index) {
+							<li>
+								@if (issueContext(record, issue); as context) {
+									<strong>{{ context }}: </strong>
+								}
+								{{ issue.message }}
+							</li>
+						}
+					</ul>
+				</aside>
+			}
+			<div class="table-heading">
+				<h3>Transactions</h3>
+				<span>{{ record.result.transactions.length }}</span>
+			</div>
+			<div class="table-scroll" tabindex="0" role="region" aria-label="Transactions table, horizontally scrollable">
+				<table data-testid="transactions-table">
+					<caption class="sr-only">
+						Transactions
+					</caption>
+					<thead>
+						<tr>
+							<th scope="col">Booking date</th>
+							<th scope="col">Description</th>
+							<th scope="col" class="amount-cell">Account amount</th>
+							<th scope="col">Direction</th>
+							@if (hasOriginalTransactions()) {
+								<th scope="col" class="amount-cell">Reported original amount</th>
+							}
+						</tr>
+					</thead>
+					<tbody>
+						@for (row of record.result.transactions; track row.rowId) {
+							<tr>
+								<td class="date-cell">{{ date(row.bookingDate.value) }}</td>
+								<td class="description-cell">
+									<p class="row-description">{{ row.description.value }}</p>
+									<app-row-source [row]="row" [record]="record" />
+								</td>
+								<td class="amount-cell">{{ money(row.accountAmount.value) }}</td>
+								<td>{{ direction(row.direction) }}</td>
+								@if (hasOriginalTransactions()) {
+									<td class="amount-cell">{{ money(row.reportedOriginalAmount?.value ?? null) }}</td>
+								}
+							</tr>
+						} @empty {
+							<tr>
+								<td [attr.colspan]="hasOriginalTransactions() ? 5 : 4" class="empty-table">No transactions reported in this statement.</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			</div>
+			<div class="table-heading">
+				<h3>Unresolved drafts</h3>
+				<span>{{ record.result.unresolvedDrafts.length }}</span>
+			</div>
+			<div class="table-scroll" tabindex="0" role="region" aria-label="Unresolved drafts table, horizontally scrollable">
+				<table data-testid="drafts-table">
+					<caption class="sr-only">
+						Unresolved drafts
+					</caption>
+					<thead>
+						<tr>
+							<th scope="col">Booking date</th>
+							<th scope="col">Description and issues</th>
+							<th scope="col" class="amount-cell">Account amount</th>
+							<th scope="col">Direction</th>
+							@if (hasOriginalDrafts()) {
+								<th scope="col" class="amount-cell">Reported original amount</th>
+							}
+						</tr>
+					</thead>
+					<tbody>
+						@for (row of record.result.unresolvedDrafts; track row.rowId) {
+							<tr>
+								<td class="date-cell" [class.missing-value]="!row.bookingDate">{{ date(row.bookingDate?.value ?? null) }}</td>
+								<td class="description-cell">
+									<p class="row-description">{{ row.description?.value || 'Unknown' }}</p>
+									<ul class="row-issues">
+										@for (issue of row.issues; track $index) {
+											<li>
+												@if (issueContext(record, issue); as context) {
+													<strong>{{ context }}: </strong>
+												}
+												{{ issue.message }}
+											</li>
+										}
+									</ul>
+									<app-row-source [row]="row" [record]="record" />
+								</td>
+								<td class="amount-cell" [class.missing-value]="!row.accountAmount">{{ money(row.accountAmount?.value ?? null) }}</td>
+								<td>{{ direction(row.direction) }}</td>
+								@if (hasOriginalDrafts()) {
+									<td class="amount-cell">{{ money(row.reportedOriginalAmount?.value ?? null) }}</td>
+								}
+							</tr>
+						} @empty {
+							<tr>
+								<td [attr.colspan]="hasOriginalDrafts() ? 5 : 4" class="empty-table">No unresolved drafts in this statement.</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			</div>
+		}
+	}
+</section>

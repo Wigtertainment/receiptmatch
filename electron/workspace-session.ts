@@ -34,6 +34,7 @@ export class WorkspaceSession {
   private importController: AbortController | null = null;
   private statementImport: WorkspaceState['statementImport'] = null;
   private importOutcome: WorkspaceState['importOutcome'] = null;
+  private loadRevision = 0;
   constructor(private readonly dialogs: WorkspaceDialogs, private readonly changed?: (state: WorkspaceState) => void, private readonly importService?: BankImportService) {}
 
   state(): WorkspaceState {
@@ -45,7 +46,7 @@ export class WorkspaceSession {
     const sameImports = this.saved?.imports.length === this.importRecords.length && this.importRecords.every((record, index) => record.id === this.saved!.imports[index].id);
     return {
       workspace: this.metadata ? {
-        id: this.metadata.id, name: this.metadata.name, dirty: !this.saved || this.metadata.name !== this.saved.metadata.name || !sameImports,
+        id: this.metadata.id, loadRevision: this.loadRevision, name: this.metadata.name, dirty: !this.saved || this.metadata.name !== this.saved.metadata.name || !sameImports,
         filePath: this.saved?.filePath ?? null, savedAt: this.saved?.metadata.savedAt ?? null, imports
       } : null,
       busy: this.busy, error: this.error, statementImport: structuredClone(this.statementImport), importOutcome: structuredClone(this.importOutcome)
@@ -133,14 +134,14 @@ export class WorkspaceSession {
         case 'save': await this.save(); break;
         case 'import-statement': await this.importStatement(); break;
         case 'new':
-          if (await this.canLeave()) { this.metadata = newMetadata(); this.saved = null; this.importRecords = []; this.importOutcome = null; }
+          if (await this.canLeave()) { this.metadata = newMetadata(); this.saved = null; this.importRecords = []; this.importOutcome = null; this.loadRevision++; }
           break;
         case 'open': {
           if (!await this.canLeave()) break;
           const selected = await this.dialogs.open();
           if (!selected) break;
           const loaded = await loadWorkspace(selected);
-          this.metadata = { ...loaded.metadata }; this.saved = loaded; this.importRecords = structuredClone(loaded.imports); this.importOutcome = null;
+          this.metadata = { ...loaded.metadata }; this.saved = loaded; this.importRecords = structuredClone(loaded.imports); this.importOutcome = null; this.loadRevision++;
           break;
         }
       }

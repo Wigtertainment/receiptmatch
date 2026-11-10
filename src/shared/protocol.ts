@@ -14,7 +14,7 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('rename'), name: workspaceName })
 ]);
 export type WorkspaceCommand = z.infer<typeof commandSchema>;
-export interface WorkspaceView { id: string; name: string; filePath: string | null; dirty: boolean; savedAt: string | null; imports: BankImportSummary[]; }
+export interface WorkspaceView { id: string; loadRevision: number; name: string; filePath: string | null; dirty: boolean; savedAt: string | null; imports: BankImportSummary[]; }
 export interface ImportOutcome { status: 'imported' | 'skipped' | 'cancelled' | 'failed' | 'unsupported'; importId: string | null; issues: ImportIssue[]; }
 export interface WorkspaceState {
   workspace: WorkspaceView | null;

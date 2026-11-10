@@ -1,6 +1,6 @@
 {
   "extends": "./tsconfig.json",
-  "compilerOptions": { "module": "preserve", "moduleResolution": "bundler", "experimentalDecorators": true, "lib": ["ES2022", "DOM"], "types": [] },
+  "compilerOptions": { "module": "preserve", "moduleResolution": "bundler", "experimentalDecorators": true, "lib": ["ES2022", "ES2023.Intl", "DOM"], "types": [] },
   "angularCompilerOptions": { "strictTemplates": true },
   "files": ["src/app.ts"]
 }
