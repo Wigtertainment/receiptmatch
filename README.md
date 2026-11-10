@@ -2,7 +2,7 @@
 
 Local-first desktop application for matching individual bank transactions with supporting documents. Financial data stays local and original documents remain unchanged.
 
-Create or open a local workspace, import a supported English Revolut Business EUR PDF statement, inspect transactions and unresolved rows, and explicitly save your work. Matching and document export are subsequent work.
+Create or open a local workspace, import a supported English Revolut Business EUR statement or Airwallex EUR Account Activity PDF, inspect transactions and unresolved rows, and explicitly save your work. Matching and document export are subsequent work.
 
 ## Build and run
 
@@ -17,7 +17,7 @@ npm start
 
 Packages are written to `artifacts/package/ReceiptMatch-<platform>-<arch>/`. Workspaces use the `.receiptmatch` extension. New workspaces and imported statements remain in memory until saved; existing unrelated files are never overwritten.
 
-Choose **Import statement** in a workspace to select a PDF. Processing uses embedded text or bundled local English OCR and can be cancelled. Identical file contents are skipped. Review warnings and unresolved rows before using the data; dates and exact monetary values follow the system display locale. Original PDFs stay in place. Additional bank layouts and correction actions are subsequent work.
+Choose **Import statement** in a workspace to select a PDF. Processing uses embedded text or bundled local English OCR and can be cancelled. Identical file contents are skipped. Both banks can share a workspace; select a statement to inspect its transactions and evidence. Review warnings and unresolved rows before using the data; dates and exact monetary values follow the system display locale. Original PDFs stay in place. Additional bank layouts and correction actions are subsequent work.
 
 ## Checks
 
