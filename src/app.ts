@@ -1,11 +1,12 @@
 import { Component, DestroyRef, inject, signal } from '@angular/core';
 import { bootstrapApplication } from '@angular/platform-browser';
 import type { WorkspaceBridge, WorkspaceCommand, WorkspaceState } from './shared/protocol.js';
+import { StatementImports } from './statement-imports.js';
 
 declare global { interface Window { receiptmatch: WorkspaceBridge; } }
 
 @Component({
-  selector: 'app-root', standalone: true,
+  selector: 'app-root', standalone: true, imports: [StatementImports],
   template: `
     <header class="toolbar">
       <div class="identity"><span class="brand-mark" aria-hidden="true">r<span>m</span></span><strong>ReceiptMatch</strong></div>
@@ -13,7 +14,7 @@ declare global { interface Window { receiptmatch: WorkspaceBridge; } }
       <nav aria-label="Workspace actions"><button (click)="run({type:'new'})" [disabled]="state().busy" title="New workspace (Ctrl+N)">New</button><button (click)="run({type:'open'})" [disabled]="state().busy" title="Open workspace (Ctrl+O)">Open</button><button class="button-primary compact" (click)="run({type:'save'})" [disabled]="state().busy || !state().workspace || !state().workspace!.dirty" title="Save workspace (Ctrl+S)">Save</button></nav>
     </header>
     <main>
-      @if (state().error) { <div class="error" role="alert"><span aria-hidden="true">!</span><p>{{ state().error }}</p></div> }
+      @if (state().error || commandError(); as error) { <div class="error" role="alert"><span aria-hidden="true">!</span><p>{{ error }}</p></div> }
       @if (state().workspace; as workspace) {
         <section class="workspace-view" aria-labelledby="workspace-heading">
           <div class="eyebrow"><span class="status-dot" [class.unsaved]="workspace.dirty"></span> WORKSPACE</div>
@@ -27,6 +28,7 @@ declare global { interface Window { receiptmatch: WorkspaceBridge; } }
             <div class="saved-row"><span class="detail-label">Status</span><p aria-live="polite">{{ workspace.dirty ? 'You have unsaved changes.' : 'Your workspace is saved on this computer.' }}</p></div>
           </div>
           @if (!workspace.filePath) { <div class="save-prompt"><p>Save your workspace to come back to it later.</p><button class="button-primary" (click)="run({type:'save'})" [disabled]="state().busy">Save workspace <span aria-hidden="true">↗</span></button></div> }
+          <app-statement-imports [state]="state()" (workspaceCommand)="run($event)" />
         </section>
       } @else {
         <section class="welcome" aria-labelledby="welcome-heading">
@@ -43,16 +45,34 @@ declare global { interface Window { receiptmatch: WorkspaceBridge; } }
   `
 })
 class ReceiptMatchApp {
-  readonly state = signal<WorkspaceState>({ workspace: null, busy: true, error: null });
+  readonly state = signal<WorkspaceState>({ workspace: null, busy: true, error: null, statementImport: null, importOutcome: null });
+  readonly commandError = signal<string | null>(null);
+  private stateRevision = 0;
+  private commandGeneration = 0;
+  private disposed = false;
   constructor() {
-    inject(DestroyRef).onDestroy(window.receiptmatch.subscribe(state => this.state.set(state)));
+    const unsubscribe = window.receiptmatch.subscribe(state => {
+      if (this.disposed) return;
+      this.stateRevision++; this.commandError.set(null); this.state.set(state);
+    });
+    inject(DestroyRef).onDestroy(() => { this.disposed = true; this.commandGeneration++; unsubscribe(); });
     void this.run({ type: 'get-state' });
   }
   async run(command: WorkspaceCommand) {
+    const generation = ++this.commandGeneration; const revision = this.stateRevision;
     try {
-      this.state.set(await window.receiptmatch.command(command));
-      if ((command.type === 'new' || command.type === 'open') && this.state().workspace) requestAnimationFrame(() => document.getElementById('workspace-name')?.focus());
-    } catch { this.state.update(state => ({ ...state, busy: false, error: 'The workspace action could not be completed. Please try again.' })); }
+      const result = await window.receiptmatch.command(command);
+      if (this.disposed || generation !== this.commandGeneration) return;
+      // Subscribed state is authoritative even when an older command reply arrives later.
+      if (revision === this.stateRevision) { this.commandError.set(null); this.state.set(result); }
+      if ((command.type === 'new' || command.type === 'open') && result.workspace && result.workspace.id === this.state().workspace?.id) {
+        requestAnimationFrame(() => {
+          if (!this.disposed && generation === this.commandGeneration && result.workspace?.id === this.state().workspace?.id) document.getElementById('workspace-name')?.focus();
+        });
+      }
+    } catch {
+      if (!this.disposed && generation === this.commandGeneration && revision === this.stateRevision) this.commandError.set('The workspace action could not be completed. Please try again.');
+    }
   }
   rename(event: Event) { void this.run({ type: 'rename', name: (event.target as HTMLInputElement).value }); }
 }

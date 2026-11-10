@@ -1,0 +1,35 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { copyFile, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { createWorkspace, newMetadata } from '../../electron/store.js';
+import { WorkspaceSession, type WorkspaceDialogs } from '../../electron/workspace-session.js';
+
+test('successful loads invalidate view snapshots even for identical workspace IDs, while ordinary actions and rejected loads keep the snapshot', async () => {
+    await mkdir('artifacts', { recursive: true }); const root = await mkdtemp(path.resolve('artifacts/view-'));
+    const original = path.join(root, 'original.receiptmatch'); const copied = path.join(root, 'copied.receiptmatch'); const corrupt = path.join(root, 'corrupt.receiptmatch');
+    await createWorkspace(original, newMetadata()); await copyFile(original, copied); await writeFile(corrupt, 'not a workspace');
+    const opens: (string | null)[] = [original];
+    const dialogs: WorkspaceDialogs = { open: async () => opens.shift() ?? null, save: async () => path.join(root, 'new.receiptmatch'), unsaved: async () => 'cancel' };
+    const session = new WorkspaceSession(dialogs);
+    const first = (await session.dispatch({ type: 'open' })).workspace!;
+    await session.dispatch({ type: 'rename', name: 'Saved name' });
+    assert.equal((await session.dispatch({ type: 'save' })).workspace?.loadRevision, first.loadRevision);
+    assert.equal((await session.dispatch({ type: 'import-statement' })).workspace?.loadRevision, first.loadRevision);
+    opens.push(copied);
+    const copy = (await session.dispatch({ type: 'open' })).workspace!;
+    assert.equal(copy.id, first.id); assert.ok(copy.loadRevision > first.loadRevision);
+    opens.push(copied);
+    const reopened = (await session.dispatch({ type: 'open' })).workspace!;
+    assert.equal(reopened.id, copy.id); assert.ok(reopened.loadRevision > copy.loadRevision);
+    opens.push(corrupt);
+    assert.ok((await session.dispatch({ type: 'open' })).error);
+    assert.equal(session.state().workspace?.loadRevision, reopened.loadRevision);
+    opens.push(null);
+    assert.equal((await session.dispatch({ type: 'open' })).workspace?.loadRevision, reopened.loadRevision);
+    const fresh = (await session.dispatch({ type: 'new' })).workspace!;
+    assert.notEqual(fresh.id, reopened.id); assert.ok(fresh.loadRevision > reopened.loadRevision);
+    opens.push(original);
+    assert.equal((await session.dispatch({ type: 'open' })).workspace?.loadRevision, fresh.loadRevision);
+    assert.equal((await session.dispatch({ type: 'save' })).workspace?.loadRevision, fresh.loadRevision);
+});
