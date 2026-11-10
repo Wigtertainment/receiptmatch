@@ -4,10 +4,12 @@ import { createReadStream, closeSync, fstatSync, lstatSync, openSync, readSync, 
 import path from 'node:path';
 import { z } from 'zod';
 import { workspaceName } from '../src/shared/protocol.js';
+import { moneySchema } from '../src/shared/money.js';
+
+export { moneySchema } from '../src/shared/money.js';
 
 export const APPLICATION_ID = 0x52434d54;
 export const SCHEMA_VERSION = 1;
-export const moneySchema = z.strictObject({ coefficient: z.string().regex(/^(0|-?[1-9]\d*)$/).max(128), currency: z.string().regex(/^[A-Z]{3}$/), scale: z.number().int().min(0).max(18) });
 const metadataSchema = z.strictObject({ id: z.uuid(), name: workspaceName.refine(value => value.trim().length > 0), createdAt: z.iso.datetime(), savedAt: z.iso.datetime().nullable() });
 export type WorkspaceMetadata = z.infer<typeof metadataSchema>;
 export interface SavedWorkspace { metadata: WorkspaceMetadata; filePath: string; fingerprint: string; }
