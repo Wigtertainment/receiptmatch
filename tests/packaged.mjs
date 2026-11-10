@@ -16,7 +16,7 @@ let application;
 let page;
 async function check(name, action) { const started = performance.now(); await action(); report.checks.push({ name, status: 'passed', milliseconds: Math.round(performance.now() - started) }); console.log(`PASS ${name}`); }
 async function launch() {
-  application = await electron.launch({ executablePath: path.resolve(`artifacts/package/ReceiptMatch-${process.platform}-${process.arch}/ReceiptMatch${process.platform === 'win32' ? '.exe' : ''}`), args: ['--hidden', '--disable-gpu', `--user-data-dir=${path.join(root, `profile-${randomUUID()}`)}`], timeout: 30000, env: { ...process.env, ELECTRON_ENABLE_LOGGING: '1' } });
+  application = await electron.launch({ executablePath: path.resolve(process.platform === 'win32' ? 'release/win-unpacked/ReceiptMatch.exe' : 'release/linux-unpacked/receiptmatch'), args: ['--hidden', '--disable-gpu', `--user-data-dir=${path.join(root, `profile-${randomUUID()}`)}`], timeout: 30000, env: { ...process.env, ELECTRON_ENABLE_LOGGING: '1' } });
   page = await application.firstWindow();
   await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false));
   await page.getByRole('heading', { name: 'Your records. Your workspace.' }).waitFor();

@@ -32,6 +32,7 @@ yarn-error.log*
 # Desktop build and local test outputs
 /.build/
 /artifacts/
+/release/
 
 # Local financial workspaces and SQLite sidecars
 *.receiptmatch

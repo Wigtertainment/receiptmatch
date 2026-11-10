@@ -46,7 +46,7 @@ async function check(name, action) {
 async function stage(name) { report.stage = name; await writeFile(reportPath, JSON.stringify(report, null, 2)); console.log(`STAGE ${name}`); }
 async function launch() {
     application = await electron.launch({
-        executablePath: path.resolve(`artifacts/package/ReceiptMatch-${process.platform}-${process.arch}/ReceiptMatch${process.platform === 'win32' ? '.exe' : ''}`),
+        executablePath: path.resolve(process.platform === 'win32' ? 'release/win-unpacked/ReceiptMatch.exe' : 'release/linux-unpacked/receiptmatch'),
         args: ['--disable-gpu', '--lang=de-DE', `--user-data-dir=${path.join(root, `profile-${randomUUID()}`)}`], timeout: 30000,
         env: { ...process.env, LANG: 'de_DE.UTF-8', LC_ALL: 'de_DE.UTF-8' }
     });

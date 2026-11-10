@@ -26,7 +26,7 @@ async function check(name, action) {
 }
 async function launch() {
     application = await electron.launch({
-        executablePath: path.resolve(`artifacts/package/ReceiptMatch-${process.platform}-${process.arch}/ReceiptMatch${process.platform === 'win32' ? '.exe' : ''}`),
+        executablePath: path.resolve(process.platform === 'win32' ? 'release/win-unpacked/ReceiptMatch.exe' : 'release/linux-unpacked/receiptmatch'),
         args: ['--hidden', '--disable-gpu', `--user-data-dir=${path.join(root, `profile-${randomUUID()}`)}`], timeout: 30000
     });
     page = await application.firstWindow({ timeout: 30000 });

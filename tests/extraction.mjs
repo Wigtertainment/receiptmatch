@@ -193,7 +193,7 @@ async function invoke(bytes, mode = "normal") {
 
 try {
 	application = await electron.launch({
-		executablePath: path.resolve(`artifacts/package/ReceiptMatch-${process.platform}-${process.arch}/ReceiptMatch${process.platform === "win32" ? ".exe" : ""}`),
+		executablePath: path.resolve(process.platform === "win32" ? "release/win-unpacked/ReceiptMatch.exe" : "release/linux-unpacked/receiptmatch"),
 		args: ["--hidden", "--disable-gpu", `--user-data-dir=${path.join(root, "fresh-profile")}`],
 		timeout: 30000,
 		env: { ...process.env, ELECTRON_ENABLE_LOGGING: "1" },
