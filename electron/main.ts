@@ -6,7 +6,10 @@ import { WorkspaceSession } from './workspace-session.js';
 
 const appUrl = 'receiptmatch://app/index.html';
 app.setName('ReceiptMatch');
-protocol.registerSchemesAsPrivileged([{ scheme: 'receiptmatch', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'receiptmatch', privileges: { standard: true, secure: true, supportFetchAPI: true } },
+  { scheme: 'receiptmatch-extraction', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } }
+]);
 
 async function launch() {
   await app.whenReady();

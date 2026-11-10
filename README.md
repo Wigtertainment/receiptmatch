@@ -23,11 +23,14 @@ Packages are written to `artifacts/package/ReceiptMatch-<platform>-<arch>/`. Wor
 npm run check
 npm run test:unit
 npm run test:packaged
+npm run test:extraction
 ```
 
 `npm run check` runs ESLint with zero tolerated warnings and checks HTML formatting. Use `npm run lint:fix` and `npm run format` to apply available fixes. Prettier uses tabs and a 180-character line width; generated outputs and dependencies are excluded.
 
 Packaged UI checks require the build and package above. They exercise the actual desktop executable; generated results and screenshots remain under ignored `artifacts/`.
+
+Extraction checks exercise the isolated PDF text and local English OCR engine using synthetic PDFs and bundled resources. File import is not yet connected to the workspace UI.
 
 For the Ubuntu 24.04 x64 container check:
 
