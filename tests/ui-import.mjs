@@ -7,6 +7,7 @@ import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { _electron as electron } from 'playwright';
 import Database from 'better-sqlite3';
 import { statement, row } from '../.build/node/tests/unit/bank-fixtures.js';
+import { airwallexStatement } from '../.build/node/tests/unit/airwallex-fixtures.js';
 import { parseBankStatement } from '../.build/node/electron/import/registry.js';
 import { createWorkspace, newMetadata } from '../.build/node/electron/store.js';
 import { storedBankImportSchema } from '../.build/node/src/shared/workspace-import.js';
@@ -196,6 +197,33 @@ async function fixture(file, isPartial = false) {
         for (const item of source.spans) sheet.drawText(item.text, { x: item.region.x, y: source.height - item.region.y - 10, size: 10, font });
     }
     await writeFile(file, await pdf.save());
+}
+async function airwallexFixture(file, isPartial = false) {
+    const input = airwallexStatement();
+    if (isPartial) input.pages[0].spans.find(item => item.text === '16.43 EUR').text = 'Unreadable EUR';
+    const pdf = await PDFDocument.create(); const font = await pdf.embedFont(StandardFonts.Helvetica);
+    pdf.setTitle(isPartial ? 'Synthetic Airwallex unresolved debit' : 'Synthetic Airwallex complete statement');
+    for (const source of input.pages) {
+        const sheet = pdf.addPage([source.width, source.height]);
+        for (const item of source.spans) {
+            const size = Math.min(9, item.region.width / font.widthOfTextAtSize(item.text, 1));
+            sheet.drawText(item.text, { x: item.region.x, y: source.height - item.region.y - 10, size, font });
+        }
+    }
+    await writeFile(file, await pdf.save());
+}
+async function bankRecords() {
+    const values = await page.evaluate(() => window.receiptmatch.bankImports());
+    return values.map(value => storedBankImportSchema.parse(value));
+}
+async function selectStatement(record) {
+    await page.getByLabel('Statement', { exact: true }).selectOption(record.id);
+    await page.waitForFunction(({ id, filename }) => document.querySelector('#statement-select')?.value === id &&
+        document.querySelector('.statement-summary h3')?.textContent.trim() === filename, { id: record.id, filename: path.basename(record.filePath) });
+    await transactions().waitFor();
+}
+function sourceFact(row, name) {
+    return row.locator('.source-facts > div').filter({ has: page.getByText(name, { exact: true }) }).locator('dd');
 }
 async function hook(channel, mode) {
     await application.evaluate(({ ipcMain }, { channel, mode }) => {
@@ -435,6 +463,196 @@ try {
         assert.equal(await region.evaluate(element => document.activeElement === element), true);
         return { bounds, screenshot: await screenshot('partial-narrow-keyboard') };
     });
+    const airwallex = path.join(root, 'synthetic-airwallex.pdf');
+    const airwallexDuplicate = path.join(root, 'identical-airwallex-copy.pdf');
+    const airwallexPartial = path.join(root, 'synthetic-airwallex-partial.pdf');
+    const airwallexScanned = path.resolve('tests/fixtures/airwallex-synthetic-scan.pdf');
+    await airwallexFixture(airwallex); await copyFile(airwallex, airwallexDuplicate); await airwallexFixture(airwallexPartial, true);
+    const airwallexOriginalHash = await fingerprint(airwallex); const airwallexScanHash = await fingerprint(airwallexScanned);
+    await check('airwallex-actual-ui-keeps-exact-values-provenance-and-both-banks-through-explicit-save-and-restart', async () => {
+        await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1120, 900));
+        await openFile(workspaceFile); await transactions().waitFor();
+        const before = await bankRecords(); const savedHash = await fingerprint(workspaceFile);
+        assert.ok(before.length && before.every(record => record.result.adapter.bankId === 'revolut'));
+        const imported = await importFile(airwallex); await transactions().waitFor();
+        assert.equal(imported.workspace.imports.length, before.length + 1); assert.equal(imported.workspace.dirty, true);
+        assert.equal(await fingerprint(workspaceFile), savedHash, 'Import must not save the workspace implicitly.');
+        const records = await bankRecords(); const record = records.at(-1);
+        assert.deepEqual(records.slice(0, -1), before);
+        assert.equal(record.result.adapter.bankId, 'airwallex'); assert.equal(record.result.status, 'complete');
+        assert.equal(record.result.sourceProvenance.sha256, airwallexOriginalHash);
+        assert.deepEqual(record.result.transactions.map(row => [row.bookingDate.value, row.accountAmount.value.coefficient, row.direction]), [
+            ['2032-03-01', '-1643', 'outgoing'], ['2032-03-02', '-1307', 'outgoing'], ['2032-03-03', '419', 'incoming'], ['2032-03-04', '2753', 'incoming']
+        ]);
+        assert.deepEqual(record.result.transactions.map(row => row.reportedOriginalAmount?.value ?? null), [
+            { coefficient: '-1807', currency: 'USD', scale: 2 }, null, { coefficient: '419', currency: 'EUR', scale: 2 }, null
+        ]);
+        assert.equal(record.result.accountSections[0].accountReference, null);
+        assert.ok(record.result.transactions.every(row => row.bookingDate.basisLabel === 'Date (Central European Time)' && row.valueDate === null));
+        const pageIds = new Map(record.result.sourceProvenance.pages.map(page => [page.pageId, page.pageNumber]));
+        assert.ok(record.result.transactions[0].bookingDate.evidence.some(value => pageIds.get(value.pageId) === 3));
+        assert.ok(record.result.transactions[2].description.evidence.every(value => pageIds.get(value.pageId) === 2));
+        assert.equal(await transactions().locator('tbody > tr').count(), 4);
+        const rows = transactions().locator('tbody > tr');
+        for (const [index, date, amount, direction] of [
+            [0, '01.03.2032', '-16,43 EUR', 'Outgoing'], [1, '02.03.2032', '-13,07 EUR', 'Outgoing'],
+            [2, '03.03.2032', '4,19 EUR', 'Incoming'], [3, '04.03.2032', '27,53 EUR', 'Incoming']
+        ]) {
+            assert.equal(normalized(await rows.nth(index).locator('td.date-cell').textContent()), date);
+            assert.equal(normalized(await rows.nth(index).locator('td.amount-cell').first().textContent()), amount);
+            assert.equal(normalized(await rows.nth(index).locator('td').nth(3).textContent()), direction);
+        }
+        assert.equal(normalized(await rows.nth(0).locator('td.amount-cell').nth(1).textContent()), '-18,07 USD');
+        assert.equal(normalized(await rows.nth(1).locator('td.amount-cell').nth(1).textContent()), 'Unknown');
+        assert.equal(normalized(await rows.nth(2).locator('td.amount-cell').nth(1).textContent()), '4,19 EUR');
+        assert.equal(normalized(await page.locator('.account-list dd').textContent()), 'Unknown account reference');
+        await rows.first().getByText('Source details', { exact: true }).click();
+        await sourceFact(rows.first(), 'Printed date basis').waitFor();
+        assert.equal(normalized(await sourceFact(rows.first(), 'Printed date basis').textContent()), 'Date (Central European Time)');
+        assert.equal(normalized(await sourceFact(rows.first(), 'Account reference').textContent()), 'Unknown');
+        for (const label of ['Booking date', 'Description', 'Account amount', 'Account currency', 'Account section']) {
+            const group = rows.first().getByRole('region', { name: label, exact: true });
+            assert.match(await group.textContent(), /Page [123] · Embedded text/); assert.match(await group.textContent(), /Region in PDF points/);
+        }
+        await rows.first().getByText('Source details', { exact: true }).click();
+        const wide = await screenshot('airwallex-complete-wide');
+        await clickCommand(page.getByRole('button', { name: 'Save', exact: true }), 'save'); await waitState({ dirty: false });
+        const retained = await bankRecords(); await close(); await launch();
+        await dialogs({ opens: [workspaceFile] }); await clickCommand(page.getByRole('button', { name: 'Open workspace', exact: true }), 'open');
+        await waitState({ filePath: workspaceFile, dirty: false }); await transactions().waitFor();
+        assert.deepEqual(await bankRecords(), retained);
+        await selectStatement(record); assert.equal(await transactions().locator('tbody > tr').count(), 4);
+        await selectStatement(before[0]); assert.equal(await transactions().locator('tbody > tr').count(), 2);
+        assert.match(normalized(await transactions().textContent()), /-1\.234,56 EUR/);
+        assert.equal(await transactions().getByText(/Lantern Supplies/).count(), 0);
+        await selectStatement(record); assert.match(normalized(await transactions().textContent()), /-16,43 EUR/);
+        assert.equal(await transactions().getByText(/Orchard Workshop/).count(), 0);
+        const savedAfterRestart = await fingerprint(workspaceFile);
+        const skipped = await importFile(airwallexDuplicate, 'skipped');
+        assert.equal(skipped.workspace.dirty, false); assert.equal(skipped.importOutcome.importId, record.id);
+        assert.deepEqual(await bankRecords(), retained); assert.equal(await fingerprint(workspaceFile), savedAfterRestart);
+        assert.equal(await page.getByLabel('Statement', { exact: true }).inputValue(), record.id);
+        assert.equal(await fingerprint(airwallex), airwallexOriginalHash);
+        return { screenshot: wide, retainedBanks: [...new Set(retained.map(record => record.result.adapter.bankId))] };
+    });
+    await check('airwallex-partial-ui-retains-three-valid-rows-and-one-visible-unknown-draft-after-restart', async () => {
+        const before = await bankRecords(); const savedHash = await fingerprint(workspaceFile);
+        const imported = await importFile(airwallexPartial); await drafts().waitFor();
+        assert.equal(imported.workspace.dirty, true); assert.equal(await fingerprint(workspaceFile), savedHash);
+        const records = await bankRecords(); const record = records.at(-1);
+        assert.deepEqual(records.slice(0, -1), before); assert.equal(record.result.status, 'partial');
+        assert.equal(record.result.transactions.length, 3); assert.equal(record.result.unresolvedDrafts.length, 1);
+        assert.equal(record.result.unresolvedDrafts[0].accountAmount, null);
+        assert.deepEqual(record.result.transactions.map(row => row.accountAmount.value.coefficient), ['-1307', '419', '2753']);
+        assert.equal(await transactions().locator('tbody > tr').count(), 3); assert.equal(await drafts().locator('tbody > tr').count(), 1);
+        assert.equal(normalized(await drafts().locator('td.amount-cell').first().textContent()), 'Unknown');
+        assert.ok(await drafts().locator('.row-issues li').count() > 0); await page.getByTestId('statement-warnings').waitFor();
+        await clickCommand(page.getByRole('button', { name: 'Save', exact: true }), 'save'); await waitState({ dirty: false });
+        const retained = await bankRecords(); await close(); await launch();
+        await dialogs({ opens: [workspaceFile] }); await clickCommand(page.getByRole('button', { name: 'Open workspace', exact: true }), 'open');
+        await waitState({ filePath: workspaceFile, dirty: false }); await transactions().waitFor(); assert.deepEqual(await bankRecords(), retained);
+        await selectStatement(record); await drafts().waitFor();
+        assert.equal(await transactions().locator('tbody > tr').count(), 3); assert.equal(await drafts().locator('tbody > tr').count(), 1);
+        assert.equal(normalized(await drafts().locator('td.amount-cell').first().textContent()), 'Unknown');
+        await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(680, 800)); await settle();
+        const region = page.getByRole('region', { name: 'Transactions table, horizontally scrollable', exact: true }); await region.focus();
+        const bounds = await page.evaluate(() => ({ width: innerWidth, content: document.documentElement.scrollWidth, client: document.documentElement.clientWidth }));
+        assert.equal(bounds.width, 680); assert.ok(bounds.content <= bounds.client + 1, JSON.stringify(bounds));
+        return { screenshot: await screenshot('airwallex-partial-narrow'), bounds };
+    });
+    await check('airwallex-records-and-selected-partial-view-survive-failed-inputs-and-native-chooser-cancellation', async () => {
+        const before = await bankRecords(); const savedHash = await fingerprint(workspaceFile);
+        const selected = await page.getByLabel('Statement', { exact: true }).inputValue();
+        for (const [file, status, code] of [
+            [unknown, 'unsupported'], [malformed, 'failed', 'pdf-invalid'], [path.resolve('tests/fixtures/password-required.pdf'), 'failed', 'pdf-password'], [null, 'cancelled']
+        ]) {
+            const result = await importFile(file, status, code);
+            assert.equal(result.workspace.dirty, false); assert.deepEqual(await bankRecords(), before);
+            assert.equal(await fingerprint(workspaceFile), savedHash);
+            assert.equal(await page.getByLabel('Statement', { exact: true }).inputValue(), selected);
+            assert.equal(await transactions().locator('tbody > tr').count(), 3); assert.equal(await drafts().locator('tbody > tr').count(), 1);
+            assert.equal(normalized(await drafts().locator('td.amount-cell').first().textContent()), 'Unknown');
+        }
+    });
+    await check('airwallex-uncertain-real-ocr-retains-visible-drafts-without-inventing-financial-values-through-save-and-restart', async () => {
+        const uncertain = path.resolve('tests/fixtures/airwallex-synthetic-uncertain-scan.pdf'); const sourceHash = await fingerprint(uncertain);
+        const before = await bankRecords(); const savedHash = await fingerprint(workspaceFile);
+        const imported = await importFile(uncertain); await drafts().waitFor();
+        assert.equal(imported.workspace.dirty, true); assert.equal(await fingerprint(workspaceFile), savedHash);
+        const records = await bankRecords(); const record = records.at(-1);
+        assert.deepEqual(records.slice(0, -1), before); assert.equal(record.result.adapter.bankId, 'airwallex');
+        assert.equal(record.result.status, 'partial'); assert.equal(record.result.sourceProvenance.sha256, sourceHash);
+        assert.ok(record.result.transactions.length > 0, 'Readable financial rows must remain available beside unresolved rows.');
+        assert.ok(record.result.unresolvedDrafts.length > 0);
+        const expected = new Map([
+            ['2032-03-01', { amount: '-1643', direction: 'outgoing', original: { coefficient: '-1807', currency: 'USD', scale: 2 } }],
+            ['2032-03-02', { amount: '-1307', direction: 'outgoing', original: null }],
+            ['2032-03-03', { amount: '419', direction: 'incoming', original: { coefficient: '419', currency: 'EUR', scale: 2 } }]
+        ]);
+        const represented = [...record.result.transactions, ...record.result.unresolvedDrafts];
+        for (const date of expected.keys()) assert.equal(represented.filter(row => row.bookingDate?.value === date).length, 1,
+            'Every source transaction must remain visible as exactly one transaction or unresolved draft.');
+        const retainedDates = new Set();
+        for (const row of record.result.transactions) {
+            const wanted = expected.get(row.bookingDate.value); assert.ok(wanted, 'Only a known, readable source transaction can be imported.');
+            assert.ok(!retainedDates.has(row.bookingDate.value)); retainedDates.add(row.bookingDate.value);
+            assert.deepEqual(row.accountAmount.value, { coefficient: wanted.amount, currency: 'EUR', scale: 2 });
+            assert.equal(row.direction, wanted.direction); assert.deepEqual(row.reportedOriginalAmount?.value ?? null, wanted.original);
+            assert.ok([...row.bookingDate.evidence, ...row.accountAmount.evidence, ...row.description.evidence].every(value => value.method === 'local-ocr'));
+        }
+        assert.ok(record.result.unresolvedDrafts.every(row => row.issues.length && row.evidence.some(value => value.method === 'local-ocr')));
+        assert.equal(await transactions().locator('tbody > tr').count(), record.result.transactions.length);
+        assert.equal(await drafts().locator('tbody > tr').count(), record.result.unresolvedDrafts.length);
+        assert.ok(await drafts().locator('.row-issues li').count() > 0); await page.getByTestId('statement-warnings').waitFor();
+        await clickCommand(page.getByRole('button', { name: 'Save', exact: true }), 'save'); await waitState({ dirty: false });
+        const retained = await bankRecords(); await close(); await launch();
+        await dialogs({ opens: [workspaceFile] }); await clickCommand(page.getByRole('button', { name: 'Open workspace', exact: true }), 'open');
+        await waitState({ filePath: workspaceFile, dirty: false }); await transactions().waitFor(); assert.deepEqual(await bankRecords(), retained);
+        await selectStatement(record); await drafts().waitFor();
+        assert.equal(await drafts().locator('tbody > tr').count(), record.result.unresolvedDrafts.length);
+        assert.ok(await drafts().locator('.row-issues li').count() > 0); assert.equal(await fingerprint(uncertain), sourceHash);
+        return { transactions: record.result.transactions.length, unresolvedDrafts: record.result.unresolvedDrafts.length, sourceHash };
+    });
+    await check('airwallex-active-ocr-cancellation-preserves-records-and-real-raster-import-recovers-with-exact-values', async () => {
+        const before = await bankRecords(); const savedHash = await fingerprint(workspaceFile); const sequence = await commandSequence();
+        await dialogs({ opens: [airwallexScanned] }); await page.getByRole('button', { name: 'Import statement', exact: true }).click();
+        await page.waitForFunction(async () => (await window.receiptmatch.command({ type: 'get-state' })).statementImport?.progress?.phase === 'ocr');
+        await page.getByTestId('import-progress').waitFor();
+        for (const name of ['New', 'Open', 'Save']) assert.equal(await page.getByRole('button', { name, exact: true }).isDisabled(), true);
+        await clickCommand(page.getByRole('button', { name: 'Cancel import', exact: true }), 'cancel-import');
+        const cancelled = await outcome('cancelled'); const completion = await commandEnd('import-statement', sequence);
+        assert.equal(completion.outcome, 'cancelled'); assert.equal(cancelled.workspace.dirty, false);
+        assert.deepEqual(await bankRecords(), before); assert.equal(await fingerprint(workspaceFile), savedHash);
+        await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1120, 900));
+        const imported = await importFile(airwallexScanned); await transactions().waitFor();
+        assert.equal(imported.workspace.dirty, true); assert.equal(await fingerprint(workspaceFile), savedHash);
+        const records = await bankRecords(); const record = records.at(-1);
+        assert.deepEqual(records.slice(0, -1), before); assert.equal(record.result.adapter.bankId, 'airwallex');
+        assert.equal(record.result.status, 'complete'); assert.equal(record.result.unresolvedDrafts.length, 0);
+        assert.equal(record.result.sourceProvenance.sha256, airwallexScanHash);
+        assert.deepEqual(record.result.transactions.map(row => [row.bookingDate.value, row.accountAmount.value.coefficient]), [
+            ['2032-03-01', '-1643'], ['2032-03-02', '-1307'], ['2032-03-03', '419']
+        ]);
+        assert.deepEqual(record.result.transactions.map(row => row.reportedOriginalAmount?.value ?? null), [
+            { coefficient: '-1807', currency: 'USD', scale: 2 }, null, { coefficient: '419', currency: 'EUR', scale: 2 }
+        ]);
+        assert.ok(record.result.transactions.every(row => row.bookingDate.basisLabel === 'Date' &&
+            [...row.bookingDate.evidence, ...row.accountAmount.evidence, ...row.description.evidence].every(value => value.method === 'local-ocr')));
+        assert.equal(record.result.accountSections[0].accountReference, null);
+        assert.equal(await transactions().locator('tbody > tr').count(), 3);
+        const visible = normalized(await transactions().textContent());
+        for (const value of ['-16,43 EUR', '-13,07 EUR', '4,19 EUR', '-18,07 USD']) assert.ok(visible.includes(value), value);
+        const first = transactions().locator('tbody > tr').first(); await first.getByText('Source details', { exact: true }).click();
+        await first.getByRole('region', { name: 'Account amount', exact: true }).getByText(/Local English OCR/).first().waitFor();
+        assert.equal(normalized(await sourceFact(first, 'Printed date basis').textContent()), 'Date');
+        await clickCommand(page.getByRole('button', { name: 'Save', exact: true }), 'save'); await waitState({ dirty: false });
+        const retained = await bankRecords(); await close(); await launch();
+        await dialogs({ opens: [workspaceFile] }); await clickCommand(page.getByRole('button', { name: 'Open workspace', exact: true }), 'open');
+        await waitState({ filePath: workspaceFile, dirty: false }); await transactions().waitFor(); assert.deepEqual(await bankRecords(), retained);
+        await selectStatement(record); assert.equal(await transactions().locator('tbody > tr').count(), 3);
+        assert.equal(await fingerprint(airwallexScanned), airwallexScanHash);
+    });
+    assert.equal(await fingerprint(airwallex), airwallexOriginalHash); assert.equal(await fingerprint(airwallexScanned), airwallexScanHash);
     assert.equal(await fingerprint(original), beforeOriginal);
     report.status = 'passed';
     report.limits = ['Synthetic statements and native-dialog stubs; no private financial files.', 'Scale-18/XSS presentation workspace was explicitly seeded through the Store API.', 'Visible ReceiptMatch-window captures only; no OS desktop capture or installer/physical-GPU certification.', 'Fault injection wraps pinned Electron IPC handlers only in host automation, without production test flags.'];
