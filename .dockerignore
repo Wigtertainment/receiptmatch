@@ -10,7 +10,6 @@ release
 tmp
 AGENTS.md
 coverage
-validation
 docs
 .env*
 .npmrc
