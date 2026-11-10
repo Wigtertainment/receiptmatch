@@ -56,7 +56,7 @@ npm run test:ui-import
 
 `npm run test:unit` prepares its own compiled test modules. Before running packaged checks separately, run `npm run build:tests` and the packaging command for your platform. They exercise the actual desktop executable; generated results and screenshots go under ignored `artifacts/`. Remove temporary `release/`, `.build/`, `.angular/` and test outputs after successful use.
 
-Extraction checks exercise the isolated PDF text and local English OCR engine using synthetic PDFs and bundled resources.
+Extraction checks exercise isolated PDF text and local English OCR using synthetic PDF, PNG and JPEG inputs and bundled resources, including image limits, orientation and failures.
 
 Import checks exercise native file selection, duplicate skipping and explicit workspace persistence through the validated desktop API. UI import checks use the actual controls, inspect financial fields and evidence, and capture synthetic-data screenshots. Native dialog selections are supplied by automation.
 

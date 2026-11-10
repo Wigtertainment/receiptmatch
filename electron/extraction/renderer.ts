@@ -19,6 +19,7 @@ import {
     type ExtractionResult
 } from '../../src/shared/pdf-extraction.js';
 import { embeddedTextGeometry, ocrWordGeometry } from './geometry.js';
+import { assertImageDimensions, imageInputDimensions, IMAGE_MIME_TYPES, ImageInputError } from './image-input.js';
 
 declare global {
     interface Window {
@@ -48,7 +49,7 @@ function failed(code: string, message: string, pageId: string | null = null): Ex
     return { status: 'failed', issues: [{ ...importIssue(code, message), pageId }] };
 }
 async function execute(job: ExtractionJob): Promise<ExtractionResult> {
-    const loadingTask = pdfjs.getDocument({
+    const loadingTask = job.format === 'pdf' ? pdfjs.getDocument({
         data: new Uint8Array(job.bytes),
         cMapUrl: new URL('./pdf/cmaps/', location.href).href,
         cMapPacked: true,
@@ -59,7 +60,7 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
         stopAtErrors: true,
         maxImageSize: PDF_EXTRACTION_LIMITS.pixelsPerPage,
         canvasMaxAreaInBytes: PDF_EXTRACTION_LIMITS.pixelsPerPage * 4
-    });
+    }) : null;
     let worker: Worker | undefined;
     let ocrUnavailable = false;
     let pageNumber: number | null = null;
@@ -87,9 +88,83 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
         totalSpans++;
         totalText += span.text.length;
     };
+    const recognize = async (canvas: HTMLCanvasElement, page: ImportPage, pageCount: number) => {
+        if (ocrUnavailable) throw new ExtractionFault('ocr-unavailable', 'The bundled English OCR resources are unavailable for this job.');
+        if (!worker) {
+            try {
+                worker = await new Promise<Worker>((resolve, reject) => {
+                    // Tesseract's language-init error callback can run without rejecting createWorker's promise.
+                    void createWorker('eng', 1, {
+                        workerPath: new URL('./ocr/worker.min.js', location.href).href,
+                        corePath: new URL('./ocr/core/', location.href).href,
+                        langPath: new URL('./ocr/', location.href).href,
+                        workerBlobURL: false,
+                        cacheMethod: 'none',
+                        errorHandler: () => {
+                            console.error('The local OCR worker failed.');
+                            reject(new ExtractionFault('ocr-unavailable', 'The bundled English OCR resources could not be initialized.'));
+                        }
+                    }).then(resolve, reject);
+                });
+            } catch {
+                ocrUnavailable = true;
+                throw new ExtractionFault('ocr-unavailable', 'The bundled English OCR resources could not be initialized.');
+            }
+        }
+        progress('ocr', pageCount);
+        const recognized = await worker.recognize(canvas, {}, { blocks: true });
+        if (!recognized.data.blocks && recognized.data.text.trim()) throw new ExtractionFault('ocr-result', 'OCR returned text without positioned word evidence.');
+        for (const block of recognized.data.blocks ?? [])
+            for (const paragraph of block.paragraphs)
+                for (const line of paragraph.lines)
+                    for (const word of line.words) {
+                        if (!word.text.trim()) continue;
+                        const box = ocrWordGeometry(word.bbox, page, canvas);
+                        if (!box.region || box.clipped) issue('geometry-warning', 'An OCR word touches or exceeds the visible page bounds.', page.pageId);
+                        if (box.region) append(page, { text: word.text, region: box.region, method: 'local-ocr' });
+                    }
+        if (!page.spans.length) issue('no-readable-text', 'No positioned text was readable on this page.', page.pageId);
+    };
+    const result = (): ExtractionResult => {
+        if (pages.every((page) => page.status === 'failed')) return { status: 'failed', issues };
+        const input: BankImportInput = { source: { sourceId: job.sourceId, sha256: job.sha256 }, extraction: { runId: job.jobId, version: PDF_EXTRACTION_VERSION }, pages, issues };
+        const checked = bankImportInputSchema.safeParse(input);
+        if (!checked.success) return failed('extraction-limit', 'The extracted document could not satisfy the bounded positioned-text contract.');
+        return { status: issues.length ? 'partial' : 'complete', input: checked.data };
+    };
     try {
         progress('loading', null);
-        const document = await loadingTask.promise;
+        if (job.format !== 'pdf') {
+            const header = imageInputDimensions(job.bytes, job.format);
+            pageNumber = 1;
+            let bitmap: ImageBitmap | undefined;
+            let canvas: HTMLCanvasElement | undefined;
+            try {
+                progress('rendering', 1);
+                bitmap = await createImageBitmap(new Blob([new Uint8Array(job.bytes)], { type: IMAGE_MIME_TYPES[job.format] }), { imageOrientation: 'from-image' });
+                assertImageDimensions(bitmap.width, bitmap.height);
+                if (!((bitmap.width === header.width && bitmap.height === header.height) || (bitmap.width === header.height && bitmap.height === header.width))) {
+                    throw new ExtractionFault('image-dimensions', 'Decoded image dimensions do not match the authorized image header.');
+                }
+                const page: ImportPage = { pageId: 'page-1', pageNumber: 1, width: bitmap.width, height: bitmap.height, status: 'complete', spans: [] };
+                canvas = globalThis.document.createElement('canvas');
+                canvas.width = bitmap.width;
+                canvas.height = bitmap.height;
+                const context = canvas.getContext('2d');
+                if (!context) throw new ExtractionFault('image-failed', 'The local image rasterizer is unavailable.');
+                context.fillStyle = '#ffffff';
+                context.fillRect(0, 0, canvas.width, canvas.height);
+                context.drawImage(bitmap, 0, 0);
+                await recognize(canvas, page, 1);
+                pages.push(page);
+                progress('page-complete', 1);
+                return result();
+            } finally {
+                bitmap?.close();
+                if (canvas) { canvas.width = 1; canvas.height = 1; }
+            }
+        }
+        const document = await loadingTask!.promise;
         if (document.numPages < 1 || document.numPages > PDF_EXTRACTION_LIMITS.pages) throw new ExtractionFault('page-limit', 'The PDF exceeds the local page limit.', true);
         for (let number = 1; number <= document.numPages; number++) {
             pageNumber = number;
@@ -122,7 +197,6 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
                 if (page.spans.length) {
                     if (hasImages) issue('mixed-content', 'This page contains embedded text and image content. Image regions were not separately OCR-interpreted.', pageId);
                 } else {
-                    if (ocrUnavailable) throw new ExtractionFault('ocr-unavailable', 'The bundled English OCR resources are unavailable for this job.');
                     const raster = pdfPage.getViewport({ scale: 2 });
                     const width = Math.ceil(raster.width);
                     const height = Math.ceil(raster.height);
@@ -138,40 +212,7 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
                     const context = canvas.getContext('2d');
                     if (!context) throw new ExtractionFault('page-failed', 'The local page rasterizer is unavailable.');
                     await pdfPage.render({ canvas, canvasContext: context, viewport: raster }).promise;
-                    if (!worker) {
-                        try {
-                            worker = await new Promise<Worker>((resolve, reject) => {
-                                // Tesseract's language-init error callback can run without rejecting createWorker's promise.
-                                void createWorker('eng', 1, {
-                                    workerPath: new URL('./ocr/worker.min.js', location.href).href,
-                                    corePath: new URL('./ocr/core/', location.href).href,
-                                    langPath: new URL('./ocr/', location.href).href,
-                                    workerBlobURL: false,
-                                    cacheMethod: 'none',
-                                    errorHandler: () => {
-                                        console.error('The local OCR worker failed.');
-                                        reject(new ExtractionFault('ocr-unavailable', 'The bundled English OCR resources could not be initialized.'));
-                                    }
-                                }).then(resolve, reject);
-                            });
-                        } catch {
-                            ocrUnavailable = true;
-                            throw new ExtractionFault('ocr-unavailable', 'The bundled English OCR resources could not be initialized.');
-                        }
-                    }
-                    progress('ocr', document.numPages);
-                    const recognized = await worker.recognize(canvas, {}, { blocks: true });
-                    if (!recognized.data.blocks && recognized.data.text.trim()) throw new ExtractionFault('ocr-result', 'OCR returned text without positioned word evidence.');
-                    for (const block of recognized.data.blocks ?? [])
-                        for (const paragraph of block.paragraphs)
-                            for (const line of paragraph.lines)
-                                for (const word of line.words) {
-                                    if (!word.text.trim()) continue;
-                                    const box = ocrWordGeometry(word.bbox, viewport, canvas);
-                                    if (!box.region || box.clipped) issue('geometry-warning', 'An OCR word touches or exceeds the visible page bounds.', pageId);
-                                    if (box.region) append(page, { text: word.text, region: box.region, method: 'local-ocr' });
-                                }
-                    if (!page.spans.length) issue('no-readable-text', 'No positioned text was readable on this page.', pageId);
+                    await recognize(canvas, page, document.numPages);
                 }
             } catch (error) {
                 if (error instanceof ExtractionFault && error.fatal) throw error;
@@ -193,13 +234,11 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
             pages.push(page);
             progress('page-complete', document.numPages);
         }
-        if (pages.every((page) => page.status === 'failed')) return { status: 'failed', issues };
-        const input: BankImportInput = { source: { sourceId: job.sourceId, sha256: job.sha256 }, extraction: { runId: job.jobId, version: PDF_EXTRACTION_VERSION }, pages, issues };
-        const checked = bankImportInputSchema.safeParse(input);
-        if (!checked.success) return failed('extraction-limit', 'The extracted document could not satisfy the bounded positioned-text contract.');
-        return { status: issues.length ? 'partial' : 'complete', input: checked.data };
+        return result();
     } catch (error) {
         if (error instanceof ExtractionFault) return failed(error.code, error.message, pageNumber === null ? null : `page-${pageNumber}`);
+        if (error instanceof ImageInputError) return failed(error.code, error.message, pageNumber === null ? null : `page-${pageNumber}`);
+        if (job.format !== 'pdf') return failed('image-invalid', 'The local image decoder could not read this image.', pageNumber === null ? null : `page-${pageNumber}`);
         if (error instanceof Error && error.name === 'PasswordException')
             return failed('pdf-password', 'This PDF requires a password; encrypted-document interaction is not supported.');
         return failed(
@@ -211,7 +250,7 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
         try {
             if (worker) await worker.terminate();
         } finally {
-            await loadingTask.destroy();
+            await loadingTask?.destroy();
         }
     }
 }

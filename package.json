@@ -51,6 +51,7 @@
     "electron-builder": "26.18.0",
     "eslint": "10.14.0",
     "globals": "17.14.0",
+    "image-size": "2.1.0",
     "pdf-lib": "1.17.1",
     "pdfjs-dist": "6.5.438",
     "playwright": "1.65.0",

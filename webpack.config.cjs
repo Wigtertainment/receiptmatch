@@ -63,6 +63,7 @@ module.exports = [
 				{ context: 'node_modules/tesseract.js-core', from: 'tesseract-core*.{js,wasm}', to: 'ocr/core', info: { minimized: true } },
 				{ from: 'node_modules/@tesseract.js-data/eng/4.0.0/eng.traineddata.gz', to: 'ocr', filename: 'eng.traineddata.gz' },
 				{ from: 'node_modules/pdfjs-dist/LICENSE', to: 'notices', filename: 'pdfjs.txt' },
+				{ from: 'node_modules/image-size/LICENSE', to: 'notices', filename: 'image-size.txt' },
 				{ from: 'node_modules/tesseract.js/LICENSE.md', to: 'notices', filename: 'tesseract-js.txt' },
 				{ from: 'node_modules/tesseract.js-core/LICENSE', to: 'notices', filename: 'tesseract-core.txt' },
 				{ from: 'electron/extraction/english-data-notice.txt', to: 'notices', filename: 'english-data.txt' }

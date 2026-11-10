@@ -36,9 +36,22 @@ test('crop clipping and missing font metrics remain explicit; invalid and unsupp
     assert.equal(embeddedTextGeometry({ ...item, transform: [12, 0, 0, 12, -100, 60] }, font, viewport).region, null);
     assert.equal(embeddedTextGeometry(item, {}, viewport).approximate, true);
     assert.throws(() => embeddedTextGeometry(item, { ...font, vertical: true }, viewport));
-    assert.throws(() => embeddedTextGeometry(item, { ...font, ascent: Infinity }, viewport));
+    assert.equal(embeddedTextGeometry(item, { ...font, ascent: Infinity }, viewport).approximate, true);
     assert.throws(() => embeddedTextGeometry({ ...item, width: 0 }, font, viewport));
     assert.throws(() => embeddedTextGeometry({ ...item, transform: [NaN, 0, 0, 12, 30, 60] }, font, viewport));
+});
+
+test('unusable font metrics retain text with explicitly approximate geometry while invalid transforms still fail', () => {
+    const viewport = { width: 200, height: 100, transform: [1, 0, 0, -1, -10, 110] };
+    for (const metrics of [{ ascent: NaN }, { descent: Infinity }, { ascent: -1, descent: 1 }, { ascent: 0.2, descent: 0.3 }]) {
+        const result = embeddedTextGeometry(item, metrics, viewport);
+        assert.equal(result.approximate, true);
+        assert.ok(result.region && result.region.width > 0 && result.region.height > 0);
+        assert.ok(result.region.x >= 0 && result.region.y >= 0);
+    }
+    assert.throws(() => embeddedTextGeometry({ ...item, width: -1 }, { ascent: Infinity }, viewport));
+    assert.throws(() => embeddedTextGeometry({ ...item, transform: [NaN, 0, 0, 12, 30, 60] }, { ascent: Infinity }, viewport));
+    assert.throws(() => embeddedTextGeometry(item, { vertical: true, ascent: Infinity }, viewport));
 });
 
 test('OCR word boxes use independent actual raster ratios including ceil dimensions and visible clipping', () => {
