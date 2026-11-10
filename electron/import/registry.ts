@@ -9,8 +9,9 @@ import {
     type BankImportResult
 } from '../../src/shared/bank-import.js';
 import { revolutAdapter } from './revolut.js';
+import { airwallexAdapter } from './airwallex.js';
 
-export const BUILTIN_BANK_ADAPTERS: readonly BankAdapter[] = [revolutAdapter];
+export const BUILTIN_BANK_ADAPTERS: readonly BankAdapter[] = [revolutAdapter, airwallexAdapter];
 
 export function parseBankStatement(payload: unknown, adapters: readonly BankAdapter[] = BUILTIN_BANK_ADAPTERS): BankImportResult {
     const validated = bankImportInputSchema.safeParse(payload);
