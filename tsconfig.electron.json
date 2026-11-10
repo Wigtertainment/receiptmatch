@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.json",
-  "compilerOptions": { "module": "NodeNext", "moduleResolution": "NodeNext", "rootDir": ".", "outDir": ".build/node", "types": ["node"], "lib": ["ES2022", "ES2023.Intl", "DOM"] },
-  "include": ["electron/**/*.ts", "src/shared/**/*.ts", "tests/unit/**/*.ts"]
+  "compilerOptions": { "module": "NodeNext", "moduleResolution": "NodeNext", "rootDir": ".", "noEmit": true, "types": ["node"], "lib": ["ES2022", "ES2023.Intl", "DOM"] },
+  "include": ["electron/**/*.ts", "src/shared/**/*.ts"]
 }

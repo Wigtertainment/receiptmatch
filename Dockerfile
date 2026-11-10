@@ -14,5 +14,5 @@ RUN npm ci
 
 FROM dependencies AS application
 COPY --chown=validation:validation . .
-RUN npm run check && npm run build && npm run test:unit && npm run package
+RUN npm run check && npm run test:unit && npm run pack:linux
 CMD ["xvfb-run", "-a", "sh", "-c", "npm run test:packaged && npm run test:extraction && npm run test:import && npm run test:ui-import"]

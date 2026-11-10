@@ -1,0 +1,26 @@
+appId: com.wigtertainment.receiptmatch
+productName: ReceiptMatch
+
+directories:
+  output: release
+
+files:
+  - .build/*.cjs
+  - .build/ui/browser/**/*
+  - .build/extraction/**/*
+  - package.json
+  - LICENSE
+
+asar: true
+asarUnpack:
+  - '**/*.node'
+
+# better-sqlite3 13 ships Node-API prebuilds shared by Node and Electron.
+npmRebuild: false
+
+win:
+  executableName: ReceiptMatch
+  signExecutable: false
+
+linux:
+  executableName: receiptmatch

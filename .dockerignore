@@ -6,6 +6,7 @@
 node_modules
 dist
 artifacts
+release
 tmp
 AGENTS.md
 coverage

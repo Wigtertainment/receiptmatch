@@ -10,12 +10,31 @@ Use Node.js 24.15 or newer within the supported Node 24 release line and npm.
 
 ```sh
 npm ci
-npm run build
-npm run package
 npm start
 ```
 
-Packages are written to `artifacts/package/ReceiptMatch-<platform>-<arch>/`. Workspaces use the `.receiptmatch` extension. New workspaces and imported statements remain in memory until saved; existing unrelated files are never overwritten.
+`npm start` prepares Electron and the local PDF/OCR resources, then runs the Angular development server with HMR and Electron together. Closing Electron also stops the development server. UI templates and styles update while the app is running; restart the command after changing Electron code. The development server listens only on `127.0.0.1:4310`; an occupied port stops startup instead of loading another application.
+
+The Angular UI uses `angular.json`. Electron, preloads and the isolated extraction renderer use standard targets in `webpack.config.cjs`, TypeScript compilation through `ts-loader` and Webpack's built-in `output.copy` for offline assets. Add code entry points under `entry` and resource mappings under `output.copy`. Runtime packaging is configured in `electron-builder.yml`; startup and readiness use the standard `concurrently`, `cross-env` and `wait-on` commands.
+
+Development enables CSS source maps. JavaScript source maps are disabled because Angular 22.2.6 changes their debug identifier during the first rebuild, causing a full reload instead of CSS HMR.
+
+To build and start the compiled application without a development server or distribution package:
+
+```sh
+npm run start:dist
+```
+
+`npm run build` compiles the application without starting it. Packaging builds the application and uses the central `electron-builder.yml` configuration:
+
+```sh
+npm run pack:win
+npm run pack:linux
+```
+
+Run each packaging command on its target operating system. Windows x64 output is `release/win-unpacked/ReceiptMatch.exe`; Linux x64 output is `release/linux-unpacked/receiptmatch`. These commands produce application directories; installers, signing and publishing are separate work. Only compiled application files, local PDF/OCR resources, licenses and production dependencies are packaged. SQLite uses the library's bundled Node-API prebuilds.
+
+Workspaces use the `.receiptmatch` extension. New workspaces and imported statements remain in memory until saved; existing unrelated files are never overwritten.
 
 Choose **Import statement** in a workspace to select a PDF. Processing uses embedded text or bundled local English OCR and can be cancelled. Identical file contents are skipped. Both banks can share a workspace; select a statement to inspect its transactions and evidence. Review warnings and unresolved rows before using the data; dates and exact monetary values follow the system display locale. Original PDFs stay in place. Additional bank layouts and correction actions are subsequent work.
 
@@ -24,6 +43,7 @@ Choose **Import statement** in a workspace to select a PDF. Processing uses embe
 ```sh
 npm run check
 npm run test:unit
+npm run test:development
 npm run test:packaged
 npm run test:extraction
 npm run test:import
@@ -32,7 +52,9 @@ npm run test:ui-import
 
 `npm run check` runs ESLint with zero tolerated warnings and checks HTML formatting. Use `npm run lint:fix` and `npm run format` to apply available fixes. Prettier uses tabs and a 180-character line width; generated outputs and dependencies are excluded.
 
-Packaged UI checks require the build and package above. They exercise the actual desktop executable; generated results and screenshots remain under ignored `artifacts/`.
+`npm run test:development` builds and exercises direct Electron execution, SQLite/local OCR and live CSS replacement without a distribution package. It temporarily adds an isolated marker to `src/styles.css` and restores the original bytes afterward; avoid editing that file during this check.
+
+`npm run test:unit` prepares its own compiled test modules. Before running packaged checks separately, run `npm run build:tests` and the packaging command for your platform. They exercise the actual desktop executable; generated results and screenshots go under ignored `artifacts/`. Remove temporary `release/`, `.build/`, `.angular/` and test outputs after successful use.
 
 Extraction checks exercise the isolated PDF text and local English OCR engine using synthetic PDFs and bundled resources.
 

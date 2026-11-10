@@ -17,7 +17,19 @@
             "baseHref": "./",
             "optimization": { "scripts": true, "styles": { "minify": true, "inlineCritical": false }, "fonts": false },
             "sourceMap": false
-          }
+          },
+          "configurations": {
+            "production": {},
+            "development": { "optimization": false, "sourceMap": { "scripts": false, "styles": true } }
+          },
+          "defaultConfiguration": "production"
+        },
+        "serve": {
+          "builder": "@angular/build:dev-server",
+          "configurations": {
+            "development": { "buildTarget": "receiptmatch:build:development" }
+          },
+          "defaultConfiguration": "development"
         }
       }
     }

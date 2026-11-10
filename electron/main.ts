@@ -5,11 +5,11 @@ import { createRequire } from 'node:module';
 import { commandSchema, type WorkspaceState } from '../src/shared/protocol.js';
 import { WorkspaceSession } from './workspace-session.js';
 import { StatementImportService } from './import/service.js';
+import { isRendererRequestAllowed, resolveRendererUrl } from './runtime-policy.js';
 
 // Load the same module instance as other main-process consumers of the extraction API.
 const { extractPdfBytes } = createRequire(__filename)('./extraction-host.cjs') as Pick<typeof import('./extraction/host.js'), 'extractPdfBytes'>;
 
-const appUrl = 'receiptmatch://app/index.html';
 app.setName('ReceiptMatch');
 protocol.registerSchemesAsPrivileged([
   { scheme: 'receiptmatch', privileges: { standard: true, secure: true, supportFetchAPI: true } },
@@ -18,6 +18,7 @@ protocol.registerSchemesAsPrivileged([
 
 async function launch() {
   await app.whenReady();
+  const appUrl = resolveRendererUrl(app.isPackaged, process.env.ELECTRON_START_URL || undefined);
   const assetRoot = path.join(__dirname, 'ui', 'browser');
   const assets = new Map<string, string>();
   async function collect(directory: string) {
@@ -27,7 +28,7 @@ async function launch() {
       else if (entry.isFile()) assets.set('/' + path.relative(assetRoot, file).split(path.sep).join('/'), file);
     }
   }
-  await collect(assetRoot);
+  if (appUrl === 'receiptmatch://app/index.html') await collect(assetRoot);
   protocol.handle('receiptmatch', async request => {
     const url = new URL(request.url);
     const file = url.hostname === 'app' && !url.search ? assets.get(url.pathname) : undefined;
@@ -35,7 +36,7 @@ async function launch() {
     const types: Record<string, string> = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
     return new Response(await readFile(file), { headers: { 'Content-Type': types[path.extname(file)] ?? 'application/octet-stream', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'none'", 'X-Content-Type-Options': 'nosniff' } });
   });
-  session.defaultSession.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !details.url.startsWith('receiptmatch://app/') }));
+  session.defaultSession.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !isRendererRequestAllowed(appUrl, details.url) }));
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
   const window = new BrowserWindow({ title: 'ReceiptMatch', width: 1120, height: 780, minWidth: 680, minHeight: 540, backgroundColor: '#f7f6f2', show: !process.argv.includes('--hidden'), webPreferences: { preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, spellcheck: false } });
