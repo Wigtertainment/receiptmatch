@@ -43,7 +43,7 @@ declare global { interface Window { receiptmatch: WorkspaceBridge; } }
   `
 })
 class ReceiptMatchApp {
-  readonly state = signal<WorkspaceState>({ workspace: null, busy: true, error: null });
+  readonly state = signal<WorkspaceState>({ workspace: null, busy: true, error: null, statementImport: null, importOutcome: null });
   constructor() {
     inject(DestroyRef).onDestroy(window.receiptmatch.subscribe(state => this.state.set(state)));
     void this.run({ type: 'get-state' });

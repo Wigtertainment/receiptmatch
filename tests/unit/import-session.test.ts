@@ -1,0 +1,449 @@
+import test, { mock } from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash, randomUUID } from 'node:crypto';
+import fsPromises from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, writeFile } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
+import path from 'node:path';
+import { z } from 'zod';
+import Database from 'better-sqlite3';
+import { importIssue } from '../../src/shared/bank-import.js';
+import { PDF_EXTRACTION_LIMITS, PDF_EXTRACTION_VERSION, type ExtractionProgress, type ExtractionResult } from '../../src/shared/pdf-extraction.js';
+import { storedBankImportSchema, type BankImportRunResult } from '../../src/shared/workspace-import.js';
+import { StatementImportService, type BankImportService } from '../../electron/import/service.js';
+import { WorkspaceSession, type WorkspaceDialogs } from '../../electron/workspace-session.js';
+import { createWorkspace, fingerprint, loadWorkspace, newMetadata } from '../../electron/store.js';
+import { row, statement } from './bank-fixtures.js';
+
+async function fixtures() {
+    await mkdir('artifacts', { recursive: true });
+    const directory = await mkdtemp(path.resolve('artifacts/import-unit-'));
+    const source = path.join(directory, 'synthetic.pdf');
+    await writeFile(source, 'Independently invented PDF transport fixture; extraction is injected for service unit tests.');
+    return { directory, source };
+}
+function extracted(bytes: Uint8Array, sourceId: string, partial = false): ExtractionResult {
+    const input = statement();
+    input.source = { sourceId, sha256: createHash('sha256').update(bytes).digest('hex') };
+    input.extraction = { runId: randomUUID(), version: PDF_EXTRACTION_VERSION };
+    if (partial) input.pages[0].spans.push(...row(350, '31 Feb 2032', 'Synthetic unresolved row', '2.00', null));
+    return { status: 'complete', input };
+}
+function dialogs() {
+    const plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ('save' | 'discard' | 'cancel')[] } = { saves: [], opens: [], choices: [] };
+    const handlers: WorkspaceDialogs = {
+        save: async () => plan.saves.shift() ?? null,
+        open: async () => plan.opens.shift() ?? null,
+        unsaved: async () => plan.choices.shift() ?? 'cancel'
+    };
+    return { plan, handlers };
+}
+async function waitFor(predicate: () => boolean) {
+    for (let count = 0; count < 100; count++) {
+        if (predicate()) return;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.fail('The controlled asynchronous import did not reach its expected boundary.');
+}
+
+test('service retains exact valid rows and unresolved drafts with stable host-owned maps; identical bytes skip before extraction', async () => {
+    const { directory, source } = await fixtures();
+    const original = await fingerprint(source);
+    let calls = 0;
+    const service = new StatementImportService({
+        choose: async () => source,
+        extract: async (bytes, id) => {
+            calls++;
+            return extracted(bytes, id, true);
+        }
+    });
+    const imported = await service.run({ existing: [] });
+    assert.equal(imported.status, 'imported');
+    if (imported.status !== 'imported') return;
+    const record = imported.record;
+    assert.equal(storedBankImportSchema.safeParse(record).success, true);
+    assert.equal(record.result.status, 'partial');
+    assert.equal(record.transactions.length, 2);
+    assert.equal(record.drafts.length, 1);
+    assert.equal(record.accounts.length, 1);
+    assert.equal(record.result.transactions[0].accountAmount.value.coefficient, '-123456');
+    assert.equal(record.result.sourceProvenance?.sha256, original);
+    assert.equal(z.uuid().safeParse(record.result.sourceProvenance?.sourceId).success, true);
+    assert.equal(record.result.unresolvedDrafts[0].bookingDate, null);
+    assert.ok(record.result.unresolvedDrafts[0].issues.length);
+    const again = await service.run({ existing: [record] });
+    assert.deepEqual(again, { status: 'skipped', importId: record.id });
+    assert.equal(calls, 1);
+    const alias = path.join(directory, 'same-content.pdf');
+    await writeFile(alias, await readFile(source));
+    const otherPath = new StatementImportService({
+        choose: async () => alias,
+        extract: async () => {
+            assert.fail('Duplicate bytes reached extraction.');
+        }
+    });
+    assert.deepEqual(await otherPath.run({ existing: [record] }), { status: 'skipped', importId: record.id });
+    assert.equal(await fingerprint(source), original);
+});
+
+test('service rejects invalid extraction provenance, unsupported layouts and read limits without inventing financial records', async () => {
+    const { directory, source } = await fixtures();
+    for (const fault of ['source', 'hash', 'run', 'version', 'bank']) {
+        const service = new StatementImportService({
+            choose: async () => source,
+            extract: async (bytes, id) => {
+                const result = extracted(bytes, id);
+                assert.equal(result.status, 'complete');
+                if (result.status !== 'complete') return result;
+                if (fault === 'source') result.input.source.sourceId = randomUUID();
+                if (fault === 'hash') result.input.source.sha256 = 'b'.repeat(64);
+                if (fault === 'run') result.input.extraction.runId = 'not-a-host-run';
+                if (fault === 'version') result.input.extraction.version = 'unrecognized-engine';
+                if (fault === 'bank') result.input.pages[0].spans.find((span) => span.text.startsWith('Revolut'))!.text = 'Unrecognized bank';
+                return result;
+            }
+        });
+        const outcome = await service.run({ existing: [] });
+        assert.equal(outcome.status, fault === 'bank' ? 'unsupported' : 'failed', fault);
+    }
+    const oversized = path.join(directory, 'oversized.pdf');
+    const descriptor = await open(oversized, 'w');
+    try {
+        await descriptor.truncate(PDF_EXTRACTION_LIMITS.bytes + 1);
+    } finally {
+        await descriptor.close();
+    }
+    const empty = path.join(directory, 'empty.pdf');
+    await writeFile(empty, '');
+    const folder = path.join(directory, 'folder.pdf');
+    await mkdir(folder);
+    for (const selected of [oversized, empty, folder, 'relative.pdf', path.join(directory, 'absent.pdf')]) {
+        const service = new StatementImportService({
+            choose: async () => selected,
+            extract: async () => {
+                assert.fail('Invalid source reached extraction.');
+            }
+        });
+        assert.equal((await service.run({ existing: [] })).status, 'failed');
+    }
+});
+
+test('service detects file growth during bounded reads and never passes an unstable snapshot to extraction', async () => {
+    const { source } = await fixtures();
+    const originalOpen = fsPromises.open;
+    let changed = false;
+    const probe = mock.method(fsPromises, 'open', (async (...args: Parameters<typeof fsPromises.open>) => {
+        const file = await originalOpen(...args);
+        if (args[0] === source) {
+            const read = file.read.bind(file);
+            mock.method(file, 'read', (async (...readArgs: Parameters<typeof file.read>) => {
+                const result = await Reflect.apply(read, file, readArgs);
+                if (!changed) {
+                    changed = true;
+                    await fsPromises.appendFile(source, 'External synthetic change');
+                }
+                return result;
+            }) as typeof file.read);
+        }
+        return file;
+    }) as typeof fsPromises.open);
+    syncBuiltinESMExports();
+    try {
+        const service = new StatementImportService({
+            choose: async () => source,
+            extract: async () => {
+                assert.fail('An unstable snapshot reached extraction.');
+            }
+        });
+        const result = await service.run({ existing: [] });
+        assert.equal(changed, true);
+        assert.equal(result.status, 'failed');
+        if (result.status === 'failed') assert.equal(result.issues[0].code, 'source-changed');
+    } finally {
+        probe.mock.restore();
+        syncBuiltinESMExports();
+    }
+});
+
+test('import/save/reopen preserves full records and stable IDs; loaded-byte duplicates stay clean and distinct sources are not amount-merged', async () => {
+    const { directory, source } = await fixtures();
+    const { plan, handlers } = dialogs();
+    let calls = 0;
+    const service = new StatementImportService({
+        choose: async () => source,
+        extract: async (bytes, id) => {
+            calls++;
+            return extracted(bytes, id, true);
+        }
+    });
+    const session = new WorkspaceSession(handlers, undefined, service);
+    await session.dispatch({ type: 'new' });
+    await session.dispatch({ type: 'rename', name: 'Synthetic import workspace' });
+    const file = path.join(directory, 'local.receiptmatch');
+    plan.saves.push(file);
+    await session.dispatch({ type: 'save' });
+    const savedHash = await fingerprint(file);
+    await session.dispatch({ type: 'import-statement' });
+    assert.equal(session.state().workspace?.dirty, true);
+    assert.equal(session.state().importOutcome?.status, 'imported');
+    assert.equal(session.state().workspace?.imports[0].drafts, 1);
+    assert.equal(await fingerprint(file), savedHash, 'Import must not implicitly save workspace data.');
+    const report = session.bankImports();
+    report[0].result.transactions[0].accountAmount.value.coefficient = '999';
+    assert.equal(session.bankImports()[0].result.transactions[0].accountAmount.value.coefficient, '-123456');
+    const stateCopy = session.state();
+    stateCopy.workspace!.imports[0].transactions = 999;
+    assert.equal(session.state().workspace!.imports[0].transactions, 2);
+    const expected = session.bankImports();
+    await session.dispatch({ type: 'save' });
+    assert.equal(session.state().workspace?.dirty, false);
+    assert.deepEqual((await loadWorkspace(file)).imports, expected);
+    const reopened = new WorkspaceSession(handlers, undefined, service);
+    plan.opens.push(file);
+    await reopened.dispatch({ type: 'open' });
+    assert.deepEqual(reopened.bankImports(), expected);
+    await reopened.dispatch({ type: 'import-statement' });
+    assert.equal(reopened.state().importOutcome?.status, 'skipped');
+    assert.equal(reopened.state().workspace?.dirty, false);
+    assert.equal(calls, 1);
+    await fsPromises.appendFile(source, 'A distinct synthetic source revision');
+    await reopened.dispatch({ type: 'import-statement' });
+    assert.equal(reopened.bankImports().length, 2);
+    assert.equal(reopened.bankImports().flatMap((value) => value.transactions).length, 4);
+    assert.equal(reopened.state().workspace?.dirty, true);
+    assert.equal(calls, 2);
+});
+
+test('failed/cancelled saves and failed Open retain unsaved imports; explicit discard clears only current in-memory work', async () => {
+    const { directory, source } = await fixtures();
+    const { plan, handlers } = dialogs();
+    const service = new StatementImportService({ choose: async () => source, extract: async (bytes, id) => extracted(bytes, id) });
+    const session = new WorkspaceSession(handlers, undefined, service);
+    await session.dispatch({ type: 'new' });
+    await session.dispatch({ type: 'import-statement' });
+    const expected = session.bankImports();
+    const id = session.state().workspace!.id;
+    plan.choices.push('save');
+    plan.saves.push(null);
+    await session.dispatch({ type: 'new' });
+    assert.equal(session.state().workspace!.id, id);
+    assert.deepEqual(session.bankImports(), expected);
+    const collision = path.join(directory, 'unrelated.receiptmatch');
+    await writeFile(collision, 'Unrelated original');
+    plan.saves.push(collision);
+    await session.dispatch({ type: 'save' });
+    assert.ok(session.state().error);
+    assert.equal(session.state().workspace?.dirty, true);
+    assert.deepEqual(session.bankImports(), expected);
+    assert.equal(await readFile(collision, 'utf8'), 'Unrelated original');
+    plan.choices.push('discard');
+    plan.opens.push(path.join(directory, 'missing.receiptmatch'));
+    await session.dispatch({ type: 'open' });
+    assert.deepEqual(session.bankImports(), expected);
+    const file = path.join(directory, 'saved.receiptmatch');
+    plan.saves.push(file);
+    await session.dispatch({ type: 'save' });
+    assert.equal(session.state().workspace?.dirty, false);
+    await session.dispatch({ type: 'rename', name: 'Will discard' });
+    plan.choices.push('cancel');
+    assert.equal(await session.requestClose(), false);
+    assert.deepEqual(session.bankImports(), expected);
+    plan.choices.push('discard');
+    await session.dispatch({ type: 'new' });
+    assert.deepEqual(session.bankImports(), []);
+    assert.deepEqual((await loadWorkspace(file)).imports, expected);
+});
+
+test('cancellation wins over a late successful import and all competing workspace actions remain blocked', async () => {
+    const { directory, source } = await fixtures();
+    const { plan, handlers } = dialogs();
+    const preparer = new StatementImportService({ choose: async () => source, extract: async (bytes, id) => extracted(bytes, id) });
+    const prepared = await preparer.run({ existing: [] });
+    assert.equal(prepared.status, 'imported');
+    let release: ((result: BankImportRunResult) => void) | undefined;
+    let progress: ((value: ExtractionProgress) => void) | undefined;
+    const service: BankImportService = {
+        run: (options) => {
+            progress = options.onProgress;
+            return new Promise((resolve) => {
+                release = resolve;
+            });
+        }
+    };
+    let changes = 0;
+    const session = new WorkspaceSession(
+        handlers,
+        () => {
+            changes++;
+        },
+        service
+    );
+    await session.dispatch({ type: 'new' });
+    plan.saves.push(path.join(directory, 'empty.receiptmatch'));
+    await session.dispatch({ type: 'save' });
+    const id = session.state().workspace!.id;
+    const pending = session.dispatch({ type: 'import-statement' });
+    await waitFor(() => !!release);
+    const tick: ExtractionProgress = { phase: 'text', pageNumber: 1, pageCount: 1, completedPages: 0 };
+    progress!(tick);
+    assert.equal(session.state().statementImport?.progress?.phase, 'text');
+    assert.equal(session.state().workspace?.dirty, false);
+    for (const command of [{ type: 'new' }, { type: 'open' }, { type: 'save' }, { type: 'rename', name: 'Blocked' }, { type: 'import-statement' }] as const) {
+        assert.ok((await session.dispatch(command)).error);
+        assert.equal(session.state().workspace!.id, id);
+    }
+    assert.equal(await session.requestClose(), false);
+    await session.dispatch({ type: 'cancel-import' });
+    assert.equal(session.state().statementImport?.cancelling, true);
+    const changesAtCancel = changes;
+    progress!({ ...tick, phase: 'ocr' });
+    assert.equal(changes, changesAtCancel);
+    release!(prepared);
+    await pending;
+    assert.equal(session.state().importOutcome?.status, 'cancelled');
+    assert.equal(session.state().busy, false);
+    assert.equal(session.state().workspace?.dirty, false);
+    assert.deepEqual(session.bankImports(), []);
+    const after = changes;
+    progress!(tick);
+    assert.equal(changes, after);
+    assert.equal(session.state().statementImport, null);
+});
+
+test('service cancellation and failure outcomes do not create records or dirty a saved session; late engine progress is ignored', async () => {
+    const { directory, source } = await fixtures();
+    let chosen = 0;
+    let onProgress: ((progress: ExtractionProgress) => void) | undefined;
+    let progressCalls = 0;
+    const service = new StatementImportService({
+        choose: async () => {
+            chosen++;
+            return source;
+        },
+        extract: async (bytes, id, options) => {
+            onProgress = options.onProgress;
+            return extracted(bytes, id);
+        }
+    });
+    const aborted = new AbortController();
+    aborted.abort();
+    assert.equal((await service.run({ existing: [], signal: aborted.signal })).status, 'cancelled');
+    assert.equal(chosen, 0);
+    await service.run({
+        existing: [],
+        onProgress: () => {
+            progressCalls++;
+        }
+    });
+    onProgress!({ phase: 'ocr', pageNumber: 1, pageCount: 1, completedPages: 0 });
+    assert.equal(progressCalls, 0);
+    for (const result of [
+        { status: 'cancelled' },
+        { status: 'failed', issues: [importIssue('synthetic-failure', 'Synthetic failure.')] },
+        { status: 'unsupported', issues: [importIssue('synthetic-unsupported', 'Synthetic unsupported statement.')] }
+    ] as const) {
+        const { plan, handlers } = dialogs();
+        const fixed: BankImportService = { run: async () => structuredClone(result) as BankImportRunResult };
+        const session = new WorkspaceSession(handlers, undefined, fixed);
+        await session.dispatch({ type: 'new' });
+        plan.saves.push(path.join(directory, `${result.status}.receiptmatch`));
+        await session.dispatch({ type: 'save' });
+        await session.dispatch({ type: 'import-statement' });
+        assert.equal(session.state().importOutcome?.status, result.status);
+        assert.equal(session.state().workspace?.dirty, false);
+        assert.deepEqual(session.bankImports(), []);
+    }
+    const noWorkspace = new WorkspaceSession(dialogs().handlers, undefined, service);
+    assert.ok((await noWorkspace.dispatch({ type: 'import-statement' })).error);
+});
+
+test('service checks cancellation again after native selection and extraction, ignoring late engine progress/results', async () => {
+    const { source } = await fixtures();
+    let choose: ((value: string) => void) | undefined;
+    let extractedCalls = 0;
+    const chooser = new StatementImportService({
+        choose: () =>
+            new Promise((resolve) => {
+                choose = resolve;
+            }),
+        extract: async (bytes, id) => {
+            extractedCalls++;
+            return extracted(bytes, id);
+        }
+    });
+    const first = new AbortController();
+    const choosing = chooser.run({ existing: [], signal: first.signal });
+    await waitFor(() => !!choose);
+    first.abort();
+    choose!(source);
+    assert.equal((await choosing).status, 'cancelled');
+    assert.equal(extractedCalls, 0);
+    let finish: (() => void) | undefined;
+    let lateProgress: ((value: ExtractionProgress) => void) | undefined;
+    let forwarded = 0;
+    const engine = new StatementImportService({
+        choose: async () => source,
+        extract: async (bytes, id, options) => {
+            lateProgress = options.onProgress;
+            await new Promise<void>((resolve) => {
+                finish = resolve;
+            });
+            return extracted(bytes, id);
+        }
+    });
+    const second = new AbortController();
+    const processing = engine.run({
+        existing: [],
+        signal: second.signal,
+        onProgress: () => {
+            forwarded++;
+        }
+    });
+    await waitFor(() => !!finish);
+    second.abort();
+    lateProgress!({ phase: 'ocr', pageNumber: 1, pageCount: 1, completedPages: 0 });
+    finish!();
+    assert.equal((await processing).status, 'cancelled');
+    assert.equal(forwarded, 0);
+});
+
+test('invalid saved import mappings report workspace data errors and preserve current unsaved work rather than suggesting a name change', async () => {
+    const { directory, source } = await fixtures();
+    const service = new StatementImportService({ choose: async () => source, extract: async (bytes, id) => extracted(bytes, id) });
+    const prepared = await service.run({ existing: [] });
+    assert.equal(prepared.status, 'imported');
+    if (prepared.status !== 'imported') return;
+    const damagedFile = path.join(directory, 'invalid-manifest.receiptmatch');
+    await createWorkspace(damagedFile, newMetadata(), [prepared.record]);
+    const invalid = structuredClone(prepared.record);
+    invalid.accounts[0].statementId = 'not-a-uuid';
+    const db = new Database(damagedFile);
+    try {
+        db.prepare('UPDATE bank_imports SET record_json=? WHERE id=?').run(JSON.stringify(invalid), prepared.record.id);
+    } finally {
+        db.close();
+    }
+    const damagedHash = await fingerprint(damagedFile);
+    const { plan, handlers } = dialogs();
+    const session = new WorkspaceSession(handlers, undefined, service);
+    await session.dispatch({ type: 'new' });
+    await session.dispatch({ type: 'rename', name: 'Current unsaved work' });
+    await session.dispatch({ type: 'import-statement' });
+    const before = session.state().workspace;
+    const records = session.bankImports();
+    plan.choices.push('discard');
+    plan.opens.push(damagedFile);
+    await session.dispatch({ type: 'open' });
+    assert.deepEqual(session.state().workspace, before);
+    assert.deepEqual(session.bankImports(), records);
+    assert.equal(session.state().workspace?.dirty, true);
+    assert.equal(session.state().error, 'This workspace contains invalid or unsupported data and could not be opened or saved.');
+    assert.doesNotMatch(session.state().error!, /workspace name|statementId|not-a-uuid/);
+    assert.equal(await fingerprint(damagedFile), damagedHash);
+    await session.dispatch({ type: 'rename', name: 'x'.repeat(121) });
+    plan.saves.push(path.join(directory, 'name-rejected.receiptmatch'));
+    await session.dispatch({ type: 'save' });
+    assert.equal(session.state().error, 'Enter a workspace name between 1 and 120 characters.');
+    assert.deepEqual(session.bankImports(), records);
+    assert.equal(session.state().workspace?.dirty, true);
+});

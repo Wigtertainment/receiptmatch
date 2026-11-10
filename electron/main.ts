@@ -1,8 +1,13 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, session } from 'electron';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { commandSchema, type WorkspaceState } from '../src/shared/protocol.js';
 import { WorkspaceSession } from './workspace-session.js';
+import { StatementImportService } from './import/service.js';
+
+// Load the same module instance as other main-process consumers of the extraction API.
+const { extractPdfBytes } = createRequire(__filename)('./extraction-host.cjs') as Pick<typeof import('./extraction/host.js'), 'extractPdfBytes'>;
 
 const appUrl = 'receiptmatch://app/index.html';
 app.setName('ReceiptMatch');
@@ -53,11 +58,22 @@ async function launch() {
       const selected = await dialog.showMessageBox(window, { type: 'question', title: 'Unsaved changes', message: `Save changes to “${name || 'Untitled workspace'}”?`, detail: 'Your unsaved changes will be lost if you discard them.', buttons: ['Save', 'Discard', 'Cancel'], defaultId: 0, cancelId: 2, noLink: true });
       return (['save', 'discard', 'cancel'] as const)[selected.response] ?? 'cancel';
     }
-  }, publish);
+  }, publish, new StatementImportService({
+    choose: async () => {
+      const selected = await dialog.showOpenDialog(window, { title: 'Import bank statement', properties: ['openFile'], filters: [{ name: 'PDF bank statement', extensions: ['pdf'] }] });
+      return selected.canceled ? null : selected.filePaths[0] ?? null;
+    },
+    extract: extractPdfBytes
+  }));
+  const authorized = (event: Electron.IpcMainInvokeEvent) => event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && event.senderFrame.url === appUrl;
   ipcMain.handle('workspace:command', (event, payload: unknown) => {
-    if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== appUrl) throw new Error('Workspace request denied.');
+    if (!authorized(event)) throw new Error('Workspace request denied.');
     const command = commandSchema.safeParse(payload);
     return command.success ? workspace.dispatch(command.data) : workspace.rejectRequest();
+  });
+  ipcMain.handle('workspace:bank-imports', (event, ...payload: unknown[]) => {
+    if (!authorized(event) || payload.length) throw new Error('Workspace request denied.');
+    return workspace.bankImports();
   });
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
