@@ -35,7 +35,7 @@ module.exports = [
 		mode: 'production',
 		context: __dirname,
 		target: 'electron-preload',
-		entry: { preload: './electron/preload.ts', 'extraction-preload': './electron/extraction/preload.ts' },
+		entry: { preload: './electron/preload.ts', 'extraction-preload': './electron/extraction/preload.ts', 'preview-preload': './electron/preview/preload.ts' },
 		output: { path: path.resolve(__dirname, '.build'), filename: '[name].cjs' },
 		module: { rules: [typescript] },
 		resolve,
@@ -73,6 +73,23 @@ module.exports = [
 		resolve,
 		devtool: false,
 		// Offline OCR requires local workers, WASM and language data beyond web-download budgets.
+		performance: { hints: false },
+		optimization: { minimize: false, splitChunks: false, runtimeChunk: false }
+	},
+	{
+		name: 'preview-renderer',
+		mode: 'production',
+		context: __dirname,
+		target: ['web', 'es2022'],
+		entry: './electron/preview/renderer.ts',
+		output: {
+			path: path.resolve(__dirname, '.build/preview'),
+			filename: 'viewer.js',
+			copy: [{ from: 'electron/preview/index.html', filename: 'index.html' }, { from: 'electron/preview/viewer.css', filename: 'viewer.css' }]
+		},
+		module: { rules: [typescript] },
+		resolve,
+		devtool: false,
 		performance: { hints: false },
 		optimization: { minimize: false, splitChunks: false, runtimeChunk: false }
 	}

@@ -95,6 +95,14 @@
 															>
 																{{ basename(filePath(file)) }}
 															</button>
+															@if (file.status === 'imported') {
+																<app-original-preview-button
+																	kind="document"
+																	[sourceId]="file.record.id"
+																	[sourceName]="basename(file.record.filePath)"
+																	[loadRevision]="state().workspace?.loadRevision"
+																/>
+															}
 														</th>
 														<td class="document-amount">
 															@if (row.total; as total) {

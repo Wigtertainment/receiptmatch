@@ -84,6 +84,12 @@
 						[class.source-status-warning]="record.result.status === 'partial'"
 						>{{ record.result.status === 'partial' ? 'Partial import' : 'Complete import' }}</span
 					>
+					<app-original-preview-button
+						kind="statement"
+						[sourceId]="record.id"
+						[sourceName]="filename(record.filePath)"
+						[loadRevision]="state().workspace?.loadRevision"
+					/>
 				</div>
 				<details class="source-location">
 					<summary>Statement details</summary>

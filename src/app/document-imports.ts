@@ -1,5 +1,6 @@
 import { NgTemplateOutlet } from '@angular/common';
 import { Component, computed, effect, input, output, signal, untracked } from '@angular/core';
+import { OriginalPreviewButton } from './original-preview-button.js';
 import { amountEntryExample, formatAmountEntry, parseAmountEntry } from '../shared/amount-entry.js';
 import { calendarDateSchema, type ImportIssue, type ImportPage, type PositionedSpan, type SourceEvidence } from '../shared/bank-import.js';
 import { formatCalendarDate, formatDocumentTotal, formatMoney } from '../shared/display.js';
@@ -277,7 +278,7 @@ export class DocumentAnalysis {
 interface ReportCache { workspaceKey: string; requestKey: string; records: Map<string, StoredDocumentImport>; }
 
 @Component({
-    selector: 'app-document-imports', standalone: true, imports: [DocumentAnalysis],
+    selector: 'app-document-imports', standalone: true, imports: [DocumentAnalysis, OriginalPreviewButton],
     templateUrl: './document-imports.html'
 })
 export class DocumentImports {

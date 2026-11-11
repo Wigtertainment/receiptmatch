@@ -5,6 +5,8 @@ import { importIssue } from '../src/shared/bank-import.js';
 import { applyBankCorrections, bankCorrectionSchema, type BankCorrection } from '../src/shared/bank-corrections.js';
 import { applyDocumentCorrections, documentCorrectionKey, documentCorrectionSchema, type DocumentCorrection } from '../src/shared/document-corrections.js';
 import { sameMoneyValue } from '../src/shared/money.js';
+import type { OriginalPreviewRequest } from '../src/shared/original-preview.js';
+import type { OriginalSource } from './original-preview.js';
 import { storedBankImportSchema, type StoredBankImport } from '../src/shared/workspace-import.js';
 import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, type SavedWorkspace, type WorkspaceMetadata } from './store.js';
 import type { BankImportService } from './import/service.js';
@@ -88,6 +90,19 @@ export class WorkspaceSession {
   }
   bankImports(): StoredBankImport[] { return structuredClone(this.importRecords); }
   documentImports(): StoredDocumentImport[] { return structuredClone(this.documentRecords); }
+  originalSource({ kind, id, loadRevision }: OriginalPreviewRequest): OriginalSource | null {
+    if (!this.metadata || this.loadRevision !== loadRevision) return null;
+    if (kind === 'statement') {
+      const record = this.importRecords.find(item => item.id === id);
+      return record ? { filePath: record.filePath, sha256: record.result.sourceProvenance!.sha256, format: 'pdf' } : null;
+    }
+    for (const record of this.documentRecords) for (const file of record.files) {
+      if (file.status === 'imported' && file.record.id === id) {
+        return { filePath: file.record.filePath, sha256: file.record.result.input!.source.sha256, format: file.record.format };
+      }
+    }
+    return null;
+  }
   matchResults(): TransactionMatch[] { return structuredClone(this.matches); }
   matchSummaries(revision: number): MatchSummary[] | null {
     return this.metadata && revision === this.matchRevision ? summarizeMatches(this.matches, this.effectiveImports, this.matchDecisions, this.bankCorrections) : null;
