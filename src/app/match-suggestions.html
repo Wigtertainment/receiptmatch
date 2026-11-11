@@ -203,6 +203,9 @@
 										{{ selected.review.status === 'assigned' ? 'Remove assignment' : 'Reopen transaction' }}
 									</button>
 								}
+								@if (selectedDocument(); as document) {
+									<app-original-preview-button kind="document" [sourceId]="document.id" [sourceName]="document.name" [loadRevision]="workspace().loadRevision" />
+								}
 							</div>
 							@if (reviewError(); as error) {
 								<p role="alert">{{ error }}</p>
@@ -250,6 +253,12 @@
 												<span class="sr-only">{{ basename(candidate.filePath) }}</span>
 											</button>
 										}
+										<app-original-preview-button
+											kind="document"
+											[sourceId]="candidate.documentId"
+											[sourceName]="basename(candidate.filePath)"
+											[loadRevision]="workspace().loadRevision"
+										/>
 									</div>
 									<p class="match-location">
 										{{ sectionLabels[candidate.sectionKind] }}

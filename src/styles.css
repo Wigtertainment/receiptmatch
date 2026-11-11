@@ -28,6 +28,9 @@ button.button-secondary { background: var(--surface); border-color: var(--outlin
 button.button-secondary:hover:not(:disabled) { background: #e6efeb; }
 button:is(.button-primary, .button-secondary).compact { min-height: 34px; padding: 6px 12px; font-size: 13px; }
 button:is(.button-primary, .button-secondary):disabled { color: #516661; border-color: var(--divider); background: #e8efeb; }
+app-original-preview-button { display: block; min-width: 0; }
+app-original-preview-button button[aria-disabled="true"] { cursor: wait; }
+.original-preview-error { margin: 4px 0 0; max-width: 36ch; color: #754725; font-size: 12px; font-weight: 400; overflow-wrap: anywhere; }
 .brand-mark { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: #bde9d9; color: #12342d; font-size: 13px; font-weight: 800; letter-spacing: -.07em; flex: none; }
 .workspace-shell { min-height: 100vh; }
 .workspace-rail { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 16px; color: #e6f1ee; background: var(--rail); }

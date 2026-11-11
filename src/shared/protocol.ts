@@ -7,6 +7,7 @@ import { matchReviewSchema, type MatchDetails, type MatchReviewCounts, type Matc
 import { bankCorrectionChangesSchema, type BankCorrection } from './bank-corrections.js';
 import { documentCorrectionTarget, documentCorrectionValueSchema, type DocumentCorrection } from './document-corrections.js';
 import { matchApprovalSelectionSchema } from './match-approvals.js';
+import type { OriginalPreviewRequest, OriginalPreviewResult } from './original-preview.js';
 
 export const workspaceName = z.string().max(120);
 export const commandSchema = z.discriminatedUnion('type', [
@@ -49,5 +50,6 @@ export interface WorkspaceBridge {
   documentImports(): Promise<StoredDocumentImport[]>;
   matchSummaries(revision: number): Promise<MatchSummary[] | null>;
   matchDetails(revision: number, transactionId: string): Promise<MatchDetails | null>;
+  openOriginal(request: OriginalPreviewRequest): Promise<OriginalPreviewResult>;
   subscribe(listener: (state: WorkspaceState) => void): () => void;
 }

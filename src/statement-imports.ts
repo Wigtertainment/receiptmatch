@@ -1,4 +1,5 @@
 import { Component, DestroyRef, computed, effect, inject, input, output, signal, untracked } from '@angular/core';
+import { OriginalPreviewButton } from './app/original-preview-button.js';
 import { amountEntryExample, formatAmountEntry, parseAmountEntry } from './shared/amount-entry.js';
 import { applyBankCorrections } from './shared/bank-corrections.js';
 import { calendarDateSchema, type ImportIssue, type SourceEvidence, type TransactionCandidate, type UnresolvedDraft } from './shared/bank-import.js';
@@ -87,7 +88,7 @@ class RowSource {
     }
 }
 
-@Component({ selector: 'app-statement-imports', standalone: true, imports: [RowSource], templateUrl: './app/statement-imports.html' })
+@Component({ selector: 'app-statement-imports', standalone: true, imports: [RowSource, OriginalPreviewButton], templateUrl: './app/statement-imports.html' })
 export class StatementImports {
     readonly state = input.required<WorkspaceState>();
     readonly workspaceCommand = output<WorkspaceCommand>();
