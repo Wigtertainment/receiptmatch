@@ -2,7 +2,7 @@
 
 Local-first desktop application for matching individual bank transactions with supporting documents. Financial data stays local and original documents remain unchanged.
 
-Create or open a local workspace, import a supported English Revolut Business EUR statement or Airwallex EUR Account Activity PDF, inspect transactions and unresolved rows, and explicitly save your work. Matching and document export are subsequent work.
+Create or open a local workspace, import a supported English Revolut Business EUR statement or Airwallex EUR Account Activity PDF, and analyse supporting documents. Review the results and explicitly save your work. Matching and document export are subsequent work.
 
 ## Build and run
 
@@ -34,9 +34,11 @@ npm run pack:linux
 
 Run each packaging command on its target operating system. Windows x64 output is `release/win-unpacked/ReceiptMatch.exe`; Linux x64 output is `release/linux-unpacked/receiptmatch`. These commands produce application directories; installers, signing and publishing are separate work. Only compiled application files, local PDF/OCR resources, licenses and production dependencies are packaged. SQLite uses the library's bundled Node-API prebuilds.
 
-Workspaces use the `.receiptmatch` extension. New workspaces and imported statements remain in memory until saved; existing unrelated files are never overwritten.
+Workspaces use the `.receiptmatch` extension. New workspaces and imports remain in memory until saved. Existing unrelated files are never overwritten.
 
 Choose **Import statement** in a workspace to select a PDF. Processing uses embedded text or bundled local English OCR and can be cancelled. Identical file contents are skipped. Both banks can share a workspace; select a statement to inspect its transactions and evidence. Review warnings and unresolved rows before using the data; dates and exact monetary values follow the system display locale. Original PDFs stay in place. Additional bank layouts and correction actions are subsequent work.
+
+Under **Supporting documents**, choose a folder to analyse PDFs, PNGs and JPEGs in it and its subfolders. Review file results, extracted fields, alternative readings and source text with page locations. Cancelling keeps completed results. Save the workspace to keep the analysis and reopen it later.
 
 ## Checks
 
@@ -61,7 +63,7 @@ Extraction checks exercise isolated PDF text and local English OCR using synthet
 
 Import checks exercise native file selection, duplicate skipping and explicit workspace persistence through the validated desktop API. UI import checks use the actual controls, inspect financial fields and evidence, and capture synthetic-data screenshots. Native dialog selections are supplied by automation.
 
-Document import checks cover recursive mixed folders, PDF/PNG/JPEG analysis, duplicate skipping, per-file failures, cancellation and saved results across process restart.
+Document import checks use the packaged app to cover recursive mixed folders, PDF/PNG/JPEG analysis, file results and evidence, keyboard operation, cancellation and saved results across process restart.
 
 For the Ubuntu 24.04 x64 container check:
 

@@ -10,6 +10,7 @@ const root = await mkdtemp(path.resolve("artifacts/document-import-"));
 let application;
 const checks = [];
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const rawNote = '<img src=x onerror="window.documentTestInjection=1">';
 async function check(name, action) {
 	await action();
 	checks.push(name);
@@ -19,7 +20,17 @@ async function pdfFixture(reference) {
 	const pdf = await PDFDocument.create(),
 		font = await pdf.embedFont(StandardFonts.Helvetica),
 		page = pdf.addPage([600, 800]);
-	for (const [index, text] of ["Invoice", "Merchant: Cedar Workshop", `Invoice Number: ${reference}`, "Invoice Date: 2032-05-20", "Invoice Total: EUR 73.25"].entries()) {
+	const lines = [
+		"Invoice",
+		"Merchant: Cedar Workshop",
+		`Invoice Number: ${reference}`,
+		"Invoice Date: 2032-05-20",
+		"Invoice Total: EUR 73.25",
+		"Due Date: 05/06/2032",
+		"Order Number:",
+		rawNote,
+	];
+	for (const [index, text] of lines.entries()) {
 		page.drawText(text, { x: 40, y: 740 - index * 30, size: 14, font });
 	}
 	return pdf.save();
@@ -31,6 +42,7 @@ async function launch() {
 		timeout: 30000,
 	});
 	const page = await application.firstWindow();
+	page.setDefaultTimeout(20000);
 	await page.getByRole("heading", { name: "Your records. Your workspace." }).waitFor();
 	await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false));
 	return page;
@@ -38,7 +50,8 @@ async function launch() {
 async function dialogs(opens = [], saves = [], choices = []) {
 	await application.evaluate(
 		({ dialog }, plan) => {
-			dialog.showOpenDialog = async () => {
+			dialog.showOpenDialog = async (_window, options) => {
+				globalThis.documentTestDialogProperties = options.properties;
 				const selected = plan.opens.shift();
 				return { canceled: !selected, filePaths: selected ? [selected] : [] };
 			};
@@ -101,6 +114,15 @@ try {
 	const originalHashes = await Promise.all(files.map(async (file) => sha(await readFile(file))));
 	const command = (value) => page.evaluate((value) => window.receiptmatch.command(value), value);
 	const records = () => page.evaluate(() => window.receiptmatch.documentImports());
+	const documents = () => page.getByRole("region", { name: "Supporting documents" });
+	const chooseFolder = () => documents().getByRole("button", { name: "Choose folder" });
+	async function openDetails(scope, label) {
+		const summary = scope.locator("summary").filter({ hasText: label });
+		const details = summary.locator("..");
+		if ((await details.getAttribute("open")) === null) await summary.press("Enter");
+		assert.notEqual(await details.getAttribute("open"), null);
+		return details;
+	}
 	await check("document-command-is-path-free-and-readonly-data-is-restricted-to-the-active-frame", async () => {
 		assert.equal((await command({ type: "import-documents", path: folder })).workspace, null);
 		const probes = await application.evaluate(async ({ app, BrowserWindow }) => {
@@ -124,9 +146,12 @@ try {
 	let expected;
 	const workspaceFile = path.join(root, "documents.receiptmatch");
 	await check("native-folder-analysis-retains-real-PDF-PNG-JPEG-results-duplicates-and-file-failures", async () => {
-		await command({ type: "new" });
+		await page.getByRole("button", { name: "Create workspace" }).click();
 		await dialogs([folder]);
-		const state = await command({ type: "import-documents" });
+		await chooseFolder().press("Enter");
+		await documents().locator("summary").filter({ hasText: "mixed" }).first().waitFor();
+		assert.deepEqual(await application.evaluate(() => globalThis.documentTestDialogProperties), ["openDirectory"]);
+		const state = await command({ type: "get-state" });
 		assert.equal(state.documentOutcome.status, "finished");
 		assert.equal(state.workspace.dirty, true);
 		assert.equal(state.workspace.documentImports[0].imported, 3);
@@ -144,14 +169,75 @@ try {
 		);
 		assert.deepEqual(await Promise.all(files.map(async (file) => sha(await readFile(file)))), originalHashes);
 	});
+	await check("document-results-show-file-statuses-candidates-and-literal-source-text-with-keyboard-access", async () => {
+		await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(680, 860));
+		await page.waitForFunction(() => window.innerWidth <= 700, undefined, { polling: 50 });
+		const report = await openDetails(documents(), /^\s*mixed/i);
+		assert.equal(await report.evaluate((element) => getComputedStyle(element).borderTopStyle), "solid");
+		for (const [file, status] of [
+			["a.PDF", "Imported"],
+			["b.PNG", "Imported"],
+			["c.jpeg", "Imported"],
+			["d-copy.pdf", "Skipped"],
+			["e-broken.pdf", "Failed"],
+			["notes.txt", "Unsupported"],
+		]) {
+			await report.locator("summary").filter({ hasText: file }).filter({ hasText: status }).waitFor();
+		}
+		const pdf = await openDetails(report, "a.PDF");
+		await pdf.getByRole("heading", { name: "Extracted fields" }).waitFor();
+		const total = await openDetails(pdf, /Billed total/i);
+		await total
+			.getByText(/EUR\s*73[.,]25|73[.,]25\s*EUR/)
+			.first()
+			.waitFor();
+		await total
+			.getByText(/Page 1.*Embedded text/i)
+			.first()
+			.waitFor();
+		await total
+			.getByText(/Region.*PDF points/i)
+			.first()
+			.waitFor();
+		await pdf
+			.locator("summary")
+			.filter({ hasText: /Due date.*Ambiguous/i })
+			.waitFor();
+		await pdf
+			.locator("summary")
+			.filter({ hasText: /Order reference.*No value found/i })
+			.waitFor();
+		const raw = await openDetails(pdf, /^Source text/);
+		await raw.getByText(rawNote, { exact: false }).first().waitFor();
+		assert.equal(await raw.locator("img, script").count(), 0);
+		assert.equal(await page.evaluate(() => window.documentTestInjection), undefined);
+		const image = await openDetails(report, "b.PNG");
+		const imageSource = await openDetails(image, /^Source text/);
+		await imageSource.getByText("Local English OCR", { exact: true }).first().waitFor();
+		await imageSource
+			.getByText(/Region in pixels/i)
+			.first()
+			.waitFor();
+		assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+	});
 	await check("explicit-save-and-process-restart-preserve-document-ids-evidence-and-failures", async () => {
 		await dialogs([], [workspaceFile]);
-		assert.equal((await command({ type: "save" })).workspace.dirty, false);
+		await page.getByRole("button", { name: "Save", exact: true }).press("Enter");
+		await page.getByText("Your workspace is saved on this computer.", { exact: true }).waitFor();
 		await application.close();
 		application = undefined;
 		page = await launch();
 		await dialogs([workspaceFile]);
-		const state = await command({ type: "open" });
+		await page.getByRole("navigation", { name: "Workspace actions" }).getByRole("button", { name: "Open", exact: true }).press("Enter");
+		const report = await openDetails(documents(), /^\s*mixed/i);
+		const broken = await openDetails(report, "e-broken.pdf");
+		await broken.getByText(/PDF engine could not open/i).waitFor();
+		const pdf = await openDetails(report, "a.PDF");
+		await pdf
+			.locator("summary")
+			.filter({ hasText: /Invoice reference.*SYNTHETIC-PDF/ })
+			.waitFor();
+		const state = await command({ type: "get-state" });
 		assert.equal(state.workspace.dirty, false);
 		assert.deepEqual(await records(), expected);
 	});
@@ -185,20 +271,14 @@ try {
 				window.documentTestState = state;
 			});
 		});
-		const running = command({ type: "import-documents" });
-		await page.waitForFunction(
-			() => {
-				const progress = window.documentTestState?.documentImport?.progress;
-				return progress?.filePath?.endsWith("b-long.png") && progress.extraction?.phase === "ocr";
-			},
-			undefined,
-			{
-				polling: 50,
-				timeout: 15000,
-			},
-		);
-		await command({ type: "cancel-import" });
-		const state = await running;
+		await chooseFolder().press("Enter");
+		await documents()
+			.getByRole("status")
+			.filter({ hasText: /Reading with local English OCR.*b-long\.png/i })
+			.waitFor();
+		await documents().getByRole("button", { name: "Cancel analysis" }).press("Enter");
+		await page.waitForFunction(() => window.documentTestState?.documentOutcome?.status === "cancelled", undefined, { polling: 50 });
+		const state = await command({ type: "get-state" });
 		await page.evaluate(() => {
 			window.unsubscribeDocumentTest();
 			delete window.unsubscribeDocumentTest;

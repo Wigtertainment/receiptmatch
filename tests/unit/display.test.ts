@@ -9,6 +9,7 @@ test('money display uses locale separators and explicit currencies while preserv
     assert.equal(formatMoney(amount, 'de-DE'), '-1.234,56\u00a0EUR');
     assert.equal(formatMoney({ coefficient: '-1', currency: 'USD', scale: 2 }, 'en-US'), '-USD\u00a00.01');
     assert.equal(formatMoney({ coefficient: '900719925474099301', currency: 'EUR', scale: 2 }, 'en-US'), 'EUR\u00a09,007,199,254,740,993.01');
+    assert.equal(formatMoney({ coefficient: '900719925474099301', currency: null, scale: 2 }, 'de-DE'), '9.007.199.254.740.993,01 (currency unknown)');
     assert.equal(formatMoney({ coefficient: '1000000000000000001', currency: 'USD', scale: 18 }, 'en-US'), 'USD\u00a01.000000000000000001');
     assert.equal(formatMoney({ coefficient: '42', currency: 'JPY', scale: 0 }, 'en-US'), 'JPY\u00a042');
     assert.equal(formatMoney({ coefficient: '120', currency: 'CHF', scale: 3 }, 'de-DE'), '0,120\u00a0CHF');
