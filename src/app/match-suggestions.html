@@ -76,6 +76,9 @@
 								</span>
 							</div>
 							<p>Booked {{ date(selected.bookingDate) }} · {{ money(selected.accountAmount) }}</p>
+							@if (selected.bankValuesCorrected) {
+								<p>Uses corrected bank values. Source evidence shows the original statement.</p>
+							}
 							@if (transactionName(selected.description) !== selected.description.trim()) {
 								<details class="source-details match-description">
 									<summary>Transaction description</summary>

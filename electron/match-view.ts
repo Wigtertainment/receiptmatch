@@ -1,9 +1,12 @@
 import type { SourceEvidence } from '../src/shared/bank-import.js';
+import type { BankCorrection } from '../src/shared/bank-corrections.js';
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
 import type { StoredDocumentImport } from '../src/shared/workspace-documents.js';
 import type { MatchDetails, MatchSourceExcerpt, MatchSummary, TransactionMatch } from '../src/shared/workspace-matching.js';
 
-export function summarizeMatches(matches: TransactionMatch[], imports: StoredBankImport[], decisions: ReadonlyMap<string, string | null>): MatchSummary[] {
+export function summarizeMatches(
+	matches: TransactionMatch[], imports: StoredBankImport[], decisions: ReadonlyMap<string, string | null>, corrections: ReadonlyMap<string, BankCorrection>,
+): MatchSummary[] {
 	const byTransaction = new Map(matches.map(match => [match.transactionId, match]));
 	return imports.flatMap(record => {
 		const ids = new Map(record.transactions.map(({ rowId, transactionId }) => [rowId, transactionId]));
@@ -12,7 +15,7 @@ export function summarizeMatches(matches: TransactionMatch[], imports: StoredBan
 			const match = byTransaction.get(transactionId)!;
 			const documentId = decisions.get(transactionId);
 			return { transactionId, bookingDate: row.bookingDate.value, description: row.description.value,
-				accountAmount: row.accountAmount.value, status: match.status, candidateCount: match.candidates.length,
+				accountAmount: row.accountAmount.value, status: match.status, candidateCount: match.candidates.length, bankValuesCorrected: corrections.has(transactionId),
 				review: documentId === undefined ? { status: 'open' } : documentId === null ? { status: 'completed-without-document' } : { status: 'assigned', documentId } };
 		});
 	});

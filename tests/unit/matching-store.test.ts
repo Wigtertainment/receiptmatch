@@ -11,6 +11,7 @@ import { WorkspaceSession } from '../../electron/workspace-session.js';
 import { commandSchema } from '../../src/shared/protocol.js';
 import type { StoredDocumentImport, StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
 import type { MatchReview } from '../../src/shared/workspace-matching.js';
+import { row as bankRow, statement } from './bank-fixtures.js';
 import { documentRun, extractedDocument, retainedBank } from './document-fixtures.js';
 
 async function directory(context: TestContext) {
@@ -101,7 +102,7 @@ test('opens version 3 without writing, suppresses coalesced legacy sections and 
 	const oldRun = documentRun(root, [legacyOnOnePage, legacyAcrossPages, valid]);
 	await createWorkspace(file, newMetadata(), [bank], [oldRun]);
 	const db = new Database(file);
-	try { db.exec('DROP TABLE match_reviews; DROP TABLE match_results; PRAGMA user_version=3;'); } finally { db.close(); }
+	try { db.exec('DROP TABLE bank_corrections; DROP TABLE match_reviews; DROP TABLE match_results; PRAGMA user_version=3;'); } finally { db.close(); }
 	const oldBytes = await readFile(file);
 	const opened = await loadWorkspace(file);
 	assert.equal(opened.schemaVersion, 3);
@@ -238,7 +239,7 @@ test('opens version 4 without writing and saves review decisions and migration a
 	const document = invoice(root, 'invoice.pdf');
 	await createWorkspace(file, newMetadata(), [bank], [documentRun(root, [document])]);
 	const db = new Database(file);
-	try { db.exec('DROP TABLE match_reviews; PRAGMA user_version=4;'); } finally { db.close(); }
+	try { db.exec('DROP TABLE bank_corrections; DROP TABLE match_reviews; PRAGMA user_version=4;'); } finally { db.close(); }
 	const bytes = await readFile(file);
 	const opened = await loadWorkspace(file);
 	assert.equal(opened.schemaVersion, 4);
@@ -260,4 +261,72 @@ test('opens version 4 without writing and saves review decisions and migration a
 	assert.equal(migrated.schemaVersion, SCHEMA_VERSION);
 	assert.deepEqual(migrated.matchDecisions, decisions);
 	assert.deepEqual(migrated.matches, opened.matches);
+});
+
+test('corrects booking values with exact money, retains original evidence and promotes only resolved drafts', async (context) => {
+	const root = await directory(context);
+	const file = path.join(root, 'booking-corrections.receiptmatch');
+	const input = statement();
+	input.pages[0].spans.push(...bankRow(335, '26 Feb 2032', 'To: Cedar Tools', null, null), ...bankRow(385, '25 Feb 2032', '', null, null).filter(span => span.text));
+	const bank = retainedBank(root, input);
+	const bankBefore = structuredClone(bank);
+	const [first] = bank.transactions;
+	const [draft, blocked] = bank.drafts;
+	assert.ok(first && draft && blocked);
+	const documents = documentRun(root, [invoice(root, 'invoice.pdf')]);
+	const created = await createWorkspace(file, newMetadata(), [bank], [documents]);
+	const db = new Database(file);
+	try { db.exec('DROP TABLE bank_corrections; PRAGMA user_version=5;'); } finally { db.close(); }
+	const before = await readFile(file);
+	const session = new WorkspaceSession({ open: async () => file, save: async () => file, unsaved: async () => 'discard' });
+	await session.dispatch({ type: 'open' });
+	const state = () => session.state().workspace!;
+	const correct = (rowId: string, changes: { bookingDate?: string; accountAmount?: { currency: string; coefficient: string; scale: number } }, revision = state().matchRevision) =>
+		session.dispatch(commandSchema.parse({ type: 'correct-bank-row', rowId, revision, changes }));
+	const summary = (id: string) => session.matchSummaries(state().matchRevision)?.find(row => row.transactionId === id);
+	assert.equal((await loadWorkspace(file)).schemaVersion, 5);
+	assert.deepEqual(await readFile(file), before);
+	assert.equal(summary(first.transactionId)?.status, 'reliable');
+	const originalDate = summary(first.transactionId)!.bookingDate;
+	const revision = state().matchRevision;
+	await correct(first.transactionId, { bookingDate: originalDate });
+	assert.equal(state().matchRevision, revision);
+	assert.equal(state().dirty, false);
+	assert.match((await correct(first.transactionId, { accountAmount: { currency: 'USD', coefficient: '-25620', scale: 2 } })).error!, /account currency/);
+	assert.equal((await correct(first.transactionId, { bookingDate: '2032-04-30' })).error, null);
+	assert.equal(summary(first.transactionId)?.bookingDate, '2032-04-30');
+	assert.equal(summary(first.transactionId)?.bankValuesCorrected, true);
+	const changedDate = session.matchDetails(state().matchRevision, first.transactionId)?.candidates[0].date;
+	assert.equal(changedDate?.bookingDate, '2032-04-30');
+	assert.equal(changedDate?.withinWindow, false);
+	assert.match((await correct(first.transactionId, { bookingDate: originalDate }, revision)).error!, /Refresh/);
+	assert.equal((await correct(first.transactionId, { accountAmount: { currency: 'EUR', coefficient: '-25620', scale: 2 } })).error, null);
+	assert.equal(summary(first.transactionId)?.status, 'unmatched');
+	const correctedRevision = state().matchRevision;
+	await correct(first.transactionId, { accountAmount: { currency: 'EUR', coefficient: '-256200', scale: 3 } });
+	assert.equal(state().matchRevision, correctedRevision);
+	const exact = { currency: 'EUR', coefficient: '-900719925474099327', scale: 2 };
+	assert.equal((await correct(draft.draftId, { accountAmount: exact })).error, null);
+	assert.deepEqual(summary(draft.draftId)?.accountAmount, exact);
+	assert.equal(state().imports[0].transactions, 3);
+	assert.equal((await correct(blocked.draftId, { accountAmount: exact })).error, null);
+	assert.equal(summary(blocked.draftId), undefined);
+	assert.equal(state().imports[0].drafts, 1);
+	assert.deepEqual(session.bankImports(), [bankBefore]);
+	assert.deepEqual(await readFile(file), before);
+	const review = await session.dispatch({ type: 'review-match', transactionId: draft.draftId, revision: state().matchRevision, review: { status: 'completed-without-document' } });
+	assert.equal(review.error, null);
+	assert.equal((await session.dispatch({ type: 'save' })).error, null);
+	assert.equal((await session.dispatch({ type: 'open' })).error, null);
+	const saved = await loadWorkspace(file);
+	assert.equal(saved.schemaVersion, SCHEMA_VERSION);
+	assert.equal(saved.bankCorrections.get(first.transactionId)?.revision, 3);
+	assert.deepEqual(saved.imports, created.imports);
+	assert.deepEqual(summary(draft.draftId)?.review, { status: 'completed-without-document' });
+	assert.deepEqual(summary(draft.draftId)?.accountAmount, exact);
+	assert.equal(state().dirty, false);
+	const check = new Database(file, { readonly: true });
+	try {
+		assert.deepEqual(check.prepare('SELECT coefficient, revision FROM transactions WHERE id=?').get(draft.draftId), { coefficient: exact.coefficient, revision: 2 });
+	} finally { check.close(); }
 });

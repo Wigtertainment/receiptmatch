@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, mkdir, mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { test as base, type ElectronApplication, type Page } from '@playwright/test';
+import { expect, test as base, type ElectronApplication, type Page } from '@playwright/test';
 import Database from 'better-sqlite3';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { statement, row } from '../unit/bank-fixtures.js';
@@ -365,7 +365,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		seed.pragma('foreign_keys=ON');
 		try {
 			// The seven original tables are unchanged; remove the additive manifest to reproduce format 1.
-			seed.exec(`DROP TABLE match_reviews; DROP TABLE match_results; DROP TABLE document_imports; DROP TABLE bank_imports; PRAGMA user_version=1;
+			seed.exec(`DROP TABLE bank_corrections; DROP TABLE match_reviews; DROP TABLE match_results; DROP TABLE document_imports; DROP TABLE bank_imports; PRAGMA user_version=1;
                 INSERT INTO sources VALUES('legacy-source','/synthetic/original.pdf',NULL);
                 INSERT INTO accounts VALUES('legacy-account','Legacy account','EUR');
                 INSERT INTO statements VALUES('legacy-statement','legacy-account','legacy-source');
@@ -403,6 +403,39 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		const savedImports = await records();
 		assert.equal(savedImports.length, 1);
 		assert.equal(savedImports[0].result.transactions.length, 2);
+	});
+	await check('booking-correction-promotes-a-draft-and-restores-original-evidence-after-reopening', async () => {
+		const source = retained.find(record => record.filePath === partial);
+		assert.ok(source);
+		const file = path.join(root, 'booking-correction.receiptmatch');
+		await createWorkspace(file, newMetadata(), [source]);
+		await reopen(file);
+		const before = await fingerprint(file);
+		const draft = page.getByTestId('drafts-table').getByRole('row', { name: /Cedar Tools/ });
+		await draft.getByRole('button', { name: 'Correct booking details' }).press('Enter');
+		const editor = page.getByRole('region', { name: 'Correct booking details' });
+		await expect(editor.getByRole('heading')).toBeFocused();
+		await editor.getByLabel('Booking date', { exact: true }).fill('2032-02-25');
+		const decimal = await page.evaluate(() => new Intl.NumberFormat().formatToParts(1.1).find(part => part.type === 'decimal')?.value ?? '.');
+		await editor.getByLabel('Account amount (EUR)').fill(`-256${decimal}20`);
+		await editor.getByRole('button', { name: 'Apply correction' }).click();
+		await expect(editor.getByText('Correction applied to this workspace.')).toBeVisible();
+		await expect(draft).toHaveCount(0);
+		const transaction = page.getByTestId('transactions-table').getByRole('row', { name: /Cedar Tools/ });
+		await expect(transaction.getByText('Corrected', { exact: true })).toBeVisible();
+		await expect(transaction.getByText(/256[.,]20/)).toBeVisible();
+		await expect(editor.getByText('Unknown', { exact: true })).toBeVisible();
+		assert.equal(await fingerprint(file), before);
+		await page.getByRole('button', { name: 'Match suggestions' }).click();
+		await expect(page.getByRole('row', { name: /Cedar Tools/ })).toBeVisible();
+		await command({ type: 'save' });
+		const reopened = await reopen(file);
+		assert.deepEqual(await records(), [source]);
+		assert.equal(reopened.workspace?.imports[0].drafts, 0);
+		assert.deepEqual(reopened.workspace?.bankCorrections[0], {
+			rowId: source.drafts[0].draftId, revision: 2, bookingDate: '2032-02-25', accountAmount: { currency: 'EUR', coefficient: '-25620', scale: 2 }
+		});
+		await expect(page.getByTestId('transactions-table').getByRole('row', { name: /Cedar Tools.*Corrected/ })).toBeVisible();
 	});
 	assert.equal(await fingerprint(original), originalHash);
 	report.limits = [

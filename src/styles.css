@@ -102,6 +102,19 @@ summary { cursor: pointer; border-radius: 3px; }.source-location { margin-top: 3
 .description-cell { min-width: 250px; max-width: 380px; }.row-description { margin: 0 0 7px; white-space: pre-line; overflow-wrap: anywhere; max-height: 4.95em; overflow: hidden; }
 .row-issues { margin: 3px 0 8px; padding-left: 16px; color: #774734; font-size: 11px; }.missing-value { color: #774734; }.empty-table { color: #5f6d63; }
 .source-details > summary { width: fit-content; padding: 3px 0; color: #1e665a; font-size: 11px; font-weight: 600; }
+.bank-correction-link { display: block; min-height: 24px; padding: 3px 2px; color: var(--action); font-size: 11px; font-weight: 650; text-align: left; text-decoration: underline; }
+.bank-correction-link:hover:not(:disabled) { background: var(--workspace-background); }
+.bank-correction-link:disabled { color: var(--muted); }
+.bank-correction-editor { display: grid; gap: 8px; margin: 12px 14px; padding: 14px; border: 1px solid var(--divider); border-radius: 8px; background: var(--workspace-background); font-size: 13px; }
+.bank-correction-editor h3, .bank-correction-editor p { margin: 0; }
+.bank-correction-editor h3 { font-size: 15px; }
+.bank-correction-editor .source-facts { margin: 0; }
+.bank-correction-fields { display: grid; gap: 5px; }
+.bank-correction-fields label { font-weight: 650; }
+.bank-correction-fields input { width: 100%; min-width: 0; min-height: 36px; margin-bottom: 3px; padding: 6px 8px; border: 1px solid var(--outline); border-radius: 6px; color: var(--ink); background: var(--surface); }
+.bank-correction-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.bank-correction-editor .bank-correction-error { margin-top: 8px; color: #8a3328; }
+.bank-correction-feedback { color: var(--action); }
 .source-detail-body { margin-top: 12px; padding-top: 1px; border-top: 1px solid #d8ded2; font-size: 12px; overflow-wrap: anywhere; }
 .source-detail-body h4 { margin: 18px 0 7px; font-size: 12px; }.source-facts { margin: 0; }.source-facts > div { margin-top: 10px; }.source-facts dt { color: #5f6d63; font-size: 11px; }.source-facts dd { margin: 1px 0 0; }
 .raw-text { white-space: pre-wrap; overflow-wrap: anywhere; }.evidence-group { margin-top: 12px; }.evidence-group h5 { margin: 0 0 5px; font-size: 11px; font-weight: 650; }

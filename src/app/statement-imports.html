@@ -69,13 +69,13 @@
 			><select id="statement-select" (change)="select($event)" [disabled]="state().busy">
 				@for (record of records(); track record.id) {
 					<option [value]="record.id" [selected]="record.id === selectedId()">
-						{{ filename(record.filePath) }} · {{ record.result.transactions.length }} transactions ·
+						{{ filename(record.filePath) }} · {{ statementCounts().get(record.id) ?? record.result.transactions.length }} transactions ·
 						{{ record.result.status === 'partial' ? 'Partial import' : 'Complete import' }}
 					</option>
 				}
 			</select>
 		</div>
-		@if (selected(); as record) {
+		@if (displayed(); as record) {
 			<div class="statement-summary">
 				<div class="statement-summary-heading">
 					<h3>{{ filename(record.filePath) }}</h3>
@@ -101,7 +101,7 @@
 					</dl>
 				</details>
 			</div>
-			@if (record.result.status === 'partial' || record.result.issues.length) {
+			@if (record.result.unresolvedDrafts.length || generalIssues().length) {
 				<aside class="statement-warnings" aria-labelledby="statement-notes-heading" data-testid="statement-warnings">
 					<h3 id="statement-notes-heading">Review needed</h3>
 					@if (record.result.unresolvedDrafts.length) {
@@ -118,6 +118,50 @@
 						}
 					</ul>
 				</aside>
+			}
+			@for (correction of correctionEditor(); track correction.id) {
+				<section class="bank-correction-editor" id="bank-correction-editor" aria-labelledby="bank-correction-heading">
+					<h3 id="bank-correction-heading" tabindex="-1">Correct booking details</h3>
+					<p class="row-description">{{ correction.row.description?.value || 'Unknown description' }}</p>
+					<dl class="source-facts">
+						<div>
+							<dt>Extracted booking date</dt>
+							<dd>{{ date(correction.original.bookingDate?.value ?? null) }}</dd>
+						</div>
+						<div>
+							<dt>Extracted account amount</dt>
+							<dd>{{ money(correction.original.accountAmount?.value ?? null) }}</dd>
+						</div>
+					</dl>
+					<form (submit)="applyCorrection($event)">
+						<div class="bank-correction-fields">
+							<label for="bank-correction-date">Booking date</label>
+							<input id="bank-correction-date" name="booking-date" type="date" [value]="correction.row.bookingDate?.value ?? ''" [disabled]="state().busy" />
+							<label for="bank-correction-amount">Account amount ({{ correction.currency }})</label>
+							<input
+								id="bank-correction-amount"
+								name="account-amount"
+								type="text"
+								inputmode="decimal"
+								maxlength="130"
+								aria-describedby="bank-correction-amount-hint"
+								[value]="amountInput(correction.row.accountAmount?.value)"
+								[disabled]="state().busy"
+							/>
+							<p id="bank-correction-amount-hint" class="muted">Use {{ decimalExample }} for money in and −{{ decimalExample }} for money out.</p>
+						</div>
+						@if (correctionError(); as error) {
+							<p class="bank-correction-error" role="alert">{{ error }}</p>
+						}
+						<div class="bank-correction-actions">
+							<button type="submit" class="button-primary compact" [disabled]="state().busy">Apply correction</button>
+							<button type="button" class="button-secondary compact" (click)="closeCorrection()" [disabled]="state().busy">Close</button>
+						</div>
+					</form>
+					@if (correctionApplied() && !correctionError() && !state().error) {
+						<p class="bank-correction-feedback" role="status">Correction applied to this workspace.</p>
+					}
+				</section>
 			}
 			<div class="table-heading">
 				<h3>Transactions</h3>
@@ -141,11 +185,27 @@
 					</thead>
 					<tbody>
 						@for (row of record.result.transactions; track row.rowId) {
+							@let correctionId = rowIds().get(row.rowId);
 							<tr>
 								<td class="date-cell">{{ date(row.bookingDate.value) }}</td>
 								<td class="description-cell">
-									<p class="row-description">{{ row.description.value }}</p>
-									<app-row-source [row]="row" [record]="record" />
+									<p class="row-description" [id]="'bank-description-' + correctionId">{{ row.description.value }}</p>
+									@if (correctionId && corrections().has(correctionId)) {
+										<span class="source-status">Corrected</span>
+									}
+									<app-row-source [row]="originalRows().get(row.rowId) ?? row" [record]="record" />
+									<button
+										type="button"
+										class="bank-correction-link"
+										[id]="'bank-correction-' + correctionId"
+										[attr.aria-describedby]="'bank-description-' + correctionId"
+										[attr.aria-controls]="editing()?.id === correctionId ? 'bank-correction-editor' : null"
+										[attr.aria-expanded]="editing()?.id === correctionId"
+										[disabled]="state().busy"
+										(click)="startCorrection(row.rowId)"
+									>
+										Correct booking details
+									</button>
 								</td>
 								<td class="amount-cell">{{ money(row.accountAmount.value) }}</td>
 								<td>{{ direction(row.direction) }}</td>
@@ -183,12 +243,16 @@
 					</thead>
 					<tbody>
 						@for (row of record.result.unresolvedDrafts; track row.rowId) {
+							@let correctionId = rowIds().get(row.rowId);
 							<tr>
 								<td class="date-cell" [class.missing-value]="!row.bookingDate">{{ date(row.bookingDate?.value ?? null) }}</td>
 								<td class="description-cell">
-									<p class="row-description">{{ row.description?.value || 'Unknown' }}</p>
+									<p class="row-description" [id]="'bank-description-' + correctionId">{{ row.description?.value || 'Unknown' }}</p>
+									@if (correctionId && corrections().has(correctionId)) {
+										<span class="source-status">Corrected</span>
+									}
 									<ul class="row-issues">
-										@for (issue of row.issues; track $index) {
+										@for (issue of unresolvedIssues(row); track $index) {
 											<li>
 												@if (issueContext(record, issue); as context) {
 													<strong>{{ context }}: </strong>
@@ -197,7 +261,19 @@
 											</li>
 										}
 									</ul>
-									<app-row-source [row]="row" [record]="record" />
+									<app-row-source [row]="originalRows().get(row.rowId) ?? row" [record]="record" />
+									<button
+										type="button"
+										class="bank-correction-link"
+										[id]="'bank-correction-' + correctionId"
+										[attr.aria-describedby]="'bank-description-' + correctionId"
+										[attr.aria-controls]="editing()?.id === correctionId ? 'bank-correction-editor' : null"
+										[attr.aria-expanded]="editing()?.id === correctionId"
+										[disabled]="state().busy"
+										(click)="startCorrection(row.rowId)"
+									>
+										Correct booking details
+									</button>
 								</td>
 								<td class="amount-cell" [class.missing-value]="!row.accountAmount">{{ money(row.accountAmount?.value ?? null) }}</td>
 								<td>{{ direction(row.direction) }}</td>

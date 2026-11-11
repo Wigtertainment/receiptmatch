@@ -62,6 +62,7 @@ export interface MatchSummary {
 	accountAmount: z.infer<typeof moneySchema>;
 	status: TransactionMatch['status'];
 	candidateCount: number;
+	bankValuesCorrected: boolean;
 	review: MatchReview;
 }
 

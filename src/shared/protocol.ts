@@ -4,6 +4,7 @@ import type { BankImportSummary, StoredBankImport } from './workspace-import.js'
 import type { ImportIssue } from './bank-import.js';
 import type { DocumentImportProgress, StoredDocumentImport } from './workspace-documents.js';
 import { matchReviewSchema, type MatchDetails, type MatchReviewCounts, type MatchSummary } from './workspace-matching.js';
+import { bankCorrectionChangesSchema, type BankCorrection } from './bank-corrections.js';
 
 export const workspaceName = z.string().max(120);
 export const commandSchema = z.discriminatedUnion('type', [
@@ -15,14 +16,15 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('import-documents') }),
   z.strictObject({ type: z.literal('cancel-import') }),
   z.strictObject({ type: z.literal('rename'), name: workspaceName }),
-  z.strictObject({ type: z.literal('review-match'), revision: z.number().int().nonnegative(), transactionId: z.uuid(), review: matchReviewSchema })
+  z.strictObject({ type: z.literal('review-match'), revision: z.number().int().nonnegative(), transactionId: z.uuid(), review: matchReviewSchema }),
+  z.strictObject({ type: z.literal('correct-bank-row'), revision: z.number().int().nonnegative(), rowId: z.uuid(), changes: bankCorrectionChangesSchema })
 ]);
 export type WorkspaceCommand = z.infer<typeof commandSchema>;
 export const matchRequestSchema = z.strictObject({ revision: z.number().int().nonnegative(), transactionId: z.uuid().optional() });
 export interface DocumentImportSummary { id: string; folderPath: string; status: 'finished' | 'cancelled'; imported: number; skipped: number; failed: number; unsupported: number; directoryIssues: number; }
 export interface WorkspaceView {
   id: string; loadRevision: number; matchRevision: number; name: string; filePath: string | null; dirty: boolean; savedAt: string | null;
-  imports: BankImportSummary[]; documentImports: DocumentImportSummary[]; matchReviewCounts: MatchReviewCounts;
+  imports: BankImportSummary[]; documentImports: DocumentImportSummary[]; matchReviewCounts: MatchReviewCounts; bankCorrections: BankCorrection[];
 }
 export interface ImportOutcome { status: 'imported' | 'skipped' | 'cancelled' | 'failed' | 'unsupported'; importId: string | null; issues: ImportIssue[]; }
 export interface WorkspaceState {
