@@ -196,7 +196,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		page = await application.firstWindow({ timeout: 30000 });
 		page.setDefaultTimeout(20000);
 		page.setDefaultNavigationTimeout(20000);
-		await page.getByRole('heading', { name: 'Your records. Your workspace.' }).waitFor();
+		await page.getByRole('heading', { name: 'ReceiptMatch', exact: true }).waitFor();
 		await currentApplication().evaluate(({ ipcMain }) => {
 			const original = (ipcMain as TracedIpcMain)._invokeHandlers?.get('workspace:command');
 			if (typeof original !== 'function') throw new Error('The pinned Electron workspace command handler is unavailable for tracing.');
@@ -629,7 +629,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		await page.getByRole('button', { name: 'Create workspace', exact: true }).click();
 		await page.getByLabel('Workspace name', { exact: true }).fill('UI import records');
 		await dialogs({ saves: [workspaceFile] });
-		await clickCommand(page.getByRole('button', { name: 'Save workspace', exact: true }), 'save');
+		await clickCommand(page.getByRole('button', { name: 'Save', exact: true }), 'save');
 		await waitState({ filePath: workspaceFile, dirty: false });
 		await importFile(original);
 		await transactions().waitFor();

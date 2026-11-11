@@ -56,15 +56,29 @@ test('packaged match suggestions from import through keyboard review and reopeni
 		const page = await app.firstWindow();
 		await dialogs(app, [bankFile, first, second], workspaceFile);
 		await page.getByRole('button', { name: 'Create workspace' }).click();
+		const nav = page.getByRole('navigation', { name: 'Workspace views' });
+		const sourcesNav = nav.getByRole('button', { name: 'Sources' });
+		const matchesNav = nav.getByRole('button', { name: 'Match suggestions' });
 		const matches = page.getByRole('region', { name: 'Match suggestions' });
+		await expect(sourcesNav).toHaveAttribute('aria-current', 'page');
+		await matchesNav.press('Enter');
+		await expect(matchesNav).toHaveAttribute('aria-current', 'page');
+		await expect(matches.getByRole('heading', { name: 'Match suggestions' })).toBeFocused();
 		await expect(matches.getByText('Import a bank statement', { exact: false })).toBeVisible();
+		await sourcesNav.click();
+		await expect(page.getByRole('heading', { name: 'Sources', exact: true })).toBeFocused();
 		await page.getByRole('button', { name: 'Import statement' }).click();
+		await matchesNav.click();
 		await expect(matches.getByText('0 reliable · 0 uncertain · 2 unmatched')).toBeVisible();
+		await sourcesNav.click();
 		await page.getByRole('button', { name: 'Choose folder' }).click();
-		await expect(matches.getByText('1 reliable · 0 uncertain · 1 unmatched')).toBeVisible();
 		const statements = page.getByRole('region', { name: 'Bank statements' });
 		const documents = page.getByRole('region', { name: 'Supporting documents' });
-		const resize = (width: number) => app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setContentSize(width, 800), width);
+		await expect(documents.getByText('Analysis finished.', { exact: true })).toBeVisible();
+		const resize = async (width: number) => {
+			await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setContentSize(width, 800), width);
+			await expect.poll(() => page.evaluate(() => innerWidth)).toBe(width);
+		};
 		const importBounds = async () => {
 			const [bank, receipts] = await Promise.all([statements.boundingBox(), documents.boundingBox()]);
 			return { leftToRight: bank!.x + bank!.width < receipts!.x && bank!.y === receipts!.y, topToBottom: bank!.y + bank!.height < receipts!.y };
@@ -72,9 +86,13 @@ test('packaged match suggestions from import through keyboard review and reopeni
 		await resize(1120);
 		await expect.poll(async () => (await importBounds()).leftToRight).toBe(true);
 		await expect.poll(() => statements.getByRole('region', { name: 'Transactions table, horizontally scrollable' }).evaluate(table => table.scrollWidth <= table.clientWidth)).toBe(true);
+		await resize(1020);
+		await expect.poll(async () => (await importBounds()).topToBottom).toBe(true);
 		await resize(680);
 		await expect.poll(async () => (await importBounds()).topToBottom).toBe(true);
 		await resize(1120);
+		await matchesNav.click();
+		await expect(matches.getByText('1 reliable · 0 uncertain · 1 unmatched')).toBeVisible();
 		const disclosure = matches.getByRole('button', { name: 'View 1 candidate for', exact: false });
 		await disclosure.focus();
 		await disclosure.press('Enter');
@@ -85,7 +103,9 @@ test('packaged match suggestions from import through keyboard review and reopeni
 		await matches.locator('summary').filter({ hasText: 'Source evidence' }).press('Enter');
 		await expect(matches.getByText('Invoice Number: SYNTHETIC-A')).toBeVisible();
 
+		await sourcesNav.click();
 		await page.getByRole('button', { name: 'Choose folder' }).click();
+		await matchesNav.click();
 		await expect(matches.getByText('0 reliable · 1 uncertain · 1 unmatched')).toBeVisible();
 		const filter = matches.getByRole('combobox', { name: 'Result', exact: true });
 		await filter.selectOption('unmatched');
@@ -104,6 +124,9 @@ test('packaged match suggestions from import through keyboard review and reopeni
 		const reopened = await app.firstWindow();
 		await dialogs(app, [workspaceFile]);
 		await reopened.getByRole('button', { name: 'Open workspace', exact: false }).click();
+		const restoredNav = reopened.getByRole('navigation', { name: 'Workspace views' });
+		await expect(restoredNav.getByRole('button', { name: 'Sources' })).toHaveAttribute('aria-current', 'page');
+		await restoredNav.getByRole('button', { name: 'Match suggestions' }).click();
 		const restored = reopened.getByRole('region', { name: 'Match suggestions' });
 		await expect(restored.getByText('0 reliable · 1 uncertain · 1 unmatched')).toBeVisible();
 		await restored.getByRole('button', { name: 'View 2 candidates for', exact: false }).click();

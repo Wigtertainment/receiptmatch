@@ -111,7 +111,7 @@ const test = base.extend<{ documentImport: DocumentImportFixture }>({
 			});
 			const page = await application.firstWindow({ timeout: 30_000 });
 			page.setDefaultTimeout(20_000);
-			await page.getByRole("heading", { name: "Your records. Your workspace." }).waitFor();
+			await page.getByRole("heading", { name: "ReceiptMatch", exact: true }).waitFor();
 			await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false));
 			return { application, page };
 		}
@@ -274,11 +274,11 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 	await check("explicit-save-and-process-restart-preserve-document-ids-evidence-and-failures", async () => {
 		await dialogs([], [workspaceFile]);
 		await page.getByRole("button", { name: "Save", exact: true }).press("Enter");
-		await page.getByText("Your workspace is saved on this computer.", { exact: true }).waitFor();
+		await page.getByText("All changes saved", { exact: true }).waitFor();
 		await application.close();
 		({ application, page } = await launch());
 		await dialogs([workspaceFile]);
-		await page.getByRole("navigation", { name: "Workspace actions" }).getByRole("button", { name: "Open", exact: true }).press("Enter");
+		await page.getByRole("button", { name: "Open workspace", exact: true }).press("Enter");
 		const report = await openDetails(documents(), /^\s*mixed/i);
 		const broken = await openDetails(report, "e-broken.pdf");
 		await broken.getByText(/PDF engine could not open/i).waitFor();
