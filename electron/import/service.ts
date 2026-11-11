@@ -1,22 +1,21 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { constants, type BigIntStats } from 'node:fs';
-import { lstat, open } from 'node:fs/promises';
-import path from 'node:path';
 import { z } from 'zod';
 import { bankImportResultSchema, importIssue } from '../../src/shared/bank-import.js';
 import {
     extractionProgressSchema,
     extractionResultSchema,
-    PDF_EXTRACTION_LIMITS,
     PDF_EXTRACTION_VERSION,
     type ExtractionProgress,
     type ExtractionResult
 } from '../../src/shared/pdf-extraction.js';
 import { storedBankImportSchema, type BankImportRunResult, type StoredBankImport } from '../../src/shared/workspace-import.js';
+import type { WorkspaceSource } from '../../src/shared/workspace-documents.js';
 import { parseBankStatement } from './registry.js';
+import { readSourceSnapshot, SourceReadError as ImportFailure } from './source.js';
 
 export interface BankImportOptions {
     existing: readonly StoredBankImport[];
+    existingSources?: readonly WorkspaceSource[];
     signal?: AbortSignal;
     onProgress?: (progress: ExtractionProgress) => void;
 }
@@ -27,53 +26,8 @@ interface ImportDependencies {
     choose(): Promise<string | null>;
     extract(bytes: Uint8Array, sourceId: string, options: { signal?: AbortSignal; onProgress?: (progress: ExtractionProgress) => void }): Promise<ExtractionResult>;
 }
-class ImportFailure extends Error {
-    constructor(
-        readonly code: string,
-        message: string
-    ) {
-        super(message);
-    }
-}
 function cancelled(signal?: AbortSignal) {
     if (signal?.aborted) throw new ImportFailure('cancelled', 'Statement import was cancelled.');
-}
-function sameRevision(left: BigIntStats, right: BigIntStats) {
-    return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
-}
-async function snapshot(filePath: string, signal?: AbortSignal): Promise<Uint8Array> {
-    if (!path.isAbsolute(filePath) || path.extname(filePath).toLowerCase() !== '.pdf' || filePath.length > 32768 || filePath.includes('\0')) {
-        throw new ImportFailure('invalid-source', 'Choose an absolute local PDF file using the statement dialog.');
-    }
-    cancelled(signal);
-    const selected = await lstat(filePath, { bigint: true });
-    if (!selected.isFile() || selected.isSymbolicLink()) throw new ImportFailure('invalid-source', 'Choose a regular PDF file rather than a directory or linked file.');
-    const file = await open(filePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
-    try {
-        const before = await file.stat({ bigint: true });
-        if (!before.isFile() || !sameRevision(selected, before)) throw new ImportFailure('source-changed', 'The selected PDF changed before it could be read. Choose it again.');
-        if (before.size < 1n || before.size > BigInt(PDF_EXTRACTION_LIMITS.bytes))
-            throw new ImportFailure('source-limit', 'The selected PDF is empty or exceeds the local extraction byte limit.');
-        const bytes = Buffer.alloc(Number(before.size));
-        let position = 0;
-        while (position < bytes.length) {
-            cancelled(signal);
-            const { bytesRead } = await file.read(bytes, position, Math.min(65536, bytes.length - position), position);
-            if (!bytesRead) throw new ImportFailure('source-changed', 'The selected PDF changed while it was being read. Choose it again.');
-            position += bytesRead;
-        }
-        cancelled(signal);
-        const extra = await file.read(Buffer.alloc(1), 0, 1, position);
-        const after = await file.stat({ bigint: true });
-        const currentPath = await lstat(filePath, { bigint: true });
-        if (extra.bytesRead || !currentPath.isFile() || currentPath.isSymbolicLink() || !sameRevision(before, after) || !sameRevision(before, currentPath)) {
-            throw new ImportFailure('source-changed', 'The selected PDF changed while it was being read. Choose it again.');
-        }
-        cancelled(signal);
-        return bytes;
-    } finally {
-        await file.close();
-    }
 }
 
 export class StatementImportService implements BankImportService {
@@ -87,11 +41,13 @@ export class StatementImportService implements BankImportService {
             const selected = await this.dependencies.choose();
             cancelled(options.signal);
             if (selected === null) return { status: 'cancelled' };
-            const bytes = await snapshot(selected, options.signal);
+            const bytes = await readSourceSnapshot(selected, ['.pdf'], options.signal);
             const sha256 = createHash('sha256').update(bytes).digest('hex');
             cancelled(options.signal);
             const duplicate = options.existing.find((record) => record.result.sourceProvenance?.sha256 === sha256);
             if (duplicate) return { status: 'skipped', importId: duplicate.id };
+            const existingSource = options.existingSources?.find(source => source.sha256 === sha256);
+            if (existingSource) return { status: 'skipped', importId: null, existingSourceId: existingSource.id };
             const sourceId = randomUUID();
             const raw = await this.dependencies.extract(bytes, sourceId, {
                 signal: options.signal,

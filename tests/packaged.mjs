@@ -52,7 +52,7 @@ try {
     await screenshot('welcome');
     const preferences = await application.evaluate(({ BrowserWindow }) => { const value = BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences(); return { sandbox: value.sandbox, contextIsolation: value.contextIsolation, nodeIntegration: value.nodeIntegration }; });
     assert.deepEqual(preferences, { sandbox: true, contextIsolation: true, nodeIntegration: false });
-    assert.deepEqual(await page.evaluate(() => Object.keys(window.receiptmatch)), ['command', 'bankImports', 'subscribe']);
+    assert.deepEqual(await page.evaluate(() => Object.keys(window.receiptmatch)), ['command', 'bankImports', 'documentImports', 'subscribe']);
     assert.equal(await page.evaluate(() => typeof window.require), 'undefined');
     assert.equal(await page.evaluate(() => fetch('https://example.invalid/').then(() => false, () => true)), true);
     const invalid = await page.evaluate(() => window.receiptmatch.command({ type: 'write-file', path: '/arbitrary' }));

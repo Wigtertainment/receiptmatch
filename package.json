@@ -25,8 +25,9 @@
     "test:packaged": "node tests/packaged.mjs",
     "test:extraction": "node tests/extraction.mjs",
     "test:import": "node tests/import.mjs",
+    "test:documents": "node tests/documents.mjs",
     "test:ui-import": "node tests/ui-import.mjs",
-    "test": "npm run test:unit && npm run test:packaged && npm run test:extraction && npm run test:import && npm run test:ui-import"
+    "test": "npm run test:unit && npm run test:packaged && npm run test:extraction && npm run test:import && npm run test:documents && npm run test:ui-import"
   },
   "dependencies": {
     "better-sqlite3": "13.0.3",
@@ -51,6 +52,7 @@
     "electron-builder": "26.18.0",
     "eslint": "10.14.0",
     "globals": "17.14.0",
+    "image-size": "2.1.0",
     "pdf-lib": "1.17.1",
     "pdfjs-dist": "6.5.438",
     "playwright": "1.65.0",

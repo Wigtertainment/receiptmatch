@@ -1,0 +1,400 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { bankImportInputSchema, importIssue, type BankImportInput, type PositionedSpan } from '../../src/shared/bank-import.js';
+import { supportingDocumentSchema, type DocumentSection } from '../../src/shared/supporting-document.js';
+import { interpretSupportingDocument } from '../../electron/documents/interpret.js';
+
+// Independently invented examples; no private source names, values or identifiers.
+function document(...pages: string[][]): BankImportInput {
+    return {
+        source: { sourceId: 'synthetic-document', sha256: 'd'.repeat(64) },
+        extraction: { runId: 'synthetic-extraction', version: 'test-1' },
+        issues: [],
+        pages: pages.map((lines, index) => ({
+            pageId: `page-${index + 1}`, pageNumber: index + 1, width: 900, height: 1200, status: 'complete',
+            spans: lines.map((text, row) => ({ text, region: { x: 30, y: 25 + row * 25, width: 750, height: 12 }, method: 'embedded-text' }))
+        }))
+    };
+}
+function invoice(...extra: string[]) {
+    return document(['Invoice', 'Merchant: Orchard Workshop', 'Invoice Number: SYNTHETIC-ALPHA', 'Invoice Date: March 14, 2032', 'Currency: EUR', 'Invoice Total: EUR 73.25', ...extra]);
+}
+function amounts(section: DocumentSection, role: DocumentSection['amounts'][number]['role']) {
+    return section.amounts.filter(field => field.role === role).flatMap(field => field.candidates);
+}
+function references(section: DocumentSection, role: DocumentSection['references'][number]['role']) {
+    return section.references.filter(field => field.role === role).flatMap(field => field.candidates);
+}
+function dates(section: DocumentSection, role: DocumentSection['dates'][number]['role']) {
+    return section.dates.filter(field => field.role === role).flatMap(field => field.candidates);
+}
+
+test('a labelled invoice retains exact values, field roles, extraction and source evidence without modifying its input', () => {
+    const input = invoice('Subtotal: EUR 60.00', 'VAT: EUR 13.25', 'Due Date: 2032-04-14');
+    const original = structuredClone(input);
+    const result = interpretSupportingDocument(input);
+    assert.equal(result.status, 'complete', JSON.stringify(result.issues));
+    assert.equal(result.sections.length, 1);
+    assert.equal(result.sections[0].kind, 'invoice');
+    assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '7325', scale: 2, currency: 'EUR' }]);
+    assert.deepEqual(amounts(result.sections[0], 'subtotal'), [{ coefficient: '6000', scale: 2, currency: 'EUR' }]);
+    assert.deepEqual(amounts(result.sections[0], 'tax'), [{ coefficient: '1325', scale: 2, currency: 'EUR' }]);
+    assert.deepEqual(dates(result.sections[0], 'issue'), ['2032-03-14']);
+    assert.deepEqual(dates(result.sections[0], 'due'), ['2032-04-14']);
+    assert.deepEqual(references(result.sections[0], 'invoice'), ['SYNTHETIC-ALPHA']);
+    assert.ok(result.sections[0].merchants.some(field => field.candidates.includes('Orchard Workshop')));
+    assert.deepEqual(result.input, original);
+    assert.deepEqual(input, original);
+    assert.equal(supportingDocumentSchema.safeParse(result).success, true);
+    for (const field of [...result.sections[0].amounts, ...result.sections[0].dates, ...result.sections[0].references, ...result.sections[0].merchants]) {
+        assert.ok(field.evidence.length);
+        assert.ok(field.evidence.every(evidence => evidence.pageId === 'page-1' && evidence.method === 'embedded-text'));
+    }
+    assert.equal('direction' in result, false);
+    assert.equal('confidence' in result, false);
+    assert.equal('approved' in result, false);
+});
+
+test('invoice total, applied payment and zero balance due remain separate without summing or inferring a refund', () => {
+    const input = invoice('Applied Transactions:', 'PAYMENT-SYNTHETIC March 14, 2032 -EUR 73.25', 'Balance Due: EUR 0.00');
+    const result = interpretSupportingDocument(input);
+    const section = result.sections[0];
+    assert.deepEqual(amounts(section, 'billed-total'), [{ coefficient: '7325', scale: 2, currency: 'EUR' }]);
+    assert.deepEqual(amounts(section, 'payment'), [{ coefficient: '-7325', scale: 2, currency: 'EUR' }]);
+    assert.deepEqual(amounts(section, 'balance-due'), [{ coefficient: '0', scale: 2, currency: 'EUR' }]);
+    assert.ok(!result.issues.some(issue => /conflict/.test(issue.code)));
+    assert.equal('direction' in section, false);
+});
+
+test('document headers above the title stay with the same invoice instead of becoming an unrelated section', () => {
+	const result = interpretSupportingDocument(document(['Merchant: Meadow Consulting', 'Invoice No: SYNTHETIC-HEADER', 'Invoice Date: 2032-05-20', 'Currency: EUR',
+		'CREDIT INVOICE', 'Invoice Total: 81.00']));
+	assert.equal(result.sections.length, 1);
+	assert.equal(result.sections[0].kind, 'invoice');
+	assert.deepEqual(references(result.sections[0], 'invoice'), ['SYNTHETIC-HEADER']);
+	assert.deepEqual(dates(result.sections[0], 'issue'), ['2032-05-20']);
+	assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '8100', scale: 2, currency: 'EUR' }]);
+});
+
+test('exact large amounts and printed decimal scale survive without floating point rounding', () => {
+	const input = document(['Invoice', 'Invoice Total: EUR 9,876,543,210,987,654.3210', 'Balance Due: EUR -0.0020']);
+	const result = interpretSupportingDocument(input);
+	assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '98765432109876543210', scale: 4, currency: 'EUR' }]);
+	assert.deepEqual(amounts(result.sections[0], 'balance-due'), [{ coefficient: '-20', scale: 4, currency: 'EUR' }]);
+	for (const token of ["1'234.56", '1’234.56']) {
+		const grouped = interpretSupportingDocument(document(['Invoice', `Invoice Total: EUR ${token}`]));
+		assert.deepEqual(amounts(grouped.sections[0], 'billed-total'), [{ coefficient: '123456', scale: 2, currency: 'EUR' }]);
+	}
+});
+
+test('credit invoice terms, credit-card wording and a negative line item do not change the whole document to a credit note', () => {
+    const input = document(['CREDIT INVOICE', 'Merchant: Harbour Consulting', 'Invoice No: SYNTHETIC-CREDIT-TERMS', 'Date: 2032-05-20', 'Currency: EUR',
+        'Invoice Total: EUR 81.00', 'Unused time credit: -EUR 4.75', 'Payment Method: Credit Card', 'The invoice is payable upon issue.']);
+    const result = interpretSupportingDocument(input);
+    assert.equal(result.sections[0].kind, 'invoice');
+    assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '8100', scale: 2, currency: 'EUR' }]);
+    assert.ok(result.sections[0].amounts.some(field => field.role !== 'credit-note-component' && field.candidates.some(value => value.coefficient === '-475')));
+    assert.equal('direction' in result.sections[0], false);
+});
+
+test('a billing summary, attached invoice, distinct credit notes and FX instructions retain their own sections and references', () => {
+    const input = document(
+        ['Billing Summary', 'Merchant: Harbour Services Ltd', 'Billing Number: SYNTHETIC-NET', 'Document Date: 2032-05-20', 'Total Amount: EUR (12.50)', 'No payments Required'],
+        ['Invoice', 'Merchant: Harbour Services Ltd', 'Tax Invoice Number: SYNTHETIC-INVOICE', 'Tax Invoice Date: 2032-05-20', 'Currency: EUR', 'Total: EUR 40.00'],
+        ['Credit Note', 'Credit Note Number: SYNTHETIC-CN-1', 'Credit Note Date: 2032-05-20', 'Currency: EUR', 'Credit Note Total: EUR 22.50', 'Invoice number: SYNTHETIC-PRIOR-1'],
+        ['Credit Note', 'Credit Note Number: SYNTHETIC-CN-2', 'Credit Note Date: 2032-05-20', 'Currency: EUR', 'Credit Note Total: EUR 30.00', 'Invoice number: SYNTHETIC-PRIOR-2'],
+        ['Payment Instructions', 'Exchange rate', 'Pricing Currency: USD', 'Exchange rate to EUR: 0.843210']
+    );
+    const result = interpretSupportingDocument(input);
+    assert.equal(result.sections.length, 5);
+    assert.deepEqual(result.sections.map(section => section.kind), ['billing-summary', 'invoice', 'credit-note', 'credit-note', 'payment-information']);
+    assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '-1250', scale: 2, currency: 'EUR' }]);
+    assert.deepEqual(amounts(result.sections[1], 'billed-total'), [{ coefficient: '4000', scale: 2, currency: 'EUR' }]);
+    assert.deepEqual(amounts(result.sections[2], 'credit-note-component'), [{ coefficient: '2250', scale: 2, currency: 'EUR' }]);
+    assert.deepEqual(amounts(result.sections[3], 'credit-note-component'), [{ coefficient: '3000', scale: 2, currency: 'EUR' }]);
+    assert.ok(references(result.sections[2], 'related-invoice').includes('SYNTHETIC-PRIOR-1'));
+    assert.ok(!references(result.sections[2], 'invoice').includes('SYNTHETIC-PRIOR-1'));
+    assert.deepEqual(result.sections[4].amounts.filter(field => field.role !== 'informational-fx'), []);
+    assert.ok(result.sections[4].currencies.some(field => field.role === 'informational-fx' && field.candidates.includes('USD')));
+    assert.ok(result.sections.slice(0, 4).flatMap(section => section.amounts).flatMap(field => field.candidates).every(value => value.currency !== 'USD'));
+});
+
+test('different documents can start on the same physical page', () => {
+    const result = interpretSupportingDocument(document(['Invoice', 'Invoice Number: SYNTHETIC-A', 'Total: EUR 21.00', 'Credit Note', 'Credit Note Number: SYNTHETIC-B', 'Credit Note Total: EUR 5.00']));
+    assert.equal(result.sections.length, 2);
+    assert.deepEqual(result.sections.map(section => section.pageIds), [['page-1'], ['page-1']]);
+    assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '2100', scale: 2, currency: 'EUR' }]);
+    assert.deepEqual(amounts(result.sections[1], 'credit-note-component'), [{ coefficient: '500', scale: 2, currency: 'EUR' }]);
+});
+
+test('two invoices on the same page keep independent references and totals', () => {
+	const result = interpretSupportingDocument(document(['Invoice', 'Invoice Number: SYNTHETIC-FIRST', 'Total: EUR 21.00',
+		'Invoice', 'Invoice Number: SYNTHETIC-SECOND', 'Total: EUR 32.00']));
+	assert.equal(result.sections.length, 2);
+	assert.deepEqual(references(result.sections[0], 'invoice'), ['SYNTHETIC-FIRST']);
+	assert.deepEqual(references(result.sections[1], 'invoice'), ['SYNTHETIC-SECOND']);
+	assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '2100', scale: 2, currency: 'EUR' }]);
+	assert.deepEqual(amounts(result.sections[1], 'billed-total'), [{ coefficient: '3200', scale: 2, currency: 'EUR' }]);
+});
+
+test('a repeated invoice heading with the same reference across pages remains a continuation', () => {
+	const input = document(['Invoice', 'Invoice Number: SYNTHETIC-SAME', 'Total: EUR 21.00'], ['Invoice', 'Invoice Number: SYNTHETIC-SAME', 'Total: EUR 21.00']);
+	const result = interpretSupportingDocument(input);
+	assert.equal(result.sections.length, 1);
+	assert.deepEqual(result.sections[0].pageIds, ['page-1', 'page-2']);
+	assert.ok(!result.issues.some(issue => /conflict/.test(issue.code)));
+});
+
+test('damaged amount tokens are unresolved in full, never a valid numeric prefix or suffix', () => {
+	for (const token of ['--19.95', '19.95CR', '19,95.20', '1.23.45', '19.95?', '19.95-', "1'23.45", '12’34.56']) {
+		const input = invoice();
+		input.pages[0].spans.find(span => span.text.startsWith('Invoice Total:'))!.text = `Invoice Total: EUR ${token}`;
+		const result = interpretSupportingDocument(input);
+		assert.equal(result.status, 'partial', token);
+		assert.deepEqual(amounts(result.sections[0], 'billed-total'), [], token);
+		assert.ok(result.issues.length, token);
+		assert.ok(result.sections[0].amounts.some(field => field.evidence.some(evidence => evidence.rawText.includes(token))), token);
+	}
+});
+
+test('payment due is a balance awaiting payment, not an applied payment', () => {
+	const result = interpretSupportingDocument(invoice('Payment due: EUR 73.25'));
+	assert.deepEqual(amounts(result.sections[0], 'balance-due'), [{ coefficient: '7325', scale: 2, currency: 'EUR' }]);
+	assert.deepEqual(amounts(result.sections[0], 'payment'), []);
+});
+
+test('cash payment and non-cash consideration on the same sentence do not become a combined amount', () => {
+	const result = interpretSupportingDocument(document(['Passenger / Itinerary Receipt', 'In addition to the cash amount of EUR 63.27, 1450 miles were used.', 'Grand Total: EUR 70.00']));
+	assert.deepEqual(amounts(result.sections[0], 'payment'), [{ coefficient: '6327', scale: 2, currency: 'EUR' }]);
+	assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '7000', scale: 2, currency: 'EUR' }]);
+	assert.ok(result.input?.pages[0].spans.some(span => span.text.includes('1450 miles')));
+});
+
+test('damaged document references are not silently shortened to a different identifier', () => {
+	const input = invoice();
+	input.pages[0].spans.find(span => span.text.startsWith('Invoice Number:'))!.text = 'Invoice Number: BROKEN?REF';
+	const result = interpretSupportingDocument(input);
+	assert.equal(result.status, 'partial');
+	assert.ok(!references(result.sections[0], 'invoice').includes('BROKEN'));
+	assert.ok(result.sections[0].references.some(field => field.evidence.some(evidence => evidence.rawText.includes('BROKEN?REF'))));
+});
+
+test('multiple labelled dates on a single line keep their own roles', () => {
+	const result = interpretSupportingDocument(document(['Invoice', 'Invoice Date 2032-05-20 Due Date 2032-06-20', 'Invoice Total: EUR 8.00']));
+	assert.deepEqual(dates(result.sections[0], 'issue'), ['2032-05-20']);
+	assert.deepEqual(dates(result.sections[0], 'due'), ['2032-06-20']);
+});
+
+test('multiple labelled amounts on one line keep billed total and balance due distinct', () => {
+	const result = interpretSupportingDocument(document(['Invoice', 'Invoice Total EUR 88.00 Balance Due EUR 0.00']));
+	assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '8800', scale: 2, currency: 'EUR' }]);
+	assert.deepEqual(amounts(result.sections[0], 'balance-due'), [{ coefficient: '0', scale: 2, currency: 'EUR' }]);
+});
+
+test('tax totals cannot supply a missing billed total', () => {
+	for (const [label, role] of [['VAT Total', 'tax'], ['Tax Total', 'tax'], ['Total VAT', 'tax'], ['Total Tax', 'tax'], ['Subtotal including VAT', 'subtotal']] as const) {
+		const result = interpretSupportingDocument(document(['Invoice', 'Merchant: Fern Workshop', 'Invoice Number: SYNTHETIC-TAX', 'Invoice Date: 2032-05-20', 'Currency: EUR', `${label}: EUR 19.95`]));
+		assert.equal(result.status, 'partial', label);
+		assert.deepEqual(amounts(result.sections[0], 'billed-total'), [], label);
+		assert.deepEqual(amounts(result.sections[0], role), [{ coefficient: '1995', scale: 2, currency: 'EUR' }], label);
+	}
+	const including = interpretSupportingDocument(document(['Invoice', 'Total (including Tax): EUR 88.00']));
+	assert.deepEqual(amounts(including.sections[0], 'billed-total'), [{ coefficient: '8800', scale: 2, currency: 'EUR' }]);
+});
+
+test('a column value above its total label retains both evidence regions and needs association review', () => {
+	const input = invoice();
+	input.pages[0].spans = input.pages[0].spans.filter(span => !span.text.startsWith('Invoice Total:'));
+	input.pages[0].spans.push(
+		{ text: 'EUR 47.12', region: { x: 500, y: 300, width: 90, height: 12 }, method: 'embedded-text' },
+		{ text: 'Grand Total', region: { x: 500, y: 318, width: 90, height: 12 }, method: 'embedded-text' }
+	);
+	const result = interpretSupportingDocument(input);
+	assert.equal(result.status, 'partial');
+	assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '4712', scale: 2, currency: 'EUR' }]);
+	const total = result.sections[0].amounts.find(field => field.role === 'billed-total')!;
+	assert.ok(total.evidence.some(evidence => evidence.rawText === 'EUR 47.12'));
+	assert.ok(total.evidence.some(evidence => evidence.rawText === 'Grand Total'));
+	assert.ok(result.issues.some(issue => issue.fieldId === total.id && /association|unconfirmed/.test(issue.code)));
+	const telephone = invoice();
+	telephone.pages[0].spans = telephone.pages[0].spans.filter(span => !span.text.startsWith('Invoice Total:'));
+	telephone.pages[0].spans.push(
+		{ text: 'Phone:', region: { x: 500, y: 282, width: 90, height: 12 }, method: 'embedded-text' },
+		{ text: '5551234567', region: { x: 500, y: 300, width: 90, height: 12 }, method: 'embedded-text' },
+		{ text: 'Total', region: { x: 500, y: 318, width: 90, height: 12 }, method: 'embedded-text' }
+	);
+	const rejected = interpretSupportingDocument(telephone);
+	assert.equal(rejected.status, 'partial');
+	assert.deepEqual(amounts(rejected.sections[0], 'billed-total'), []);
+});
+
+test('equivalent exact totals with different printed scales are not conflicting financial values', () => {
+	const result = interpretSupportingDocument(invoice('Invoice Total: EUR 73.2500'));
+	assert.ok(!result.issues.some(issue => /conflict/.test(issue.code)));
+	assert.deepEqual(amounts(result.sections[0], 'billed-total'), [
+		{ coefficient: '7325', scale: 2, currency: 'EUR' }, { coefficient: '732500', scale: 4, currency: 'EUR' }
+	]);
+});
+
+test('the document contract rejects a complete result with contradictory scalar fields and no conflict issue', () => {
+	const result = interpretSupportingDocument(invoice());
+	const other = structuredClone(result.sections[0].amounts[0]);
+	other.id = 'synthetic-contradictory-total'; other.candidates[0].coefficient = '9999';
+	result.sections[0].amounts.push(other);
+	assert.equal(result.status, 'complete');
+	assert.equal(supportingDocumentSchema.safeParse(result).success, false);
+});
+
+test('malformed amount candidates are validation failures without throwing during scalar comparisons', () => {
+	for (const bad of [{ coefficient: 'garbled', scale: 2, currency: 'EUR' }, { coefficient: '0', scale: 19, currency: 'EUR' }]) {
+		const result = interpretSupportingDocument(invoice());
+		result.sections[0].amounts[0].candidates = [bad];
+		assert.doesNotThrow(() => supportingDocumentSchema.safeParse(result));
+		assert.equal(supportingDocumentSchema.safeParse(result).success, false);
+	}
+});
+
+test('page continuation and repeated totals preserve evidence without double-counting or declaring a conflict', () => {
+    const input = invoice();
+    input.pages.push(document(['Continuation', 'Invoice Number: SYNTHETIC-ALPHA', 'Invoice Total: EUR 73.25']).pages[0]);
+    input.pages[1].pageId = 'page-2'; input.pages[1].pageNumber = 2;
+    const result = interpretSupportingDocument(input);
+    assert.equal(result.sections.length, 1);
+    assert.deepEqual(result.sections[0].pageIds, ['page-1', 'page-2']);
+    assert.ok(amounts(result.sections[0], 'billed-total').every(value => value.coefficient === '7325'));
+    assert.ok(!result.issues.some(issue => /conflict/.test(issue.code)));
+    assert.ok(result.sections[0].amounts.filter(field => field.role === 'billed-total').flatMap(field => field.evidence).some(evidence => evidence.pageId === 'page-2'));
+});
+
+test('ambiguous slash dates retain both calendar readings and do not replace the invoice date with due or service dates', () => {
+    const input = document(['Invoice', 'Invoice Date: 04/05/2032', 'Due Date: 2032-06-20', 'Service Period: 2032-03-01 - 2032-03-31', 'Invoice Total: EUR 9.00']);
+    const result = interpretSupportingDocument(input);
+    assert.equal(result.status, 'partial');
+    assert.deepEqual([...new Set(dates(result.sections[0], 'issue'))].sort(), ['2032-04-05', '2032-05-04']);
+    assert.deepEqual(dates(result.sections[0], 'due'), ['2032-06-20']);
+	assert.ok([...dates(result.sections[0], 'service-period'), ...dates(result.sections[0], 'service-start')].includes('2032-03-01'));
+	assert.ok([...dates(result.sections[0], 'service-period'), ...dates(result.sections[0], 'service-end')].includes('2032-03-31'));
+    assert.ok(result.issues.some(issue => /ambig/.test(issue.code) && issue.evidence.length));
+});
+
+test('two-digit years and invalid dates stay unresolved without inventing a century or rolling the calendar', () => {
+	for (const raw of ['04/05/32', '2032-02-30', 'February 30, 2032', 'Mayhem 14, 2032']) {
+        const result = interpretSupportingDocument(document(['Invoice', `Invoice Date: ${raw}`, 'Total: EUR 1.00']));
+        assert.equal(result.status, 'partial');
+        assert.deepEqual(dates(result.sections[0], 'issue'), []);
+        assert.ok(result.sections[0].dates.some(field => field.evidence.some(evidence => evidence.rawText.includes(raw))));
+    }
+});
+
+test('a dollar symbol or source country does not establish USD, and missing currency does not discard the amount', () => {
+    const result = interpretSupportingDocument(document(['Invoice', 'Merchant: Bay Workshop, USA', 'Invoice Number: SYNTHETIC-DOLLAR', 'Invoice Date: 2032-05-20', 'Total: $19.95']));
+    assert.equal(result.status, 'partial');
+    assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '1995', scale: 2, currency: null }]);
+    assert.ok(!result.sections[0].currencies.flatMap(field => field.candidates).includes('USD'));
+    assert.ok(result.issues.some(issue => /currency/i.test(`${issue.code} ${issue.field}`)));
+});
+
+test('currency declarations stay inside their own section', () => {
+    const result = interpretSupportingDocument(document(['Invoice', 'Currency: USD', 'Invoice Number: SYNTHETIC-A', 'Total: 11.00'],
+        ['Invoice', 'Invoice Number: SYNTHETIC-B', 'Total: $12.00']));
+    assert.equal(result.sections.length, 2);
+    assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '1100', scale: 2, currency: 'USD' }]);
+    assert.deepEqual(amounts(result.sections[1], 'billed-total'), [{ coefficient: '1200', scale: 2, currency: null }]);
+});
+
+test('conflicting totals remain candidates with an issue while distinct payments remain separate events', () => {
+    const result = interpretSupportingDocument(invoice('Invoice Total: EUR 73.35', 'Payment: EUR -20.00', 'Payment: EUR -53.25'));
+    assert.equal(result.status, 'partial');
+    assert.deepEqual(amounts(result.sections[0], 'billed-total').map(value => value.coefficient).sort(), ['7325', '7335']);
+    const conflicts = result.issues.filter(issue => /conflict/.test(issue.code));
+    assert.ok(conflicts.length);
+    assert.ok(!conflicts.some(issue => /payment/.test(issue.field ?? '')));
+    assert.deepEqual(amounts(result.sections[0], 'payment').map(value => value.coefficient).sort(), ['-2000', '-5325']);
+});
+
+test('unlabelled values and customer, table, order or account identifiers never supply a missing invoice reference', () => {
+    const input = document(['Receipt', 'Table No: 12', 'Customer Number: SYNTHETIC-CUSTOMER', 'Account Number: SYNTHETIC-ACCOUNT', 'Order Number: SYNTHETIC-ORDER', 'Total: 43.21', 'Unclassified source value 987.65']);
+    const result = interpretSupportingDocument(input);
+    assert.equal(result.status, 'partial');
+    assert.deepEqual(references(result.sections[0], 'invoice'), []);
+    assert.deepEqual(references(result.sections[0], 'receipt'), []);
+    assert.ok(references(result.sections[0], 'table').includes('12'));
+    assert.ok(references(result.sections[0], 'customer').includes('SYNTHETIC-CUSTOMER'));
+    assert.ok(references(result.sections[0], 'account').includes('SYNTHETIC-ACCOUNT'));
+    assert.ok(references(result.sections[0], 'order').includes('SYNTHETIC-ORDER'));
+    assert.deepEqual(result.input, input);
+    assert.ok(result.issues.some(issue => /reference/i.test(`${issue.code} ${issue.field}`)));
+});
+
+test('unrecognised languages and damaged glyphs retain raw evidence rather than manufacturing a corrected reference or sign', () => {
+    const input = document(['ΑΠΟΔΕΙΞΗ', 'Invoice Number: SYNTHETIC\0BROKEN', 'Invoice Total: \0$3.11', '(cid:129)43,99', '<img src=x onerror=alert(1)>']);
+    const result = interpretSupportingDocument(input);
+    assert.equal(result.status, 'partial');
+    assert.deepEqual(result.input, input);
+    assert.ok(result.issues.length);
+    assert.ok(!result.sections.flatMap(section => section.references).flatMap(field => field.candidates).includes('SYNTHETIC-BROKEN'));
+    assert.ok(!result.sections.flatMap(section => section.amounts).flatMap(field => field.candidates).some(value => value.coefficient === '-311'));
+});
+
+test('OCR words, split labels and mixed extraction methods retain positioned evidence and deterministic interpretation', () => {
+    const input = invoice();
+    input.pages[0].spans = input.pages[0].spans.flatMap(line => {
+        let x = 30;
+        return line.text.split(' ').map(text => {
+            const width = text.length * 7;
+            const span: PositionedSpan = { text, region: { x, y: line.region.y, width, height: 12 }, method: 'local-ocr' };
+            x += width + 7;
+            return span;
+        });
+    });
+    input.pages[0].spans[0].method = 'embedded-text';
+    const result = interpretSupportingDocument(input);
+    assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '7325', scale: 2, currency: 'EUR' }]);
+    assert.ok(result.sections[0].amounts[0].evidence.some(evidence => evidence.method === 'local-ocr'));
+    const reordered = structuredClone(input);
+    reordered.pages[0].spans.reverse();
+    const again = interpretSupportingDocument(reordered);
+    assert.deepEqual(again.sections, result.sections);
+    assert.deepEqual(again.issues, result.issues);
+});
+
+test('failed or blank pages and extractor warnings stay visible; a readable invoice can still be retained', () => {
+    const input = invoice();
+    input.pages.push({ pageId: 'page-2', pageNumber: 2, width: 900, height: 1200, status: 'failed', spans: [] });
+    input.issues.push({ ...importIssue('page-failed', 'Synthetic page failure.'), pageId: 'page-2' });
+    const result = interpretSupportingDocument(input);
+    assert.equal(result.status, 'partial');
+    assert.deepEqual(result.input, input);
+    assert.ok(result.issues.some(issue => issue.code === 'page-failed'));
+    assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '7325', scale: 2, currency: 'EUR' }]);
+    const blank = interpretSupportingDocument(document([]));
+    assert.equal(blank.status, 'failed');
+    assert.ok(blank.issues.length);
+    assert.equal(supportingDocumentSchema.safeParse(blank).success, true);
+});
+
+test('invalid extraction is rejected at the interpretation boundary', () => {
+    for (const input of [null, {}, { ...invoice(), pages: [] }]) {
+        const result = interpretSupportingDocument(input);
+        assert.equal(result.status, 'failed');
+        assert.ok(result.issues.length);
+        assert.equal(supportingDocumentSchema.safeParse(result).success, true);
+    }
+});
+
+test('the document contract rejects forged evidence and orphaned or reused identities', () => {
+    const result = interpretSupportingDocument(invoice());
+    assert.equal(supportingDocumentSchema.safeParse(result).success, true);
+    for (const mutate of [
+        (value: typeof result) => { value.sections[0].amounts[0].evidence[0].pageId = 'missing-page'; },
+        (value: typeof result) => { value.sections[0].amounts[0].evidence[0].region.x = 100000; },
+        (value: typeof result) => { value.sections[0].pageIds = ['missing-page']; },
+        (value: typeof result) => { value.sections.push(structuredClone(value.sections[0])); },
+        (value: typeof result) => { value.sections[0].dates[0].id = value.sections[0].amounts[0].id; },
+        (value: typeof result) => { value.status = 'complete'; value.issues.push({ code: 'synthetic', severity: 'warning', message: 'Needs review.', sectionId: 'missing-section', fieldId: null, field: null, evidence: [] }); }
+    ]) {
+        const changed = structuredClone(result); mutate(changed);
+        assert.equal(supportingDocumentSchema.safeParse(changed).success, false);
+    }
+    assert.equal(bankImportInputSchema.safeParse(invoice()).success, true);
+});

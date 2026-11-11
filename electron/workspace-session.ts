@@ -4,6 +4,8 @@ import { importIssue } from '../src/shared/bank-import.js';
 import { storedBankImportSchema, type StoredBankImport } from '../src/shared/workspace-import.js';
 import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, type SavedWorkspace, type WorkspaceMetadata } from './store.js';
 import type { BankImportService } from './import/service.js';
+import type { DocumentImportService } from './documents/service.js';
+import { storedDocumentImportSchema, type StoredDocumentImport, type WorkspaceSource } from '../src/shared/workspace-documents.js';
 
 export interface WorkspaceDialogs {
   open(): Promise<string | null>;
@@ -31,11 +33,15 @@ export class WorkspaceSession {
   private busy = false;
   private error: string | null = null;
   private importRecords: StoredBankImport[] = [];
+  private documentRecords: StoredDocumentImport[] = [];
   private importController: AbortController | null = null;
   private statementImport: WorkspaceState['statementImport'] = null;
   private importOutcome: WorkspaceState['importOutcome'] = null;
+  private documentImport: WorkspaceState['documentImport'] = null;
+  private documentOutcome: WorkspaceState['documentOutcome'] = null;
   private loadRevision = 0;
-  constructor(private readonly dialogs: WorkspaceDialogs, private readonly changed?: (state: WorkspaceState) => void, private readonly importService?: BankImportService) {}
+  constructor(private readonly dialogs: WorkspaceDialogs, private readonly changed?: (state: WorkspaceState) => void, private readonly importService?: BankImportService,
+    private readonly documentService?: DocumentImportService) {}
 
   state(): WorkspaceState {
     const imports = this.importRecords.map(record => ({
@@ -44,28 +50,50 @@ export class WorkspaceSession {
       transactions: record.result.transactions.length, drafts: record.result.unresolvedDrafts.length, issues: record.result.issues.length
     }));
     const sameImports = this.saved?.imports.length === this.importRecords.length && this.importRecords.every((record, index) => record.id === this.saved!.imports[index].id);
+    const sameDocuments = this.saved?.documentImports.length === this.documentRecords.length && this.documentRecords.every((record, index) => record.id === this.saved!.documentImports[index].id);
+    const documentImports = this.documentRecords.map(record => ({
+      id: record.id, folderPath: record.folderPath, status: record.status,
+      imported: record.files.filter(file => file.status === 'imported').length, skipped: record.files.filter(file => file.status === 'skipped').length,
+      failed: record.files.filter(file => file.status === 'failed').length, unsupported: record.files.filter(file => file.status === 'unsupported').length,
+      directoryIssues: record.directoryIssues.length
+    }));
     return {
       workspace: this.metadata ? {
-        id: this.metadata.id, loadRevision: this.loadRevision, name: this.metadata.name, dirty: !this.saved || this.metadata.name !== this.saved.metadata.name || !sameImports,
-        filePath: this.saved?.filePath ?? null, savedAt: this.saved?.metadata.savedAt ?? null, imports
+        id: this.metadata.id, loadRevision: this.loadRevision, name: this.metadata.name, dirty: !this.saved || this.metadata.name !== this.saved.metadata.name || !sameImports || !sameDocuments,
+        filePath: this.saved?.filePath ?? null, savedAt: this.saved?.metadata.savedAt ?? null, imports, documentImports
       } : null,
-      busy: this.busy, error: this.error, statementImport: structuredClone(this.statementImport), importOutcome: structuredClone(this.importOutcome)
+      busy: this.busy, error: this.error, statementImport: structuredClone(this.statementImport), importOutcome: structuredClone(this.importOutcome),
+      documentImport: structuredClone(this.documentImport), documentOutcome: structuredClone(this.documentOutcome)
     };
   }
   bankImports(): StoredBankImport[] { return structuredClone(this.importRecords); }
+  documentImports(): StoredDocumentImport[] { return structuredClone(this.documentRecords); }
+  private sources(): WorkspaceSource[] {
+    const sources = new Map((this.saved?.sources ?? []).map(source => [source.id, source]));
+    for (const record of this.importRecords) {
+      const source = record.result.sourceProvenance!;
+      sources.set(source.sourceId, { id: source.sourceId, filePath: record.filePath, sha256: source.sha256 });
+    }
+    for (const record of this.documentRecords) for (const file of record.files) if (file.status === 'imported') {
+      const source = file.record.result.input!.source;
+      sources.set(source.sourceId, { id: source.sourceId, filePath: file.record.filePath, sha256: source.sha256 });
+    }
+    return structuredClone([...sources.values()]);
+  }
   rejectRequest(): WorkspaceState { return { ...this.state(), error: 'This workspace request is not supported.' }; }
   private publish() { this.changed?.(this.state()); }
   private async save(): Promise<boolean> {
     if (!this.metadata) return false;
     if (!this.metadata.name.trim()) throw new Error('Enter a workspace name before saving.');
-    if (this.saved) this.saved = await saveWorkspace(this.saved, this.metadata, this.importRecords);
+    if (this.saved) this.saved = await saveWorkspace(this.saved, this.metadata, this.importRecords, this.documentRecords);
     else {
       const destination = await this.dialogs.save(this.metadata.name);
       if (!destination) return false;
-      this.saved = await createWorkspace(destination, this.metadata, this.importRecords);
+      this.saved = await createWorkspace(destination, this.metadata, this.importRecords, this.documentRecords);
     }
     this.metadata = { ...this.saved.metadata };
     this.importRecords = structuredClone(this.saved.imports);
+    this.documentRecords = structuredClone(this.saved.documentImports);
     return true;
   }
   private async canLeave(): Promise<boolean> {
@@ -81,7 +109,7 @@ export class WorkspaceSession {
     const controller = this.importController!; const workspaceId = this.metadata!.id;
     if (!this.importService) { this.failedImport('import-unavailable', 'Statement import is not available.'); return; }
     const result = await this.importService.run({
-      existing: this.bankImports(), signal: controller.signal,
+      existing: this.bankImports(), existingSources: this.sources(), signal: controller.signal,
       onProgress: progress => {
         if (this.importController !== controller || controller.signal.aborted || this.metadata?.id !== workspaceId || !this.statementImport) return;
         this.statementImport = { cancelling: false, progress: structuredClone(progress) }; this.publish();
@@ -96,26 +124,74 @@ export class WorkspaceSession {
       const record = validated.data;
       const duplicate = this.importRecords.find(existing => existing.result.sourceProvenance?.sha256 === record.result.sourceProvenance?.sha256);
       if (duplicate) { this.importOutcome = { status: 'skipped', importId: duplicate.id, issues: [] }; return; }
+      if (this.sources().some(source => source.sha256 === record.result.sourceProvenance?.sha256)) {
+        this.importOutcome = { status: 'skipped', importId: null, issues: [] }; return;
+      }
       const identities = (value: StoredBankImport) => [
         value.id, value.result.sourceProvenance!.sourceId, ...value.accounts.flatMap(account => [account.accountId, account.statementId]),
         ...value.transactions.map(row => row.transactionId), ...value.drafts.map(row => row.draftId)
       ];
-      const existingIds = new Set(this.importRecords.flatMap(identities));
-      if (identities(record).some(id => existingIds.has(id))) { this.failedImport('invalid-import', 'The statement import contains reused workspace identities.'); return; }
+      const existingIds = new Set([...this.importRecords.flatMap(identities), ...this.documentIdentities(), ...this.sources().map(source => source.id), this.metadata!.id].map(id => id.toLowerCase()));
+      if (identities(record).some(id => existingIds.has(id.toLowerCase()))) { this.failedImport('invalid-import', 'The statement import contains reused workspace identities.'); return; }
       this.importRecords = [...this.importRecords, record];
       this.importOutcome = { status: 'imported', importId: record.id, issues: structuredClone(record.result.issues) };
     } else if (result.status === 'skipped') {
+      if (result.importId === null) {
+        if (!this.sources().some(source => source.id === result.existingSourceId)) { this.failedImport('invalid-import', 'The duplicate source could not be identified.'); return; }
+        this.importOutcome = { status: 'skipped', importId: null, issues: [] }; return;
+      }
       if (!this.importRecords.some(record => record.id === result.importId)) {
         this.failedImport('invalid-import', 'The existing statement import could not be identified.'); return;
       }
       this.importOutcome = { status: 'skipped', importId: result.importId, issues: [] };
     } else this.importOutcome = { status: result.status, importId: null, issues: structuredClone(result.issues) };
   }
+  private documentIdentities(): string[] {
+    return this.documentRecords.flatMap(record => [record.id, ...record.files.flatMap(file => file.status === 'imported'
+      ? [file.record.id, file.record.result.input!.source.sourceId] : file.status === 'failed' && file.analysis?.input ? [file.analysis.input.source.sourceId] : [])]);
+  }
+  private async importDocuments() {
+    const controller = this.importController!; const workspaceId = this.metadata!.id;
+    if (!this.documentService) { this.documentOutcome = { status: 'failed', importId: null, issues: [importIssue('import-unavailable', 'Document import is not available.')] }; return; }
+    const result = await this.documentService.run({
+      existingSources: this.sources(), signal: controller.signal,
+      onProgress: progress => {
+        if (this.importController !== controller || controller.signal.aborted || this.metadata?.id !== workspaceId || !this.documentImport) return;
+        this.documentImport = { cancelling: false, progress: structuredClone(progress) }; this.publish();
+      }
+    });
+    if (this.metadata?.id !== workspaceId || !result) { this.documentOutcome = { status: 'cancelled', importId: null, issues: [] }; return; }
+    const checked = storedDocumentImportSchema.safeParse(result);
+    if (!checked.success) throw new Error('The document import could not be validated.');
+    const record = checked.data;
+    if (controller.signal.aborted && record.status !== 'cancelled') { this.documentOutcome = { status: 'cancelled', importId: null, issues: [] }; return; }
+    const identities = new Set([this.metadata.id, ...this.documentIdentities(), ...this.sources().map(source => source.id), ...this.importRecords.flatMap(bank => [
+      bank.id, ...bank.accounts.flatMap(account => [account.accountId, account.statementId]), ...bank.transactions.map(row => row.transactionId), ...bank.drafts.map(row => row.draftId)
+    ])].map(id => id.toLowerCase()));
+    const sources = new Map(this.sources().map(source => [source.id, source]));
+    const hashes = new Set([...sources.values()].flatMap(source => source.sha256 ? [source.sha256] : []));
+    const reserve = (id: string) => { if (identities.has(id.toLowerCase())) throw new Error('The document import reuses a workspace identity.'); identities.add(id.toLowerCase()); };
+    reserve(record.id);
+    for (const file of record.files) {
+      if (file.status === 'imported') {
+        const source = file.record.result.input!.source;
+        reserve(file.record.id); reserve(source.sourceId);
+        if (hashes.has(source.sha256)) throw new Error('The document import contains content already present in the workspace.');
+        hashes.add(source.sha256); sources.set(source.sourceId, { id: source.sourceId, filePath: file.record.filePath, sha256: source.sha256 });
+      } else if (file.status === 'skipped') {
+        if (sources.get(file.existingSourceId)?.sha256 !== file.sha256) throw new Error('The skipped file does not identify existing source content.');
+      } else if (file.status === 'failed' && file.analysis?.input) reserve(file.analysis.input.source.sourceId);
+    }
+    this.documentRecords = [...this.documentRecords, record];
+    this.documentOutcome = { status: record.status, importId: record.id, issues: [] };
+  }
   async dispatch(command: WorkspaceCommand): Promise<WorkspaceState> {
     if (command.type === 'get-state') return this.state();
     if (command.type === 'cancel-import') {
-      if (this.importController && this.statementImport && !this.importController.signal.aborted) {
-        this.statementImport = { ...this.statementImport, cancelling: true }; this.importController.abort(); this.publish();
+      if (this.importController && (this.statementImport || this.documentImport) && !this.importController.signal.aborted) {
+        if (this.statementImport) this.statementImport = { ...this.statementImport, cancelling: true };
+        if (this.documentImport) this.documentImport = { ...this.documentImport, cancelling: true };
+        this.importController.abort(); this.publish();
       }
       return this.state();
     }
@@ -128,20 +204,26 @@ export class WorkspaceSession {
       if (!this.metadata) { this.error = 'Create or open a workspace before importing a statement.'; this.publish(); return this.state(); }
       this.importController = new AbortController(); this.statementImport = { cancelling: false, progress: null }; this.importOutcome = null;
     }
+    if (command.type === 'import-documents') {
+      if (!this.metadata) { this.error = 'Create or open a workspace before analyzing documents.'; this.publish(); return this.state(); }
+      this.importController = new AbortController(); this.documentImport = { cancelling: false, progress: null }; this.documentOutcome = null;
+    }
     this.busy = true; this.error = null; this.publish();
     try {
       switch (command.type) {
         case 'save': await this.save(); break;
         case 'import-statement': await this.importStatement(); break;
+        case 'import-documents': await this.importDocuments(); break;
         case 'new':
-          if (await this.canLeave()) { this.metadata = newMetadata(); this.saved = null; this.importRecords = []; this.importOutcome = null; this.loadRevision++; }
+          if (await this.canLeave()) { this.metadata = newMetadata(); this.saved = null; this.importRecords = []; this.documentRecords = []; this.importOutcome = null; this.documentOutcome = null; this.loadRevision++; }
           break;
         case 'open': {
           if (!await this.canLeave()) break;
           const selected = await this.dialogs.open();
           if (!selected) break;
           const loaded = await loadWorkspace(selected);
-          this.metadata = { ...loaded.metadata }; this.saved = loaded; this.importRecords = structuredClone(loaded.imports); this.importOutcome = null; this.loadRevision++;
+          this.metadata = { ...loaded.metadata }; this.saved = loaded; this.importRecords = structuredClone(loaded.imports); this.documentRecords = structuredClone(loaded.documentImports);
+          this.importOutcome = null; this.documentOutcome = null; this.loadRevision++;
           break;
         }
       }
@@ -149,10 +231,14 @@ export class WorkspaceSession {
       if (command.type === 'import-statement') {
         if (this.importController?.signal.aborted) this.importOutcome = { status: 'cancelled', importId: null, issues: [] };
         else this.failedImport('import-failed', 'The statement could not be imported.');
+      } else if (command.type === 'import-documents') {
+        this.documentOutcome = { status: this.importController?.signal.aborted ? 'cancelled' : 'failed', importId: null,
+          issues: this.importController?.signal.aborted ? [] : [importIssue('import-failed', message(error))] };
       } else this.error = message(error);
     }
     finally {
       if (command.type === 'import-statement') { this.importController = null; this.statementImport = null; }
+      if (command.type === 'import-documents') { this.importController = null; this.documentImport = null; }
       this.busy = false; this.publish();
     }
     return this.state();

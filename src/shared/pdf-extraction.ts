@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { bankImportInputSchema, importIssueSchema } from './bank-import.js';
 
-export const PDF_EXTRACTION_VERSION = 'pdfjs-6.5.438+tesseract-7.0.0-eng-1.0.0';
+export const PDF_EXTRACTION_VERSION = 'pdfjs-6.5.438+tesseract-7.0.0-eng-1.0.0+document-2';
 // Fixed execution guards, not supported-workload or performance promises.
 export const PDF_EXTRACTION_LIMITS = { bytes: 25 * 1024 * 1024, pages: 200, pixelsPerPage: 16000000, pixelsTotal: 64000000, timeoutMs: 120000 } as const;
 export const EXTRACTION_CHANNELS = { ready: 'extraction:ready', job: 'extraction:job', event: 'extraction:event' } as const;
@@ -26,6 +26,7 @@ export const extractionResultSchema = z
     });
 export const extractionJobSchema = z.strictObject({
     jobId: z.uuid(),
+    format: z.enum(['pdf', 'png', 'jpeg']),
     sourceId: z.string().min(1).max(128),
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
     bytes: z.instanceof(Uint8Array).refine((value) => value.byteLength > 0 && value.byteLength <= PDF_EXTRACTION_LIMITS.bytes)

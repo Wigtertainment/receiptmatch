@@ -42,7 +42,6 @@ export function embeddedTextGeometry(item: TextGeometry, font: FontGeometry, vie
         throw new Error('Invalid text transform.');
     }
     if (font.vertical) throw new Error('Vertical embedded text needs a supported geometry mapping.');
-    if ((font.ascent !== undefined && !Number.isFinite(font.ascent)) || (font.descent !== undefined && !Number.isFinite(font.descent))) throw new Error('Invalid font metrics.');
     const [a, b, c, d, e, f] = item.transform;
     const baseline = transformed(viewport.transform, e, f);
     const horizontal = transformed(viewport.transform, e + a, f + b);
@@ -54,16 +53,16 @@ export function embeddedTextGeometry(item: TextGeometry, font: FontGeometry, vie
     const axisLength = Math.hypot(axisX, axisY);
     const pageScale = Math.hypot(viewport.transform[0], viewport.transform[1]);
     if (item.width <= 0 || axisLength <= 0 || Math.hypot(normalX, normalY) <= 0) throw new Error('Degenerate text geometry.');
-    const ascent = Number.isFinite(font.ascent) ? font.ascent! : Number.isFinite(font.descent) ? 1 + font.descent! : 1;
-    const descent = Number.isFinite(font.descent) ? font.descent! : 0;
-    if (ascent <= descent) throw new Error('Invalid font metrics.');
+    const validMetrics = Number.isFinite(font.ascent) && Number.isFinite(font.descent) && font.ascent! > font.descent!;
+    const ascent = validMetrics ? font.ascent! : 1;
+    const descent = validMetrics ? font.descent! : 0;
     const advanceX = (axisX / axisLength) * item.width * pageScale;
     const advanceY = (axisY / axisLength) * item.width * pageScale;
     const points: [number, number][] = [ascent, descent].flatMap((metric) => [
         [baseline[0] + normalX * metric, baseline[1] + normalY * metric] as [number, number],
         [baseline[0] + normalX * metric + advanceX, baseline[1] + normalY * metric + advanceY] as [number, number]
     ]);
-    return { ...visibleBox(points, viewport.width, viewport.height), approximate: font.ascent === undefined || font.descent === undefined };
+    return { ...visibleBox(points, viewport.width, viewport.height), approximate: !validMetrics };
 }
 export function ocrWordGeometry(
     bbox: { x0: number; y0: number; x1: number; y1: number },

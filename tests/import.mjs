@@ -8,7 +8,7 @@ import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { _electron as electron } from 'playwright';
 import { statement, row } from '../.build/node/tests/unit/bank-fixtures.js';
 import { storedBankImportSchema } from '../.build/node/src/shared/workspace-import.js';
-import { createWorkspace, newMetadata } from '../.build/node/electron/store.js';
+import { createWorkspace, newMetadata, SCHEMA_VERSION } from '../.build/node/electron/store.js';
 
 await mkdir('artifacts', { recursive: true });
 const root = await mkdtemp(path.resolve('artifacts/import-'));
@@ -179,7 +179,7 @@ try {
         const seed = new Database(legacy); seed.pragma('foreign_keys=ON');
         try {
             // The seven original tables are unchanged; remove the additive manifest to reproduce format 1.
-            seed.exec(`DROP TABLE bank_imports; PRAGMA user_version=1;
+            seed.exec(`DROP TABLE document_imports; DROP TABLE bank_imports; PRAGMA user_version=1;
                 INSERT INTO sources VALUES('legacy-source','/synthetic/original.pdf',NULL);
                 INSERT INTO accounts VALUES('legacy-account','Legacy account','EUR');
                 INSERT INTO statements VALUES('legacy-statement','legacy-account','legacy-source');
@@ -194,7 +194,7 @@ try {
         assert.equal((await command({ type: 'save' })).workspace.dirty, false);
         const db = new Database(legacy, { readonly: true });
         try {
-            assert.equal(db.pragma('user_version', { simple: true }), 2);
+            assert.equal(db.pragma('user_version', { simple: true }), SCHEMA_VERSION);
             assert.equal(db.prepare('SELECT coefficient FROM transactions WHERE id=?').get('legacy-transaction').coefficient, '9007199254740993');
             assert.deepEqual(db.prepare('SELECT confidence,approved_revision FROM associations WHERE id=?').get('legacy-association'), { confidence: 'uncertain', approved_revision: '1:1:1' });
         } finally { db.close(); }

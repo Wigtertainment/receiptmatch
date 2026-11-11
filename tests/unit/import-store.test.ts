@@ -31,7 +31,7 @@ async function legacy(root: string) {
   const file = path.join(root, 'legacy.receiptmatch'); await createWorkspace(file, newMetadata());
   const legacyAccountId = randomUUID();
   const db = new Database(file); db.pragma('foreign_keys=ON');
-  db.exec('DROP TABLE bank_imports; PRAGMA user_version=1;');
+  db.exec('DROP TABLE document_imports; DROP TABLE bank_imports; PRAGMA user_version=1;');
   db.prepare('INSERT INTO sources VALUES(?,?,?)').run('legacy-source', path.join(root, 'legacy-original.pdf'), 'f'.repeat(64));
   db.prepare('INSERT INTO accounts VALUES(?,?,?)').run(legacyAccountId, 'Legacy account', 'EUR');
   db.prepare('INSERT INTO statements VALUES(?,?,?)').run('legacy-statement', legacyAccountId, 'legacy-source');
@@ -54,14 +54,14 @@ test('version 1 opens without writes; its first explicit metadata-only save atom
   assert.equal(upgraded.schemaVersion, SCHEMA_VERSION); assert.deepEqual(upgraded.imports, []);
   assert.equal((await loadWorkspace(file)).metadata.name, 'Explicitly upgraded'); assert.deepEqual(baseRows(file), financial);
   const db = new Database(file, { readonly: true });
-  try { assert.equal(db.pragma('user_version', { simple: true }), 2); assert.deepEqual(db.prepare('SELECT * FROM bank_imports').all(), []); }
+  try { assert.equal(db.pragma('user_version', { simple: true }), SCHEMA_VERSION); assert.deepEqual(db.prepare('SELECT * FROM bank_imports').all(), []); }
   finally { db.close(); }
 });
 
 test('partial imports preserve drafts, field evidence, adapter versions, stable identities and exact projected money across reopening', async () => {
   const root = await directory(); const file = path.join(root, 'partial.receiptmatch'); const retained = record(root, true);
   const created = await createWorkspace(file, newMetadata(), [retained]); const loaded = await loadWorkspace(file);
-  assert.equal(created.schemaVersion, 2); assert.deepEqual(loaded.imports, [retained]);
+  assert.equal(created.schemaVersion, SCHEMA_VERSION); assert.deepEqual(loaded.imports, [retained]);
   const db = new Database(file, { readonly: true });
   try {
     const projected = db.prepare('SELECT coefficient,currency,scale,statement_id FROM transactions WHERE id=?').get(retained.transactions[0].transactionId);
@@ -78,7 +78,7 @@ test('partial imports preserve drafts, field evidence, adapter versions, stable 
 test('explicit append to a version 1 file preserves every legacy transaction, document and manual approval', async () => {
   const root = await directory(); const { file, saved } = await legacy(root); const before = baseRows(file); const retained = record(root, true);
   const appended = await saveWorkspace(saved, { ...saved.metadata, name: 'With imports' }, [retained]);
-  assert.equal(appended.schemaVersion, 2); assert.deepEqual((await loadWorkspace(file)).imports, [retained]);
+  assert.equal(appended.schemaVersion, SCHEMA_VERSION); assert.deepEqual((await loadWorkspace(file)).imports, [retained]);
   const after = baseRows(file);
   for (const table of ['sources', 'accounts', 'statements', 'transactions', 'documents', 'associations']) {
     for (const oldRow of before[table]) assert.ok(after[table].some(value => JSON.stringify(value) === JSON.stringify(oldRow)), `${table} must preserve each legacy row`);

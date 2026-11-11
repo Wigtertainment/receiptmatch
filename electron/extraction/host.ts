@@ -13,6 +13,7 @@ import {
     type ExtractionProgress,
     type ExtractionResult
 } from '../../src/shared/pdf-extraction.js';
+import { imageInputDimensions, ImageInputError } from './image-input.js';
 
 export const EXTRACTION_URL = 'receiptmatch-extraction://engine/index.html';
 export const EXTRACTION_SCHEME_DESCRIPTOR = {
@@ -72,6 +73,14 @@ export async function extractPdfBytes(
     sourceId: string,
     options: { signal?: AbortSignal; onProgress?: (progress: ExtractionProgress) => void } = {}
 ): Promise<ExtractionResult> {
+    return extractDocumentBytes(bytes, sourceId, 'pdf', options);
+}
+export async function extractDocumentBytes(
+    bytes: Uint8Array,
+    sourceId: string,
+    format: 'pdf' | 'png' | 'jpeg',
+    options: { signal?: AbortSignal; onProgress?: (progress: ExtractionProgress) => void } = {}
+): Promise<ExtractionResult> {
     if (
         !(bytes instanceof Uint8Array) ||
         bytes.byteLength < 1 ||
@@ -83,16 +92,22 @@ export async function extractPdfBytes(
             .refine((value) => value.trim().length > 0)
             .safeParse(sourceId).success
     ) {
-        return failure('invalid-input', 'Choose a nonempty PDF within the local extraction byte limit and provide a valid source identity.');
+        return failure('invalid-input', 'Choose a nonempty document within the local extraction byte limit and provide a valid source identity.');
     }
-    if (options.signal?.aborted) return failure('cancelled', 'PDF extraction was cancelled.', 'cancelled');
-    if (active) return failure('busy', 'Another PDF extraction is already running.');
+    if (!['pdf', 'png', 'jpeg'].includes(format)) return failure('image-format', 'Choose an authorized PDF, PNG or JPEG format.');
+    if (options.signal?.aborted) return failure('cancelled', 'Document extraction was cancelled.', 'cancelled');
+    if (active) return failure('busy', 'Another document extraction is already running.');
     if (cleanupFailed) return failure('engine-cleanup', 'The extraction session could not be cleared safely. Restart ReceiptMatch before another extraction.');
+    const snapshot = Uint8Array.from(bytes);
+    let imageDimensions: { width: number; height: number } | null = null;
+    if (format !== 'pdf') {
+        try { imageDimensions = imageInputDimensions(snapshot, format); }
+        catch (error) { return failure(error instanceof ImageInputError ? error.code : 'image-invalid', error instanceof ImageInputError ? error.message : 'The image header could not be read safely.'); }
+    }
     if (!app.isReady()) return failure('engine-not-ready', 'The desktop extraction runtime is not ready.');
     active = true;
-    const snapshot = Uint8Array.from(bytes);
     const jobId = randomUUID();
-    const job: ExtractionJob = { jobId, sourceId, sha256: createHash('sha256').update(snapshot).digest('hex'), bytes: snapshot };
+    const job: ExtractionJob = { jobId, sourceId, format, sha256: createHash('sha256').update(snapshot).digest('hex'), bytes: snapshot };
     return new Promise<ExtractionResult>((resolve) => {
         let window: BrowserWindow | undefined;
         let isolatedSession: Session | undefined;
@@ -117,8 +132,8 @@ export async function extractPdfBytes(
                 resolve(cleanupFailed ? failure('engine-cleanup', 'The extraction session could not be cleared safely. Restart ReceiptMatch before another extraction.') : result);
             });
         };
-        const abort = () => finish(failure('cancelled', 'PDF extraction was cancelled.', 'cancelled'));
-        const timeout = setTimeout(() => finish(failure('timeout', 'PDF extraction exceeded its local execution time limit.')), PDF_EXTRACTION_LIMITS.timeoutMs);
+        const abort = () => finish(failure('cancelled', 'Document extraction was cancelled.', 'cancelled'));
+        const timeout = setTimeout(() => finish(failure('timeout', 'Document extraction exceeded its local execution time limit.')), PDF_EXTRACTION_LIMITS.timeoutMs);
         const authorized = (event: IpcMainEvent) =>
             window &&
             !window.isDestroyed() &&
@@ -157,7 +172,11 @@ export async function extractPdfBytes(
                     checked.data.source.sha256 !== job.sha256 ||
                     checked.data.extraction.runId !== jobId ||
                     checked.data.extraction.version !== PDF_EXTRACTION_VERSION ||
-                    checked.data.pages.some((page, index) => page.pageNumber !== index + 1)
+                    checked.data.pages.some((page, index) => page.pageNumber !== index + 1) ||
+                    (imageDimensions && (checked.data.pages.length !== 1 || checked.data.pages[0].status !== 'complete' ||
+                        !((checked.data.pages[0].width === imageDimensions.width && checked.data.pages[0].height === imageDimensions.height) ||
+                            (checked.data.pages[0].width === imageDimensions.height && checked.data.pages[0].height === imageDimensions.width)) ||
+                        checked.data.pages[0].spans.some(span => span.method !== 'local-ocr')))
                 ) {
                     finish(failure('engine-result', 'The extraction result does not match the authorized source and execution.'));
                     return;
@@ -216,11 +235,11 @@ export async function extractPdfBytes(
                 window.webContents.on('will-frame-navigate', (event) => event.preventDefault());
                 window.webContents.on('will-redirect', (event) => event.preventDefault());
                 window.webContents.on('will-attach-webview', (event) => event.preventDefault());
-                window.webContents.once('render-process-gone', () => finish(failure('engine-crashed', 'The isolated PDF extraction process stopped.')));
-                window.once('closed', () => finish(failure('engine-crashed', 'The isolated PDF extraction window closed.')));
+                window.webContents.once('render-process-gone', () => finish(failure('engine-crashed', 'The isolated document extraction process stopped.')));
+                window.once('closed', () => finish(failure('engine-crashed', 'The isolated document extraction window closed.')));
                 await window.loadURL(EXTRACTION_URL);
             } catch {
-                finish(failure('engine-load', 'The local PDF extraction engine could not start.'));
+                finish(failure('engine-load', 'The local document extraction engine could not start.'));
             }
         })();
     });

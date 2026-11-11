@@ -46,7 +46,7 @@ function codes(result) {
 	return (result.input?.issues ?? result.issues ?? []).map((issue) => issue.code);
 }
 
-async function invoke(bytes, mode = "normal") {
+async function invoke(bytes, mode = "normal", format = "pdf") {
 	return application.evaluate(
 		async ({ app, BrowserWindow, ipcMain }, request) => {
 			const { createRequire } = process.getBuiltinModule("module");
@@ -63,6 +63,7 @@ async function invoke(bytes, mode = "normal") {
 			const storageProbes = [];
 			const originalRead = fileSystem.readFile;
 			const originalTimeout = globalThis.setTimeout;
+			const originalEmit = ipcMain.emit;
 			let activeWindow;
 			let injected = false;
 			let abortTimer;
@@ -92,6 +93,27 @@ async function invoke(bytes, mode = "normal") {
 				const send = window.webContents.send.bind(window.webContents);
 				window.webContents.send = (channel, ...args) => {
 					if (channel === "extraction:job" && request.mode === "timeout") return;
+					if (channel === "extraction:job" && request.mode.startsWith("image-forged-") && !injected) {
+						injected = true;
+						const job = args[0];
+						const sheet = { pageId: "page-1", pageNumber: 1, width: 1200, height: 360, status: "complete", spans: [] };
+						const input = { source: { sourceId: job.sourceId, sha256: job.sha256 }, extraction: { runId: job.jobId, version: "" }, pages: [sheet], issues: [] };
+						if (request.mode === "image-forged-pages") input.pages.push({ ...sheet, pageId: "page-2", pageNumber: 2 });
+						if (request.mode === "image-forged-dimensions") sheet.width = 600;
+						if (request.mode === "image-forged-method") sheet.spans.push({ text: "forged", method: "embedded-text", region: { x: 1, y: 1, width: 10, height: 10 } });
+						// Use the engine's real version, then mutate only the image contract being tested.
+						ipcMain.emit = function (eventName, ...eventArgs) {
+							if (eventName === "extraction:event" && eventArgs[1]?.event?.type === "result") {
+								const result = eventArgs[1].event.result;
+								if (result.input) {
+									input.extraction.version = result.input.extraction.version;
+									eventArgs[1] = { ...eventArgs[1], event: { type: "result", result: { status: "complete", input } } };
+								}
+								ipcMain.emit = originalEmit;
+							}
+							return originalEmit.call(this, eventName, ...eventArgs);
+						};
+					}
 					if (channel === "extraction:job" && ["storage-write", "storage-read"].includes(request.mode) && !injected) {
 						injected = true;
 						const script =
@@ -163,7 +185,10 @@ async function invoke(bytes, mode = "normal") {
 					}
 					if (value.phase === "ocr" && request.mode === "crash-ocr" && activeWindow && !activeWindow.isDestroyed()) activeWindow.webContents.forcefullyCrashRenderer();
 				};
-				const pending = host.extractPdfBytes(bytes, "synthetic-source", { signal: controller.signal, onProgress });
+				const pending =
+					request.format === "pdf" && request.mode !== "common-api"
+						? host.extractPdfBytes(bytes, "synthetic-source", { signal: controller.signal, onProgress })
+						: host.extractDocumentBytes(bytes, "synthetic-source", request.format, { signal: controller.signal, onProgress });
 				let concurrent;
 				if (request.mode === "concurrent") concurrent = await host.extractPdfBytes(bytes, "concurrent-source");
 				if (request.mode === "mutate-source") bytes.fill(0);
@@ -185,10 +210,61 @@ async function invoke(bytes, mode = "normal") {
 				app.removeListener("browser-window-created", created);
 				fileSystem.readFile = originalRead;
 				globalThis.setTimeout = originalTimeout;
+				ipcMain.emit = originalEmit;
 			}
 		},
-		{ base64: Buffer.from(bytes).toString("base64"), mode },
+		{ base64: Buffer.from(bytes).toString("base64"), mode, format },
 	);
+}
+
+async function imageFixture(format, { transparent = false, blank = false, rotated = false, long = false } = {}) {
+	return Buffer.from(
+		await page.evaluate(
+			({ format, transparent, blank, rotated, long }) => {
+				const canvas = document.createElement("canvas");
+				canvas.width = rotated ? 360 : 1200;
+				canvas.height = rotated ? 1200 : long ? 1600 : 360;
+				const context = canvas.getContext("2d");
+				if (!transparent) {
+					context.fillStyle = "white";
+					context.fillRect(0, 0, canvas.width, canvas.height);
+				}
+				if (rotated) {
+					context.translate(0, 1200);
+					context.rotate(-Math.PI / 2);
+				}
+				if (!blank) {
+					context.fillStyle = "black";
+					context.font = "40px monospace";
+					context.fillText("RECEIPTMATCH EXTRACTION", 50, 90);
+					context.fillText("TOTAL EUR 123.45", 50, 175);
+					context.fillText("REFERENCE ENGLISH OCR", 50, 260);
+					if (long) for (let row = 0; row < 25; row++) context.fillText(`SYNTHETIC OCR ROW ${row + 1}`, 50, 310 + row * 45);
+				}
+				return canvas.toDataURL(format === "png" ? "image/png" : "image/jpeg", 0.95).split(",")[1];
+			},
+			{ format, transparent, blank, rotated, long },
+		),
+		"base64",
+	);
+}
+function withExifOrientation(bytes, orientation) {
+	const payload = Buffer.from([69, 120, 105, 102, 0, 0, 73, 73, 42, 0, 8, 0, 0, 0, 1, 0, 18, 1, 3, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+	payload.writeUInt16LE(orientation, 24);
+	return Buffer.concat([bytes.subarray(0, 2), Buffer.from([255, 225, 0, 34]), payload, bytes.subarray(2)]);
+}
+function jpegWithSofFirst(bytes) {
+	const jpeg = Buffer.from(bytes),
+		segments = [];
+	let offset = 2;
+	while (offset < jpeg.length && jpeg[offset + 1] !== 0xda) {
+		const length = jpeg.readUInt16BE(offset + 2);
+		segments.push({ marker: jpeg[offset + 1], bytes: jpeg.subarray(offset, offset + 2 + length) });
+		offset += 2 + length;
+	}
+	const frame = segments.find((segment) => [0xc0, 0xc1, 0xc2].includes(segment.marker));
+	assert.ok(frame);
+	return Buffer.concat([jpeg.subarray(0, 2), frame.bytes, ...segments.filter((segment) => segment !== frame).map((segment) => segment.bytes), jpeg.subarray(offset)]);
 }
 
 try {
@@ -297,6 +373,119 @@ try {
 		assert.ok(input.issues.some((issue) => issue.code === "mixed-content" && issue.pageId === input.pages[0].pageId));
 		assert.ok(!value.progress.some((item) => item.phase === "ocr"));
 		return { issues: input.issues, extractionMethods: [...new Set(input.pages[0].spans.map((span) => span.method))] };
+	});
+	await check("shared-document-api-preserves-PDF-text-and-provenance", async () => {
+		const value = await invoke(text, "common-api");
+		const input = inputOf(value.result);
+		assert.equal(input.source.sha256, createHash("sha256").update(text).digest("hex"));
+		assert.ok(input.pages[0].spans.every((span) => span.method === "embedded-text"));
+		assert.ok(!value.progress.some((progress) => progress.phase === "ocr"));
+	});
+	const imagePng = await imageFixture("png");
+	const imageJpeg = await imageFixture("jpeg");
+	await check("packaged-PNG-and-JPEG-OCR-have-image-pixel-evidence-and-local-resources", async () => {
+		for (const [format, bytes] of [
+			["png", imagePng],
+			["jpeg", imageJpeg],
+		]) {
+			const original = Buffer.from(bytes);
+			const value = await invoke(bytes, "normal", format);
+			const input = inputOf(value.result);
+			assert.equal(input.source.sha256, createHash("sha256").update(original).digest("hex"));
+			assert.deepEqual(bytes, original);
+			assert.equal(input.pages.length, 1);
+			const sheet = input.pages[0];
+			assert.equal(sheet.width, 1200);
+			assert.equal(sheet.height, 360);
+			assert.ok(sheet.spans.length && sheet.spans.every((span) => span.method === "local-ocr"));
+			assert.match(sheet.spans.map((span) => span.text).join(" "), /TOTAL\s+EUR\s+123[.,]45/);
+			const total = sheet.spans.find((span) => span.text === "TOTAL");
+			assert.ok(total.region.x >= 40 && total.region.x <= 65);
+			assert.ok(total.region.y >= 130 && total.region.y <= 180);
+			assert.ok(value.progress.some((progress) => progress.phase === "ocr" && progress.pageCount === 1));
+			assert.equal(value.extractionWindowsAfter, 0);
+			assert.deepEqual(value.windows, [{ sandbox: true, contextIsolation: true, nodeIntegration: false, persistent: false }]);
+		}
+		const notice = await application.evaluate(({ app }) => {
+			const { createRequire } = process.getBuiltinModule("module");
+			const { join } = process.getBuiltinModule("path");
+			return createRequire(join(app.getAppPath(), "package.json"))("node:fs").readFileSync(join(app.getAppPath(), ".build/extraction/notices/image-size.txt"), "utf8");
+		});
+		assert.match(notice, /MIT License/);
+	});
+	await check("transparent-PNG-is-composited-for-OCR-and-blank-images-stay-unresolved", async () => {
+		const transparent = inputOf((await invoke(await imageFixture("png", { transparent: true }), "normal", "png")).result);
+		assert.match(transparent.pages[0].spans.map((span) => span.text).join(" "), /TOTAL\s+EUR\s+123[.,]45/);
+		const blank = inputOf((await invoke(await imageFixture("png", { blank: true }), "normal", "png")).result, "partial");
+		assert.equal(blank.pages[0].spans.length, 0);
+		assert.ok(blank.issues.some((issue) => issue.code === "no-readable-text"));
+	});
+	await check("JPEG-EXIF-rotation-uses-actual-decoded-pixels-for-page-and-OCR-regions", async () => {
+		const bytes = withExifOrientation(await imageFixture("jpeg", { rotated: true }), 6);
+		const input = inputOf((await invoke(bytes, "normal", "jpeg")).result);
+		assert.equal(input.pages[0].width, 1200);
+		assert.equal(input.pages[0].height, 360);
+		assert.match(input.pages[0].spans.map((span) => span.text).join(" "), /TOTAL\s+EUR\s+123[.,]45/);
+	});
+	await check("JPEG-with-frame-as-first-segment-keeps-its-original-bytes-and-OCR", async () => {
+		const bytes = jpegWithSofFirst(imageJpeg),
+			original = Buffer.from(bytes);
+		const input = inputOf((await invoke(bytes, "normal", "jpeg")).result);
+		assert.equal(input.source.sha256, createHash("sha256").update(original).digest("hex"));
+		assert.equal(input.pages[0].width, 1200);
+		assert.equal(input.pages[0].height, 360);
+		assert.match(input.pages[0].spans.map((span) => span.text).join(" "), /TOTAL\s+EUR\s+123[.,]45/);
+		assert.deepEqual(bytes, original);
+	});
+	await check("image-format-and-header-limits-reject-before-decoder-start-and-corruption-is-visible", async () => {
+		const huge = Buffer.from(imagePng);
+		huge.writeUInt32BE(100000, 16);
+		for (const [bytes, format, code] of [
+			[imagePng, "jpeg", "image-format"],
+			[imageJpeg, "png", "image-format"],
+			[huge, "png", "pixel-limit"],
+			[Buffer.from("<svg width='100' height='100'/>"), "png", "image-format"],
+			[imagePng, "svg", "image-format"],
+		]) {
+			const value = await invoke(bytes, "normal", format);
+			assert.equal(value.result.status, "failed");
+			assert.ok(codes(value.result).includes(code), JSON.stringify(value.result));
+			assert.equal(value.windows.length, 0);
+		}
+		const broken = await invoke(imagePng.subarray(0, 33), "normal", "png");
+		assert.equal(broken.result.status, "failed");
+		assert.ok(codes(broken.result).includes("image-invalid"));
+		assert.equal(broken.extractionWindowsAfter, 0);
+		inputOf((await invoke(imagePng, "normal", "png")).result);
+	});
+	await check("images-share-host-cancellation-single-flight-and-offline-boundaries-with-PDF", async () => {
+		const beforeStart = await invoke(imagePng, "preabort", "png");
+		assert.equal(beforeStart.result.status, "cancelled");
+		assert.equal(beforeStart.windows.length, 0);
+		const cancelled = await invoke(await imageFixture("png", { long: true }), "abort-ocr", "png");
+		assert.equal(cancelled.abortedWhilePending, true);
+		assert.equal(cancelled.result.status, "cancelled");
+		assert.equal(cancelled.extractionWindowsAfter, 0);
+		const overlap = await invoke(imageJpeg, "concurrent", "jpeg");
+		inputOf(overlap.result);
+		assert.equal(overlap.concurrent.status, "failed");
+		assert.ok(codes(overlap.concurrent).includes("busy"));
+		const missing = await invoke(imagePng, "missing-language", "png");
+		assert.equal(missing.result.status, "failed");
+		assert.ok(codes(missing.result).includes("ocr-unavailable"));
+		inputOf((await invoke(text)).result);
+		const probe = await invoke(imagePng, "probe", "png");
+		inputOf(probe.result);
+		assert.deepEqual(probe.networkProbes, ["denied", "denied", "denied", "denied", "undefined"]);
+	});
+	await check("image-results-cannot-claim-extra-pages-different-dimensions-or-embedded-text", async () => {
+		for (const mode of ["image-forged-pages", "image-forged-dimensions", "image-forged-method"]) {
+			const value = await invoke(imagePng, mode, "png");
+			assert.equal(value.result.status, "failed");
+			assert.ok(codes(value.result).includes("engine-result"));
+			assert.equal(value.extractionWindowsAfter, 0);
+		}
+		inputOf((await invoke(imagePng, "normal", "png")).result);
 	});
 	await check("failed-page-retains-real-geometry-and-visible-partial-issue", async () => {
 		const input = inputOf((await invoke(await pdfFixture(["text", "large"]))).result, "partial");

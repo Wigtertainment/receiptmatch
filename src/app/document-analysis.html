@@ -1,0 +1,108 @@
+<ng-template #evidenceList let-entries>
+	<ul class="evidence-list">
+		@for (evidence of entries; track $index) {
+			<li>
+				<p class="evidence-origin">Page {{ pageNumber(evidence.pageId) }} · {{ extractionLabel(evidence.method) }}</p>
+				<p class="raw-text">{{ evidence.rawText }}</p>
+				<p class="evidence-region">Region in {{ units() }}: {{ regionText(evidence.region) }}</p>
+			</li>
+		}
+	</ul>
+</ng-template>
+
+@if (generalIssues().length) {
+	<div class="statement-warnings">
+		<h4>Review needed</h4>
+		<ul>
+			@for (issue of generalIssues(); track $index) {
+				<li>
+					@if (issue.context) {
+						<strong>{{ issue.context }} · </strong>
+					}
+					{{ issue.message }}
+					@if (issue.evidence.length) {
+						@let issueKey = 'review/' + $index;
+						<details class="source-details" (toggle)="toggleDetail(issueKey, $event)">
+							<summary>Source evidence</summary>
+							@if (openDetails().has(issueKey)) {
+								<ng-container [ngTemplateOutlet]="evidenceList" [ngTemplateOutletContext]="{ $implicit: issue.evidence }" />
+							}
+						</details>
+					}
+				</li>
+			}
+		</ul>
+	</div>
+}
+
+<h4>Extracted fields</h4>
+@if (!hasFields()) {
+	<p class="muted">No recognized fields were retained.</p>
+}
+@for (section of sections(); track section.id) {
+	<section class="extracted-section">
+		<h5>Section {{ $index + 1 }} · {{ section.kind }}</h5>
+		<p class="muted">{{ section.pages.length === 1 ? 'Page' : 'Pages' }} {{ section.pages.join(', ') }}</p>
+		@if (section.evidence.length) {
+			@let sectionKey = section.id + '/section';
+			<details class="source-details" (toggle)="toggleDetail(sectionKey, $event)">
+				<summary>Section evidence</summary>
+				@if (openDetails().has(sectionKey)) {
+					<ng-container [ngTemplateOutlet]="evidenceList" [ngTemplateOutletContext]="{ $implicit: section.evidence }" />
+				}
+			</details>
+		}
+		@for (field of section.fields; track field.id) {
+			<details (toggle)="toggleDetail(field.id, $event)">
+				<summary class="field-summary">
+					<span class="field-role">{{ field.role }}</span> · {{ field.values.join(' / ') || 'No value found' }}
+					@if (field.values.length > 1) {
+						<span class="field-warning"> · Ambiguous</span>
+					} @else if (field.issues.length && field.values.length) {
+						<span class="field-warning"> · Review needed</span>
+					}
+				</summary>
+				@if (openDetails().has(field.id)) {
+					<div class="field-body">
+						<dl class="source-facts">
+							<div>
+								<dt>Printed label</dt>
+								<dd class="raw-text">{{ field.label }}</dd>
+							</div>
+						</dl>
+						@if (field.issues.length) {
+							<ul>
+								@for (issue of field.issues; track $index) {
+									<li>
+										{{ issue.message }}
+										@if (issue.evidence.length) {
+											@let issueKey = field.id + '/issue/' + $index;
+											<details class="source-details" (toggle)="toggleDetail(issueKey, $event)">
+												<summary>Issue evidence</summary>
+												@if (openDetails().has(issueKey)) {
+													<ng-container [ngTemplateOutlet]="evidenceList" [ngTemplateOutletContext]="{ $implicit: issue.evidence }" />
+												}
+											</details>
+										}
+									</li>
+								}
+							</ul>
+						}
+						<h6>Source evidence</h6>
+						<ng-container [ngTemplateOutlet]="evidenceList" [ngTemplateOutletContext]="{ $implicit: field.evidence }" />
+					</div>
+				}
+			</details>
+		}
+	</section>
+}
+@if (pages().length) {
+	<details class="source-details document-source-text" (toggle)="toggleSource($event)">
+		<summary>Source text</summary>
+		@if (sourceOpen()) {
+			@for (page of pages(); track page.pageId) {
+				<app-document-source-page [page]="page" [units]="units()" [initiallyOpen]="pages().length === 1" />
+			}
+		}
+	</details>
+}

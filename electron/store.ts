@@ -6,14 +6,18 @@ import { z } from 'zod';
 import { workspaceName } from '../src/shared/protocol.js';
 import { moneySchema } from '../src/shared/money.js';
 import { storedBankImportSchema, type StoredBankImport } from '../src/shared/workspace-import.js';
+import { storedDocumentImportSchema, type StoredDocumentImport, type WorkspaceSource } from '../src/shared/workspace-documents.js';
 
 export { moneySchema } from '../src/shared/money.js';
 
 export const APPLICATION_ID = 0x52434d54;
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 const metadataSchema = z.strictObject({ id: z.uuid(), name: workspaceName.refine(value => value.trim().length > 0), createdAt: z.iso.datetime(), savedAt: z.iso.datetime().nullable() });
 export type WorkspaceMetadata = z.infer<typeof metadataSchema>;
-export interface SavedWorkspace { metadata: WorkspaceMetadata; filePath: string; fingerprint: string; schemaVersion: number; imports: StoredBankImport[]; }
+export interface SavedWorkspace {
+  metadata: WorkspaceMetadata; filePath: string; fingerprint: string; schemaVersion: number;
+  imports: StoredBankImport[]; documentImports: StoredDocumentImport[]; sources: WorkspaceSource[];
+}
 
 export function newMetadata(): WorkspaceMetadata { return { id: randomUUID(), name: 'Untitled workspace', createdAt: new Date().toISOString(), savedAt: null }; }
 export async function fingerprint(filePath: string): Promise<string> {
@@ -55,6 +59,7 @@ CREATE INDEX transactions_statement ON transactions(statement_id);
 CREATE INDEX associations_document ON associations(document_id);`;
 const expectedTables = ['accounts', 'associations', 'documents', 'sources', 'statements', 'transactions', 'workspace'];
 const importSchema = 'CREATE TABLE bank_imports(id TEXT PRIMARY KEY, source_id TEXT NOT NULL UNIQUE REFERENCES sources(id), record_json TEXT NOT NULL);';
+const documentImportSchema = 'CREATE TABLE document_imports(id TEXT PRIMARY KEY, record_json TEXT NOT NULL);';
 
 function importIdentities(record: StoredBankImport): [string, string | null][] {
   return [
@@ -64,22 +69,39 @@ function importIdentities(record: StoredBankImport): [string, string | null][] {
     ...record.drafts.map(value => [value.draftId, null] as [string, null])
   ];
 }
-function entityIdentities(db: Database.Database): Map<string, Set<string>> {
-  const identities = new Map<string, Set<string>>();
+function documentImportIdentities(record: StoredDocumentImport): [string, string | null][] {
+  return [
+    [record.id, null],
+    ...record.files.flatMap((file): [string, string | null][] => {
+      if (file.status === 'imported') return [[file.record.id, 'documents'], [file.record.result.input!.source.sourceId, 'sources']];
+      if (file.status === 'failed' && file.analysis?.input) return [[file.analysis.input.source.sourceId, null]];
+      return [];
+    })
+  ];
+}
+function entityIdentities(db: Database.Database): Map<string, string[]> {
+  const identities = new Map<string, string[]>();
   for (const table of expectedTables) {
     for (const { id } of db.prepare(`SELECT id FROM ${table}`).all() as { id: string }[]) {
       if (typeof id !== 'string') throw new Error('The workspace contains an invalid identity.');
       const key = id.toLowerCase();
-      const tables = identities.get(key) ?? new Set<string>(); tables.add(table); identities.set(key, tables);
+      const tables = identities.get(key) ?? []; tables.push(table); identities.set(key, tables);
     }
   }
   return identities;
 }
+function sourceCatalog(db: Database.Database): WorkspaceSource[] {
+  const sources = db.prepare('SELECT id,path AS filePath,fingerprint AS sha256 FROM sources ORDER BY rowid').all() as WorkspaceSource[];
+  if (sources.some(source => typeof source.id !== 'string' || typeof source.filePath !== 'string' || (source.sha256 !== null && typeof source.sha256 !== 'string'))) {
+    throw new Error('The workspace contains invalid source information.');
+  }
+  return sources;
+}
 function accountName(record: StoredBankImport, sectionId: string): string {
   return record.result.accountSections.find(section => section.sectionId === sectionId)!.accountReference?.value ?? record.result.adapter!.bankId;
 }
-function validateImports(db: Database.Database, imports: StoredBankImport[]) {
-  const identities = entityIdentities(db); const owned = new Set<string>(); const hashes = new Set<string>();
+function validateImports(db: Database.Database, imports: StoredBankImport[], owned: Set<string>) {
+  const identities = entityIdentities(db); const hashes = new Set<string>();
   const sourceHashes = db.prepare('SELECT id,fingerprint FROM sources').all() as { id: string; fingerprint: string | null }[];
   const source = db.prepare('SELECT path,fingerprint FROM sources WHERE id=?');
   const account = db.prepare('SELECT name,currency FROM accounts WHERE id=?');
@@ -100,7 +122,8 @@ function validateImports(db: Database.Database, imports: StoredBankImport[]) {
     const provenance = record.result.sourceProvenance!;
     for (const [id, table] of importIdentities(record)) {
       const key = id.toLowerCase(); const existing = identities.get(key);
-      if (owned.has(key) || (table === null ? existing : !existing || existing.size !== 1 || !existing.has(table))) throw new Error('Stored bank import identities conflict.');
+      if (owned.has(key) || (table === null ? existing : !existing || existing.length !== 1 || !existing.includes(table)))
+        throw new Error('Stored bank import identities conflict.');
       owned.add(key);
     }
     if (hashes.has(provenance.sha256) || sourceHashes.some(source => source.fingerprint === provenance.sha256 && source.id !== provenance.sourceId)) {
@@ -126,22 +149,80 @@ function validateImports(db: Database.Database, imports: StoredBankImport[]) {
     }
   }
 }
-function validateAppend(db: Database.Database, previous: StoredBankImport[], requested: StoredBankImport[]) {
+function validateDocumentImports(db: Database.Database, imports: StoredDocumentImport[], owned: Set<string>) {
+  const identities = entityIdentities(db); const sources = sourceCatalog(db);
+  const documentSourceIds = new Set(imports.flatMap(record => record.files.flatMap(file => file.status === 'imported' ? [file.record.result.input!.source.sourceId] : [])));
+  const available = new Map(sources.filter(source => !documentSourceIds.has(source.id)).map(source => [source.id, source.sha256]));
+  const source = db.prepare('SELECT path,fingerprint FROM sources WHERE id=?');
+  const document = db.prepare('SELECT source_id FROM documents WHERE id=?');
+  const sourceDocuments = db.prepare('SELECT id FROM documents WHERE source_id=? ORDER BY id');
+  const sourceStatements = db.prepare('SELECT id FROM statements WHERE source_id=?');
+  for (const record of imports) {
+    for (const [id, table] of documentImportIdentities(record)) {
+      const key = id.toLowerCase(); const existing = identities.get(key);
+      if (owned.has(key) || (table === null ? existing : !existing || existing.length !== 1 || !existing.includes(table)))
+        throw new Error('Stored document import identities conflict.');
+      owned.add(key);
+    }
+    for (const file of record.files) {
+      if (file.status === 'skipped') {
+        if (available.get(file.existingSourceId) !== file.sha256) throw new Error('A skipped document does not match an existing source.');
+      } else if (file.status === 'imported') {
+        const documentRecord = file.record; const provenance = documentRecord.result.input!.source;
+        const savedSource = source.get(provenance.sourceId) as { path: string; fingerprint: string } | undefined;
+        const savedDocument = document.get(documentRecord.id) as { source_id: string } | undefined;
+        if (!savedSource || savedSource.path !== documentRecord.filePath || savedSource.fingerprint !== provenance.sha256 || savedDocument?.source_id !== provenance.sourceId) {
+          throw new Error('The stored document import does not match its workspace records.');
+        }
+        const projected = (sourceDocuments.all(provenance.sourceId) as { id: string }[]).map(row => row.id);
+        if (projected.length !== 1 || projected[0] !== documentRecord.id || sourceStatements.all(provenance.sourceId).length) {
+          throw new Error('The stored document import contains unexpected projected records.');
+        }
+        if (sources.some(source => source.id !== provenance.sourceId && source.sha256 === provenance.sha256)) throw new Error('The workspace contains duplicate document content.');
+        available.set(provenance.sourceId, provenance.sha256);
+      }
+    }
+  }
+}
+function validateAppend(
+  db: Database.Database, previous: StoredBankImport[], requested: StoredBankImport[], previousDocuments: StoredDocumentImport[], requestedDocuments: StoredDocumentImport[]
+) {
   if (requested.length < previous.length || previous.some((record, index) => JSON.stringify(record) !== JSON.stringify(requested[index]))) {
     throw new Error('Saved bank imports cannot be removed, reordered or rewritten.');
   }
+  if (requestedDocuments.length < previousDocuments.length || previousDocuments.some((record, index) => JSON.stringify(record) !== JSON.stringify(requestedDocuments[index]))) {
+    throw new Error('Saved document imports cannot be removed, reordered or rewritten.');
+  }
   const identities = new Set(entityIdentities(db).keys());
-  const hashes = new Set((db.prepare('SELECT fingerprint FROM sources WHERE fingerprint IS NOT NULL').all() as { fingerprint: string }[]).map(source => source.fingerprint));
+  const sources = sourceCatalog(db); const hashes = new Set(sources.flatMap(source => source.sha256 === null ? [] : [source.sha256]));
+  const available = new Map(sources.map(source => [source.id, source.sha256]));
   for (const record of previous) for (const [id] of importIdentities(record)) identities.add(id.toLowerCase());
+  for (const record of previousDocuments) for (const [id] of documentImportIdentities(record)) identities.add(id.toLowerCase());
+  const claim = (id: string) => {
+    const key = id.toLowerCase();
+    if (identities.has(key)) throw new Error('The new import reuses an existing workspace identity.');
+    identities.add(key);
+  };
   for (const record of requested.slice(previous.length)) {
     for (const [id] of importIdentities(record)) {
-      const key = id.toLowerCase();
-      if (identities.has(key)) throw new Error('The new bank import reuses an existing workspace identity.');
-      identities.add(key);
+      claim(id);
     }
     const hash = record.result.sourceProvenance!.sha256;
     if (hashes.has(hash)) throw new Error('This bank statement content is already present in the workspace.');
     hashes.add(hash);
+    available.set(record.result.sourceProvenance!.sourceId, hash);
+  }
+  for (const record of requestedDocuments.slice(previousDocuments.length)) {
+    for (const [id] of documentImportIdentities(record)) claim(id);
+    for (const file of record.files) {
+      if (file.status === 'skipped') {
+        if (available.get(file.existingSourceId) !== file.sha256) throw new Error('A skipped document does not match an existing source.');
+      } else if (file.status === 'imported') {
+        const provenance = file.record.result.input!.source;
+        if (hashes.has(provenance.sha256)) throw new Error('This document content is already present in the workspace.');
+        hashes.add(provenance.sha256); available.set(provenance.sourceId, provenance.sha256);
+      }
+    }
   }
 }
 function appendImports(db: Database.Database, imports: StoredBankImport[]) {
@@ -167,14 +248,27 @@ function appendImports(db: Database.Database, imports: StoredBankImport[]) {
     manifest.run(record.id, sourceId, JSON.stringify(record));
   }
 }
+function appendDocumentImports(db: Database.Database, imports: StoredDocumentImport[]) {
+  const source = db.prepare('INSERT INTO sources(id,path,fingerprint) VALUES(?,?,?)');
+  const document = db.prepare('INSERT INTO documents(id,source_id) VALUES(?,?)');
+  const manifest = db.prepare('INSERT INTO document_imports(id,record_json) VALUES(?,?)');
+  for (const record of imports) {
+    for (const file of record.files) if (file.status === 'imported') {
+      const provenance = file.record.result.input!.source;
+      source.run(provenance.sourceId, file.record.filePath, provenance.sha256);
+      document.run(file.record.id, provenance.sourceId);
+    }
+    manifest.run(record.id, JSON.stringify(record));
+  }
+}
 
 function configure(db: Database.Database) { db.pragma('foreign_keys = ON'); db.pragma('trusted_schema = OFF'); db.defaultSafeIntegers(true); }
-function validateDatabase(db: Database.Database): { metadata: WorkspaceMetadata; schemaVersion: number; imports: StoredBankImport[] } {
+function validateDatabase(db: Database.Database): Pick<SavedWorkspace, 'metadata' | 'schemaVersion' | 'imports' | 'documentImports' | 'sources'> {
   if (db.pragma('application_id', { simple: true }) !== BigInt(APPLICATION_ID)) throw new Error('This file is not a ReceiptMatch workspace.');
   const version = db.pragma('user_version', { simple: true });
-  if (version !== 1n && version !== BigInt(SCHEMA_VERSION)) throw new Error('This workspace uses an unsupported format version.');
+  if (version !== 1n && version !== 2n && version !== BigInt(SCHEMA_VERSION)) throw new Error('This workspace uses an unsupported format version.');
   const tables = (db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map(row => row.name);
-  const expected = version === 1n ? expectedTables : [...expectedTables, 'bank_imports'].sort();
+  const expected = [...expectedTables, ...(version >= 2n ? ['bank_imports'] : []), ...(version >= 3n ? ['document_imports'] : [])].sort();
   if (JSON.stringify(tables) !== JSON.stringify(expected) || db.prepare("SELECT name FROM sqlite_schema WHERE type IN ('trigger','view')").all().length) throw new Error('The workspace structure is not supported.');
   if (db.pragma('quick_check', { simple: true }) !== 'ok' || (db.pragma('foreign_key_check') as unknown[]).length) throw new Error('The workspace is damaged.');
   const rows = db.prepare('SELECT id,name,created_at AS createdAt,saved_at AS savedAt FROM workspace').all();
@@ -185,8 +279,14 @@ function validateDatabase(db: Database.Database): { metadata: WorkspaceMetadata;
     if (record.id !== row.id || record.result.sourceProvenance!.sourceId !== row.source_id) throw new Error('The bank import manifest identity is damaged.');
     return record;
   });
-  validateImports(db, imports);
-  return { metadata: metadataSchema.parse(rows[0]), schemaVersion: Number(version), imports };
+  const documentImports = version < 3n ? [] : (db.prepare('SELECT id,record_json FROM document_imports ORDER BY rowid').all() as { id: string; record_json: string }[]).map(row => {
+    const record = storedDocumentImportSchema.parse(JSON.parse(row.record_json));
+    if (record.id !== row.id) throw new Error('The document import manifest identity is damaged.');
+    return record;
+  });
+  const owned = new Set<string>();
+  validateImports(db, imports, owned); validateDocumentImports(db, documentImports, owned);
+  return { metadata: metadataSchema.parse(rows[0]), schemaVersion: Number(version), imports, documentImports, sources: sourceCatalog(db) };
 }
 
 function checkHeader(filePath: string) {
@@ -197,7 +297,7 @@ function checkHeader(filePath: string) {
     const buffer = Buffer.alloc(100);
     const bytesRead = readSync(descriptor, buffer, 0, 100, 0);
     if (bytesRead !== 100 || buffer.subarray(0, 16).toString('binary') !== 'SQLite format 3\0' || buffer.readUInt32BE(68) !== APPLICATION_ID) throw new Error('This file is not a ReceiptMatch workspace.');
-    if (![1, SCHEMA_VERSION].includes(buffer.readUInt32BE(60))) throw new Error('This workspace uses an unsupported format version.');
+    if (![1, 2, SCHEMA_VERSION].includes(buffer.readUInt32BE(60))) throw new Error('This workspace uses an unsupported format version.');
     if (buffer[18] !== 1 || buffer[19] !== 1) throw new Error('This workspace journal format is not supported.');
   } finally { closeSync(descriptor); }
 }
@@ -218,10 +318,13 @@ export async function loadWorkspace(filePath: string): Promise<SavedWorkspace> {
   } finally { try { db?.close(); } finally { closeSync(descriptor); } }
 }
 
-export async function createWorkspace(filePath: string, metadata: WorkspaceMetadata, imports: StoredBankImport[] = []): Promise<SavedWorkspace> {
+export async function createWorkspace(
+  filePath: string, metadata: WorkspaceMetadata, imports: StoredBankImport[] = [], documentImports: StoredDocumentImport[] = []
+): Promise<SavedWorkspace> {
   if (path.extname(filePath).toLowerCase() !== '.receiptmatch') throw new Error('Use the .receiptmatch filename extension for a workspace.');
   const saved = metadataSchema.parse({ ...metadata, savedAt: new Date().toISOString() });
   const retained = z.array(storedBankImportSchema).parse(imports);
+  const retainedDocuments = z.array(storedDocumentImportSchema).parse(documentImports);
   const descriptor = openSync(filePath, 'wx+', 0o600);
   const owned = fstatSync(descriptor, { bigint: true });
   let db: Database.Database | undefined;
@@ -237,14 +340,16 @@ export async function createWorkspace(filePath: string, metadata: WorkspaceMetad
       assertDescriptorPath(descriptor, filePath);
       db!.exec(schema);
       db!.exec(importSchema);
+      db!.exec(documentImportSchema);
       db!.pragma(`application_id = ${APPLICATION_ID}`); db!.pragma(`user_version = ${SCHEMA_VERSION}`);
       db!.prepare('INSERT INTO workspace VALUES(?,?,?,?)').run(saved.id, saved.name, saved.createdAt, saved.savedAt);
-      validateAppend(db!, [], retained); appendImports(db!, retained);
+      validateAppend(db!, [], retained, [], retainedDocuments); appendImports(db!, retained); appendDocumentImports(db!, retainedDocuments);
     }).exclusive();
     // SQLite EXCLUSIVE locking mode retains the committed-file lock until this connection closes.
     const committedFingerprint = fingerprintDescriptor(descriptor, filePath);
     completed = true;
-    return { metadata: saved, filePath, fingerprint: committedFingerprint, schemaVersion: SCHEMA_VERSION, imports: retained };
+    return { metadata: saved, filePath, fingerprint: committedFingerprint, schemaVersion: SCHEMA_VERSION, imports: retained,
+      documentImports: retainedDocuments, sources: sourceCatalog(db) };
   } finally {
     try { db?.close(); }
     finally {
@@ -254,11 +359,14 @@ export async function createWorkspace(filePath: string, metadata: WorkspaceMetad
   }
 }
 
-export async function saveWorkspace(current: SavedWorkspace, metadata: WorkspaceMetadata, imports: StoredBankImport[] = current.imports): Promise<SavedWorkspace> {
+export async function saveWorkspace(
+  current: SavedWorkspace, metadata: WorkspaceMetadata, imports: StoredBankImport[] = current.imports, documentImports: StoredDocumentImport[] = current.documentImports
+): Promise<SavedWorkspace> {
   const recognized = await loadWorkspace(current.filePath);
   if (recognized.metadata.id !== current.metadata.id || recognized.fingerprint !== current.fingerprint) throw new Error('The workspace file changed outside ReceiptMatch. Reopen it before saving.');
   const saved = metadataSchema.parse({ ...metadata, savedAt: new Date().toISOString() });
   const retained = z.array(storedBankImportSchema).parse(imports);
+  const retainedDocuments = z.array(storedDocumentImportSchema).parse(documentImports);
   const descriptor = openSync(current.filePath, 'r');
   let db: Database.Database | undefined;
   try {
@@ -272,12 +380,15 @@ export async function saveWorkspace(current: SavedWorkspace, metadata: Workspace
       const existing = validateDatabase(db!);
       const currentFingerprint = fingerprintDescriptor(descriptor, current.filePath);
       if (existing.metadata.id !== saved.id || currentFingerprint !== current.fingerprint) throw new Error('The workspace file changed outside ReceiptMatch. Reopen it before saving.');
-      validateAppend(db!, existing.imports, retained);
-      if (existing.schemaVersion === 1) { db!.exec(importSchema); db!.pragma(`user_version = ${SCHEMA_VERSION}`); }
+      validateAppend(db!, existing.imports, retained, existing.documentImports, retainedDocuments);
+      if (existing.schemaVersion === 1) db!.exec(importSchema);
+      if (existing.schemaVersion < SCHEMA_VERSION) { db!.exec(documentImportSchema); db!.pragma(`user_version = ${SCHEMA_VERSION}`); }
       appendImports(db!, retained.slice(existing.imports.length));
+      appendDocumentImports(db!, retainedDocuments.slice(existing.documentImports.length));
       db!.prepare('UPDATE workspace SET name=?,saved_at=? WHERE id=?').run(saved.name, saved.savedAt, saved.id);
     }).exclusive();
     const committedFingerprint = fingerprintDescriptor(descriptor, current.filePath);
-    return { metadata: saved, filePath: current.filePath, fingerprint: committedFingerprint, schemaVersion: SCHEMA_VERSION, imports: retained };
+    return { metadata: saved, filePath: current.filePath, fingerprint: committedFingerprint, schemaVersion: SCHEMA_VERSION, imports: retained,
+      documentImports: retainedDocuments, sources: sourceCatalog(db) };
   } finally { try { db?.close(); } finally { closeSync(descriptor); } }
 }
