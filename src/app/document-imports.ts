@@ -1,7 +1,12 @@
 import { NgTemplateOutlet } from '@angular/common';
 import { Component, computed, effect, input, output, signal, untracked } from '@angular/core';
-import type { ImportIssue, ImportPage, PositionedSpan, SourceEvidence } from '../shared/bank-import.js';
-import { formatCalendarDate, formatMoney } from '../shared/display.js';
+import { amountEntryExample, formatAmountEntry, parseAmountEntry } from '../shared/amount-entry.js';
+import { calendarDateSchema, type ImportIssue, type ImportPage, type PositionedSpan, type SourceEvidence } from '../shared/bank-import.js';
+import { formatCalendarDate, formatDocumentTotal, formatMoney } from '../shared/display.js';
+import {
+    applyDocumentCorrections, documentCorrectionKey, type DocumentCorrection, type DocumentCorrectionTarget, type DocumentCorrectionValue
+} from '../shared/document-corrections.js';
+import { sameMoneyValue } from '../shared/money.js';
 import type { DocumentImportSummary, WorkspaceCommand, WorkspaceState } from '../shared/protocol.js';
 import type { DocumentIssue, DocumentSection, SupportingDocument } from '../shared/supporting-document.js';
 import type { DocumentFileResult, DocumentFormat, StoredDocumentImport } from '../shared/workspace-documents.js';
@@ -34,7 +39,19 @@ const referenceRoles: Record<DocumentSection['references'][number]['role'], stri
 const currencyRoles: Record<DocumentSection['currencies'][number]['role'], string> = {
     settlement: 'Settlement currency', 'informational-fx': 'Informational exchange currency', unknown: 'Currency'
 };
-interface FieldView { id: string; role: string; label: string; values: string[]; evidence: SourceEvidence[]; issues: DocumentIssue[]; }
+interface FieldCorrectionView {
+    target: DocumentCorrectionTarget;
+    kind: DocumentCorrectionValue['kind'];
+    role: string;
+    inputValue: string;
+    currency: string;
+    key: string;
+    corrected: DocumentCorrection | undefined;
+}
+interface FieldView {
+    id: string; role: string; label: string; values: string[]; evidence: SourceEvidence[]; issues: DocumentIssue[];
+    reviewNeeded: boolean; newConflict: string | undefined; correction?: FieldCorrectionView;
+}
 
 @Component({
     selector: 'app-document-source-page', standalone: true,
@@ -81,11 +98,34 @@ class DocumentSourcePage {
     selector: 'app-document-analysis', standalone: true, imports: [DocumentSourcePage, NgTemplateOutlet],
     templateUrl: './document-analysis.html'
 })
-class DocumentAnalysis {
+export class DocumentAnalysis {
     readonly analysis = input.required<SupportingDocument>();
+    readonly fieldHeading = input('Extracted fields');
     readonly format = input<DocumentFormat | null>(null);
+    readonly documentId = input<string | null>(null);
+    readonly busy = input(false);
+    readonly workspaceError = input<string | null>(null);
+    readonly projectedIssues = input<DocumentIssue[] | null>(null);
+    readonly corrections = input<ReadonlyMap<string, DocumentCorrection> | null>(null);
+    readonly correction = output<DocumentCorrectionTarget & { change: DocumentCorrectionValue }>();
     readonly sourceOpen = signal(false);
     readonly openDetails = signal<ReadonlySet<string>>(new Set());
+    private readonly edit = signal<{ field: FieldCorrectionView; trigger: HTMLElement; originalRevision: number | undefined } | null>(null);
+    readonly editing = computed(() => {
+        const edit = this.edit();
+        if (!edit || edit.field.target.documentId !== this.documentId()) return null;
+        const saved = this.corrections()?.get(edit.field.key);
+        const change = saved?.change;
+        return {
+            ...edit.field,
+            inputValue: change?.kind === 'amount' ? formatAmountEntry(change.value) : change?.value ?? edit.field.inputValue,
+            currency: change?.kind === 'amount' ? change.value.currency : edit.field.currency,
+            applied: saved?.revision !== edit.originalRevision
+        };
+    });
+    readonly correctionError = signal<string | null>(null);
+    readonly editorId = computed(() => `document-correction-${this.documentId()}`);
+    readonly amountExample = amountEntryExample;
     readonly units = computed(() => this.format() === 'pdf' ? 'PDF points' : 'pixels');
     readonly pages = computed(() => this.analysis().input?.pages ?? []);
     private readonly pageNumbers = computed(() => new Map(this.pages().map(page => [page.pageId, page.pageNumber])));
@@ -109,24 +149,68 @@ class DocumentAnalysis {
     readonly sections = computed(() => {
         const analysis = this.analysis();
         const fieldIssues = new Map<string, DocumentIssue[]>();
+        const effectiveFieldIssues = new Map<string, DocumentIssue[]>();
+        for (const issue of this.projectedIssues() ?? analysis.issues) {
+            if (!issue.fieldId) continue;
+            const issues = effectiveFieldIssues.get(issue.fieldId) ?? [];
+            issues.push(issue);
+            effectiveFieldIssues.set(issue.fieldId, issues);
+        }
+        const missingBySection = new Map<string, Set<string>>();
         for (const issue of analysis.issues) {
+            if (issue.sectionId && issue.fieldId === null && issue.field && issue.code === 'missing-field') {
+                const missing = missingBySection.get(issue.sectionId) ?? new Set<string>();
+                missing.add(issue.field);
+                missingBySection.set(issue.sectionId, missing);
+            }
             if (!issue.fieldId) continue;
             const issues = fieldIssues.get(issue.fieldId) ?? [];
             issues.push(issue);
             fieldIssues.set(issue.fieldId, issues);
         }
-        const field = (source: { id: string; label: string; evidence: SourceEvidence[] }, role: string, values: string[]): FieldView =>
-            ({ ...source, role, values, issues: fieldIssues.get(source.id) ?? [] });
-        return analysis.sections.map(section => ({
-            id: section.sectionId, kind: kinds[section.kind], evidence: section.evidence, pages: section.pageIds.map(pageId => this.pageNumber(pageId)),
-            fields: [
-                ...section.amounts.map(value => field(value, amountRoles[value.role], value.candidates.map(candidate => formatMoney(candidate)))),
-                ...section.dates.map(value => field(value, dateRoles[value.role], value.candidates.map(candidate => formatCalendarDate(candidate)))),
-                ...section.merchants.map(value => field(value, 'Merchant', value.candidates)),
-                ...section.references.map(value => field(value, referenceRoles[value.role], value.candidates)),
-                ...section.currencies.map(value => field(value, currencyRoles[value.role], value.candidates))
-            ]
-        }));
+        const field = (source: { id: string; label: string; evidence: SourceEvidence[] }, role: string, values: string[], correction?: FieldCorrectionView): FieldView => {
+            const issues = fieldIssues.get(source.id) ?? [];
+            const effective = effectiveFieldIssues.get(source.id) ?? [];
+            const newConflict = issues.some(issue => issue.code === 'conflicting-field') ? undefined : effective.find(issue => issue.code === 'conflicting-field')?.message;
+            return { ...source, role, values, issues, reviewNeeded: effective.length > 0, newConflict, correction };
+        };
+        const documentId = this.documentId();
+        const corrections = this.corrections();
+        return analysis.sections.map(section => {
+            const declared = [...new Set(section.currencies.filter(value => value.role === 'settlement').flatMap(value => value.candidates))];
+            const editable = (fieldId: string | null, kind: DocumentCorrectionValue['kind'], role: string, inputValue = '', currency = '') => {
+                if (!documentId) return undefined;
+                const target = { documentId, sectionId: section.sectionId, fieldId };
+                const key = documentCorrectionKey(target, kind);
+                return { target, kind, role, inputValue, currency, key, corrected: corrections?.get(key) };
+            };
+            const missingFields: FieldCorrectionView[] = [];
+            const missing = missingBySection.get(section.sectionId);
+            if (documentId && missing && section.kind !== 'unknown') {
+                const totalRole = section.kind === 'credit-note' ? 'credit-note-component' : 'billed-total';
+                if (missing.has('billed-total') && !section.amounts.some(value => value.role === totalRole)) {
+                    missingFields.push(editable(null, 'amount', amountRoles[totalRole], '', declared.length === 1 ? declared[0] : '')!);
+                }
+                if (missing.has('issue') && !section.dates.some(value => value.role === 'issue')) missingFields.push(editable(null, 'date', 'Issue date')!);
+            }
+            return {
+                id: section.sectionId, kind: kinds[section.kind], evidence: section.evidence, pages: section.pageIds.map(pageId => this.pageNumber(pageId)), missingFields,
+                fields: [
+                    ...section.amounts.map(value => {
+                        const currencies = [...new Set(value.candidates.flatMap(candidate => candidate.currency ? [candidate.currency] : []))];
+                        const currency = currencies.length === 1 ? currencies[0] : !currencies.length && declared.length === 1 ? declared[0] : '';
+                        const initial = value.candidates.length === 1 ? formatAmountEntry(value.candidates[0]) : '';
+                        return field(value, amountRoles[value.role], value.candidates.map(candidate => formatMoney(candidate)),
+                            editable(value.id, 'amount', amountRoles[value.role], initial, currency));
+                    }),
+                    ...section.dates.map(value => field(value, dateRoles[value.role], value.candidates.map(candidate => formatCalendarDate(candidate)),
+                        editable(value.id, 'date', dateRoles[value.role], value.candidates.length === 1 ? value.candidates[0] : ''))),
+                    ...section.merchants.map(value => field(value, 'Merchant', value.candidates)),
+                    ...section.references.map(value => field(value, referenceRoles[value.role], value.candidates)),
+                    ...section.currencies.map(value => field(value, currencyRoles[value.role], value.candidates))
+                ]
+            };
+        });
     });
     readonly hasFields = computed(() => this.sections().some(section => section.fields.length > 0));
     private readonly sectionNumbers = computed(() => new Map(this.analysis().sections.map((section, index) => [section.sectionId, index + 1])));
@@ -137,6 +221,7 @@ class DocumentAnalysis {
         return [section && `Section ${section}`, label].filter(Boolean).join(' · ');
     }
     toggleDetail(id: string, event: Event) {
+        if (!expanded(event) && this.edit()?.field.target.fieldId === id) this.edit.set(null);
         this.openDetails.update(current => {
             const next = new Set(current);
             if (expanded(event)) next.add(id);
@@ -145,6 +230,48 @@ class DocumentAnalysis {
         });
     }
     toggleSource(event: Event) { this.sourceOpen.set(expanded(event)); }
+    correctedValue(change: DocumentCorrectionValue) {
+        return change.kind === 'amount' ? formatMoney(change.value) : formatCalendarDate(change.value);
+    }
+    startCorrection(field: FieldCorrectionView, event: Event) {
+        if (this.busy()) return;
+        this.correctionError.set(null);
+        this.edit.set({ field, trigger: event.currentTarget as HTMLElement, originalRevision: field.corrected?.revision });
+        requestAnimationFrame(() => {
+            if (this.editing()?.key === field.key) document.getElementById(this.editorId() + '-heading')?.focus();
+        });
+    }
+    closeCorrection() {
+        const edit = this.edit();
+        this.edit.set(null);
+        edit?.trigger.focus();
+    }
+    applyCorrection(event: Event) {
+        event.preventDefault();
+        const editing = this.editing();
+        if (!editing || this.busy()) return;
+        const fields = new FormData(event.currentTarget as HTMLFormElement);
+        const entered = String(fields.get('value') ?? '').trim();
+        let change: DocumentCorrectionValue;
+        if (editing.kind === 'date') {
+            const date = calendarDateSchema.safeParse(entered);
+            if (!date.success) { this.correctionError.set('Enter a valid date.'); return; }
+            change = { kind: 'date', value: date.data };
+        } else {
+            const currency = String(fields.get('currency') ?? '').trim().toUpperCase();
+            if (!/^[A-Z]{3}$/.test(currency)) { this.correctionError.set('Enter a three-letter currency code, for example EUR.'); return; }
+            const amount = parseAmountEntry(entered, currency);
+            if (!amount) { this.correctionError.set(`Enter an amount without grouping separators, for example ${this.amountExample}.`); return; }
+            change = { kind: 'amount', value: amount };
+        }
+        const previous = this.corrections()?.get(editing.key)?.change;
+        if ((change.kind === 'date' && previous?.kind === 'date' && change.value === previous.value) ||
+            (change.kind === 'amount' && previous?.kind === 'amount' && sameMoneyValue(change.value, previous.value))) {
+            this.correctionError.set('Enter a different value to update this correction.'); return;
+        }
+        this.correctionError.set(null);
+        this.correction.emit({ ...editing.target, change });
+    }
 }
 
 interface ReportCache { workspaceKey: string; requestKey: string; records: Map<string, StoredDocumentImport>; }
@@ -178,21 +305,40 @@ export class DocumentImports {
     readonly detailsError = computed(() => this.requestKey() !== null && this.failedRequest() === this.requestKey());
     readonly openFileIds = signal<ReadonlySet<string>>(new Set());
     private latestReportId: string | null = null;
+    readonly correctionsByDocument = computed(() => {
+        const byDocument = new Map<string, Map<string, DocumentCorrection>>();
+        for (const correction of this.state().workspace?.documentCorrections ?? []) {
+            const fields = byDocument.get(correction.documentId) ?? new Map<string, DocumentCorrection>();
+            fields.set(documentCorrectionKey(correction, correction.change.kind), correction);
+            byDocument.set(correction.documentId, fields);
+        }
+        return byDocument;
+    });
     readonly fileRows = computed(() => {
         const records = this.records();
         const open = this.openReports();
-        const rows = new Map<string, { file: DocumentFileResult; total: string | null }[]>();
+        const rows = new Map<string, { file: DocumentFileResult; total: string | null; projectedIssues: DocumentIssue[] | null }[]>();
         if (records && open.workspaceKey === this.workspaceKey()) {
-            for (const id of open.ids) rows.set(id, records.get(id)?.files.map(file => ({ file, total: this.billedTotal(file) })) ?? []);
+            const corrections = this.correctionsByDocument();
+            for (const id of open.ids) {
+                const record = records.get(id);
+                if (!record) continue;
+                const fields = new Map(record.files.flatMap(file => file.status === 'imported' ? [...(corrections.get(file.record.id) ?? [])] : []));
+                const [effective] = applyDocumentCorrections([record], fields);
+                rows.set(id, record.files.map((file, index) => {
+                    const projected = effective.files[index];
+                    return { file, total: this.billedTotal(projected), projectedIssues: projected.status === 'imported' ? projected.record.result.issues : null };
+                }));
+            }
         }
         return rows;
     });
     readonly basename = basename;
     readonly timestamp = (value: string) => dateTimeFormat.format(new Date(value));
     readonly filePath = (file: DocumentFileResult) => file.status === 'imported' ? file.record.filePath : file.filePath;
-    readonly fileStatus = (file: DocumentFileResult) => {
+    readonly fileStatus = (file: DocumentFileResult, reviewNeeded: boolean) => {
         switch (file.status) {
-            case 'imported': return file.record.result.status === 'partial' ? 'Imported · review needed' : 'Imported';
+            case 'imported': return reviewNeeded ? 'Imported · review needed' : 'Imported';
             case 'skipped': return 'Skipped duplicate';
             case 'failed': return 'Failed';
             case 'unsupported': return 'Unsupported';
@@ -256,13 +402,11 @@ export class DocumentImports {
         });
     }
     private billedTotal(file: DocumentFileResult) {
-        if (file.status !== 'imported') return null;
-        const { sections, issues } = file.record.result;
-        if (sections.length !== 1) return null;
-        const totals = sections[0].amounts.filter(field => field.role === 'billed-total');
-        const total = totals[0];
-        if (totals.length !== 1 || total.candidates.length !== 1 || !total.candidates[0].currency || issues.some(issue => issue.fieldId === total.id)) return null;
-        return formatMoney(total.candidates[0]);
+        return file.status === 'imported' ? formatDocumentTotal(file.record.result) : null;
+    }
+    correctField(value: DocumentCorrectionTarget & { change: DocumentCorrectionValue }) {
+        const workspace = this.state().workspace;
+        if (workspace && !this.state().busy) this.workspaceCommand.emit({ ...value, type: 'correct-document-field', revision: workspace.matchRevision });
     }
     retryDetails() { this.retryVersion.update(value => value + 1); }
     reportCounts(report: DocumentImportSummary) {

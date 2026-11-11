@@ -9,8 +9,7 @@ import { parseBankStatement } from "../../electron/import/registry.js";
 import { statement } from "./bank-fixtures.js";
 
 // Independently invented data; no private document values or source names.
-export function retainedBank(root: string) {
-	const input = statement();
+export function retainedBank(root: string, input = statement()) {
 	input.source = { sourceId: randomUUID(), sha256: createHash("sha256").update(randomUUID()).digest("hex") };
 	input.extraction.runId = randomUUID();
 	const result = parseBankStatement(input);

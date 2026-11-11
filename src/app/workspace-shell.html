@@ -55,7 +55,7 @@
 						<app-document-imports [state]="state()" (workspaceCommand)="run($event)" />
 					</div>
 				</section>
-				<app-match-suggestions [workspace]="workspace" [active]="section() === 'matches'" [hidden]="section() !== 'matches'" />
+				<app-match-suggestions [workspace]="workspace" [busy]="state().busy" [active]="section() === 'matches'" [hidden]="section() !== 'matches'" />
 			</main>
 		</div>
 	</div>
