@@ -202,7 +202,7 @@ test('direct Electron development and stylesheet HMR', async ({ development: { p
 				}
 			});
 		});
-		await page.getByRole('heading', { name: 'Your records. Your workspace.' }).waitFor();
+		await page.getByRole('heading', { name: 'ReceiptMatch', exact: true }).waitFor();
 		assert.equal(page.url(), startUrl || 'receiptmatch://app/index.html');
 		assert.equal(await currentApplication().evaluate(({ app }) => app.isPackaged), false);
 		await currentApplication().evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false));

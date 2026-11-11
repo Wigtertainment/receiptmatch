@@ -349,7 +349,7 @@ test("packaged Electron PDF and image extraction", async ({ extraction: { report
 	const application = await launch();
 	const page = await application.firstWindow({ timeout: 30_000 });
 	page.setDefaultTimeout(30_000);
-	await page.getByRole("heading", { name: "Your records. Your workspace." }).waitFor();
+	await page.getByRole("heading", { name: "ReceiptMatch", exact: true }).waitFor();
 	await application.evaluate(({ app }) => {
 		const sessions = { created: 0, sessions: new Set<Electron.Session>() };
 		(globalThis as typeof globalThis & ExtractionTestScope).extractionTestSessions = sessions;

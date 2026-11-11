@@ -1,4 +1,4 @@
-import { Component, DestroyRef, inject, signal } from '@angular/core';
+import { Component, computed, DestroyRef, inject, signal } from '@angular/core';
 import { bootstrapApplication } from '@angular/platform-browser';
 import { DocumentImports } from './app/document-imports.js';
 import { MatchSuggestions } from './app/match-suggestions.js';
@@ -7,52 +7,20 @@ import { StatementImports } from './statement-imports.js';
 
 declare global { interface Window { receiptmatch: WorkspaceBridge; } }
 
+type WorkspaceSection = 'sources' | 'matches';
+
 @Component({
   selector: 'app-root', standalone: true, imports: [StatementImports, DocumentImports, MatchSuggestions],
-  template: `
-    <header class="toolbar">
-      <div class="identity"><span class="brand-mark" aria-hidden="true">r<span>m</span></span><strong>ReceiptMatch</strong></div>
-      <div class="toolbar-state" aria-live="polite">{{ state().workspace ? (state().workspace!.dirty ? 'Unsaved changes' : 'All changes saved') : 'Your local workspace' }}</div>
-      <nav aria-label="Workspace actions"><button (click)="run({type:'new'})" [disabled]="state().busy" title="New workspace (Ctrl+N)">New</button><button (click)="run({type:'open'})" [disabled]="state().busy" title="Open workspace (Ctrl+O)">Open</button><button class="button-primary compact" (click)="run({type:'save'})" [disabled]="state().busy || !state().workspace || !state().workspace!.dirty" title="Save workspace (Ctrl+S)">Save</button></nav>
-    </header>
-    <main>
-      @if (state().error || commandError(); as error) { <div class="error" role="alert"><span aria-hidden="true">!</span><p>{{ error }}</p></div> }
-      @if (state().workspace; as workspace) {
-        <section class="workspace-view" aria-labelledby="workspace-heading">
-          <div class="eyebrow"><span class="status-dot" [class.unsaved]="workspace.dirty"></span> WORKSPACE</div>
-          <h1 id="workspace-heading">A place for your records.</h1>
-          <p class="intro">Keep your reconciliation work together, on your computer.</p>
-          <div class="workspace-details">
-            <label for="workspace-name">Workspace name</label>
-            <input id="workspace-name" type="text" maxlength="120" autocomplete="off" [value]="workspace.name" (input)="rename($event)" [disabled]="state().busy" aria-describedby="name-help">
-            <p id="name-help" class="field-help">Choose a name you’ll recognise when you return.</p>
-            <div class="location-row"><span class="detail-label">Location</span><p class="file-location" [title]="workspace.filePath || ''">{{ workspace.filePath || 'Not saved yet' }}</p></div>
-            <div class="saved-row"><span class="detail-label">Status</span><p aria-live="polite">{{ workspace.dirty ? 'You have unsaved changes.' : 'Your workspace is saved on this computer.' }}</p></div>
-          </div>
-          @if (!workspace.filePath) { <div class="save-prompt"><p>Save your workspace to come back to it later.</p><button class="button-primary" (click)="run({type:'save'})" [disabled]="state().busy">Save workspace <span aria-hidden="true">↗</span></button></div> }
-          <div class="workspace-imports">
-            <app-statement-imports [state]="state()" (workspaceCommand)="run($event)" />
-            <app-document-imports [state]="state()" (workspaceCommand)="run($event)" />
-          </div>
-          <app-match-suggestions [workspace]="workspace" />
-        </section>
-      } @else {
-        <section class="welcome" aria-labelledby="welcome-heading">
-          <div class="eyebrow">LOCAL BY DESIGN</div>
-          <h1 id="welcome-heading">Your records.<br>Your workspace.</h1>
-          <p class="intro">Start a workspace for your financial records,<br class="wide-only"> or pick up where you left off.</p>
-          <div class="welcome-actions"><button class="button-primary" (click)="run({type:'new'})" [disabled]="state().busy">Create workspace <span aria-hidden="true">+</span></button><button class="button-secondary" (click)="run({type:'open'})" [disabled]="state().busy">Open workspace <span aria-hidden="true">↗</span></button></div>
-          <div class="local-note"><svg aria-hidden="true" width="17" height="18" viewBox="0 0 17 18" fill="none"><rect x="3" y="7" width="11" height="9" rx="2" stroke="currentColor"/><path d="M5.5 7V4a3 3 0 0 1 6 0v3" stroke="currentColor"/></svg><p>Stored locally. No account needed.</p></div>
-          <div class="paper-detail" aria-hidden="true"><div class="paper-top"></div><div class="paper-line long"></div><div class="paper-line"></div><div class="paper-divider"></div><div class="paper-line medium"></div><div class="paper-stamp">✓</div></div>
-        </section>
-      }
-    </main>
-    <footer><span>ReceiptMatch</span><span>Local files. Your control.</span></footer>
-  `
+  templateUrl: './app/workspace-shell.html'
 })
 class ReceiptMatchApp {
   readonly state = signal<WorkspaceState>({ workspace: null, busy: true, error: null, statementImport: null, importOutcome: null, documentImport: null, documentOutcome: null });
   readonly commandError = signal<string | null>(null);
+  private readonly navigation = signal<{ loadRevision: number; section: WorkspaceSection } | null>(null);
+  readonly section = computed(() => {
+    const navigation = this.navigation();
+    return navigation && navigation.loadRevision === this.state().workspace?.loadRevision ? navigation.section : 'sources';
+  });
   private stateRevision = 0;
   private commandGeneration = 0;
   private disposed = false;
@@ -66,19 +34,30 @@ class ReceiptMatchApp {
   }
   async run(command: WorkspaceCommand) {
     const generation = ++this.commandGeneration; const revision = this.stateRevision;
+    const loadRevision = this.state().workspace?.loadRevision;
     try {
       const result = await window.receiptmatch.command(command);
       if (this.disposed || generation !== this.commandGeneration) return;
       // Subscribed state is authoritative even when an older command reply arrives later.
       if (revision === this.stateRevision) { this.commandError.set(null); this.state.set(result); }
-      if ((command.type === 'new' || command.type === 'open') && result.workspace && result.workspace.id === this.state().workspace?.id) {
+      if ((command.type === 'new' || command.type === 'open') && result.workspace && result.workspace.loadRevision !== loadRevision) {
         requestAnimationFrame(() => {
-          if (!this.disposed && generation === this.commandGeneration && result.workspace?.id === this.state().workspace?.id) document.getElementById('workspace-name')?.focus();
+          if (!this.disposed && generation === this.commandGeneration && result.workspace?.loadRevision === this.state().workspace?.loadRevision) document.getElementById('workspace-name')?.focus();
         });
       }
     } catch {
       if (!this.disposed && generation === this.commandGeneration && revision === this.stateRevision) this.commandError.set('The workspace action could not be completed. Please try again.');
     }
+  }
+  showSection(section: WorkspaceSection) {
+    const workspace = this.state().workspace;
+    if (!workspace || section === this.section()) return;
+    this.navigation.set({ loadRevision: workspace.loadRevision, section });
+    requestAnimationFrame(() => {
+      if (!this.disposed && this.state().workspace?.loadRevision === workspace.loadRevision && this.section() === section) {
+        document.getElementById(section === 'sources' ? 'sources-heading' : 'matches-heading')?.focus();
+      }
+    });
   }
   rename(event: Event) { void this.run({ type: 'rename', name: (event.target as HTMLInputElement).value }); }
 }

@@ -1,0 +1,78 @@
+@if (state().workspace; as workspace) {
+	<div class="workspace-shell">
+		<aside class="workspace-rail" aria-label="ReceiptMatch">
+			<div class="identity"><span class="brand-mark" aria-hidden="true">RM</span><strong>ReceiptMatch</strong></div>
+			<nav class="workspace-nav" aria-label="Workspace views">
+				<button type="button" [attr.aria-current]="section() === 'sources' ? 'page' : null" (click)="showSection('sources')">Sources</button>
+				<button type="button" [attr.aria-current]="section() === 'matches' ? 'page' : null" (click)="showSection('matches')">Match suggestions</button>
+			</nav>
+		</aside>
+		<div class="workspace-body">
+			<header class="toolbar">
+				<div class="workspace-identity">
+					<label for="workspace-name" class="sr-only">Workspace name</label>
+					<input id="workspace-name" type="text" maxlength="120" autocomplete="off" [value]="workspace.name" (input)="rename($event)" [disabled]="state().busy" />
+					@if (workspace.filePath) {
+						<details class="workspace-location">
+							<summary>File location</summary>
+							<p class="file-location">{{ workspace.filePath }}</p>
+						</details>
+					}
+				</div>
+				<div class="toolbar-end">
+					<p class="toolbar-state" [class.unsaved]="workspace.dirty" role="status">{{ workspace.dirty ? 'Unsaved changes' : 'All changes saved' }}</p>
+					<div class="toolbar-actions" role="group" aria-label="Workspace actions">
+						<button type="button" class="button-secondary compact" (click)="run({ type: 'new' })" [disabled]="state().busy" title="New workspace (Ctrl+N)">New</button>
+						<button type="button" class="button-secondary compact" (click)="run({ type: 'open' })" [disabled]="state().busy" title="Open workspace (Ctrl+O)">
+							Open
+						</button>
+						<button
+							type="button"
+							class="button-primary compact"
+							(click)="run({ type: 'save' })"
+							[disabled]="state().busy || !workspace.dirty"
+							title="Save workspace (Ctrl+S)"
+						>
+							Save
+						</button>
+					</div>
+				</div>
+			</header>
+			<main class="workspace-content">
+				@if (state().error || commandError(); as error) {
+					<p class="error" role="alert">{{ error }}</p>
+				}
+				@if (section() === 'matches' && (state().statementImport || state().documentImport)) {
+					<div class="workspace-import-status">
+						<p role="status">{{ state().statementImport ? 'Statement import in progress.' : 'Folder analysis in progress.' }}</p>
+						<button type="button" class="button-secondary compact" (click)="showSection('sources')">View import</button>
+					</div>
+				}
+				<section [hidden]="section() !== 'sources'" aria-labelledby="sources-heading">
+					<h1 class="view-heading" id="sources-heading" tabindex="-1">Sources</h1>
+					<div class="workspace-imports">
+						<app-statement-imports [state]="state()" (workspaceCommand)="run($event)" />
+						<app-document-imports [state]="state()" (workspaceCommand)="run($event)" />
+					</div>
+				</section>
+				<app-match-suggestions [workspace]="workspace" [active]="section() === 'matches'" [hidden]="section() !== 'matches'" />
+			</main>
+		</div>
+	</div>
+} @else {
+	<main class="welcome" aria-labelledby="welcome-heading">
+		<section class="welcome-card">
+			<span class="brand-mark" aria-hidden="true">RM</span>
+			<h1 id="welcome-heading">ReceiptMatch</h1>
+			<p class="welcome-intro">Match bank transactions to supporting documents in a local workspace.</p>
+			<div class="welcome-actions">
+				<button type="button" class="button-primary" (click)="run({ type: 'new' })" [disabled]="state().busy">Create workspace</button>
+				<button type="button" class="button-secondary" (click)="run({ type: 'open' })" [disabled]="state().busy">Open workspace</button>
+			</div>
+			@if (state().error || commandError(); as error) {
+				<p class="error" role="alert">{{ error }}</p>
+			}
+			<p class="welcome-privacy">Workspaces and documents stay on this computer.</p>
+		</section>
+	</main>
+}

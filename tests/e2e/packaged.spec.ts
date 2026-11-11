@@ -90,11 +90,7 @@ const test = base.extend<{ smoke: PackagedSmoke }>({
 			const page = await application.firstWindow({ timeout: 30_000 });
 			page.setDefaultTimeout(30_000);
 			await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false));
-			await page.getByRole('heading', { name: 'Your records. Your workspace.' }).waitFor();
-			await page.waitForFunction(() => {
-				const toolbar = document.querySelector('.toolbar');
-				return toolbar && ['78px', '70px'].includes(getComputedStyle(toolbar).height);
-			});
+			await page.getByRole('heading', { name: 'ReceiptMatch', exact: true }).waitFor();
 			return { application, page };
 		}
 

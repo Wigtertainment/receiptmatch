@@ -1,4 +1,4 @@
-import { Component, computed, effect, input, signal } from '@angular/core';
+import { Component, computed, effect, input, signal, untracked } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import { formatCalendarDate, formatMoney } from '../shared/display.js';
 import type { WorkspaceView } from '../shared/protocol.js';
@@ -12,7 +12,8 @@ type Filter = 'all' | MatchStatus;
 })
 export class MatchSuggestions {
 	readonly workspace = input.required<WorkspaceView>();
-	readonly statuses = ['reliable', 'uncertain', 'unmatched'] as const;
+	readonly active = input.required<boolean>();
+	readonly filters = ['all', 'reliable', 'uncertain', 'unmatched'] as const;
 	readonly statusLabels: Record<MatchStatus, string> = { reliable: 'Reliable', uncertain: 'Uncertain', unmatched: 'Unmatched' };
 	readonly issueLabels: Record<MatchCandidateView['issues'][number], string> = {
 		'missing-reference': 'No matching payment or document reference.',
@@ -27,6 +28,10 @@ export class MatchSuggestions {
 	readonly money = formatMoney;
 	readonly round = Math.round;
 	readonly basename = (filePath: string) => filePath.split(/[\\/]/).at(-1) || filePath;
+	readonly transactionName = (description: string) => {
+		const firstLine = description.trim().split(/\r?\n/, 1)[0];
+		return firstLine.length > 140 ? firstLine.slice(0, 139) + '…' : firstLine || 'Transaction';
+	};
 	private readonly selected = signal<{ transactionId: string; loadRevision: number } | null>(null);
 	private readonly filterState = signal<{ filter: Filter; loadRevision: number } | null>(null);
 	private readonly summaryRequest = signal<{ revision: number; rows: MatchSummary[] | null } | null>(null);
@@ -51,13 +56,19 @@ export class MatchSuggestions {
 		const filter = this.filter();
 		return filter === 'all' ? rows : rows.filter(row => row.status === filter);
 	});
-	readonly selectedId = computed(() => {
+	readonly selectedRow = computed(() => {
+		const rows = this.filteredRows();
 		const selected = this.selected();
-		return selected?.loadRevision === this.workspace().loadRevision ? selected.transactionId : null;
+		const id = selected?.loadRevision === this.workspace().loadRevision ? selected.transactionId : null;
+		return rows.find(row => row.transactionId === id) ?? rows[0] ?? null;
+	});
+	private readonly candidateTransactionId = computed(() => {
+		const row = this.selectedRow();
+		return row?.candidateCount ? row.transactionId : null;
 	});
 	private readonly currentDetail = computed(() => {
 		const result = this.detailRequest();
-		return result?.revision === this.revision() && result.transactionId === this.selectedId() ? result : null;
+		return result?.revision === this.revision() && result.transactionId === this.candidateTransactionId() ? result : null;
 	});
 	readonly details = computed(() => this.currentDetail()?.value ?? null);
 	readonly detailsFailed = computed(() => this.currentDetail()?.value === null);
@@ -66,22 +77,23 @@ export class MatchSuggestions {
 		effect(onCleanup => {
 			const matchRevision = this.revision();
 			this.summaryRetry();
+			if (!this.active() || untracked(() => this.currentSummary())) return;
 			let current = true;
 			onCleanup(() => { current = false; });
 			const update = (rows: MatchSummary[] | null) => {
-				if (current && this.revision() === matchRevision) this.summaryRequest.set({ revision: matchRevision, rows });
+				if (current && this.active() && this.revision() === matchRevision) this.summaryRequest.set({ revision: matchRevision, rows });
 			};
 			void window.receiptmatch.matchSummaries(matchRevision).then(update, () => update(null));
 		});
 		effect(onCleanup => {
-			const transactionId = this.selectedId();
+			const transactionId = this.candidateTransactionId();
 			const matchRevision = this.revision();
 			this.detailRetry();
-			if (!transactionId) return;
+			if (!this.active() || !transactionId || untracked(() => this.currentDetail())) return;
 			let current = true;
 			onCleanup(() => { current = false; });
 			const update = (value: MatchDetails | null) => {
-				if (current && this.revision() === matchRevision && this.selectedId() === transactionId) {
+				if (current && this.active() && this.revision() === matchRevision && this.candidateTransactionId() === transactionId) {
 					this.detailRequest.set({ revision: matchRevision, transactionId, value });
 				}
 			};
@@ -89,14 +101,19 @@ export class MatchSuggestions {
 		});
 	}
 
-	setFilter(event: Event) {
-		this.filterState.set({ filter: (event.target as HTMLSelectElement).value as Filter, loadRevision: this.workspace().loadRevision });
-		this.selected.set(null);
+	setFilter(filter: Filter) {
+		this.filterState.set({ filter, loadRevision: this.workspace().loadRevision });
 	}
-	toggle(transactionId: string) {
-		this.detailRequest.set(null);
-		this.selected.set(this.selectedId() === transactionId ? null : { transactionId, loadRevision: this.workspace().loadRevision });
+	selectTransaction(transactionId: string, event: MouseEvent) {
+		const { loadRevision } = this.workspace();
+		this.selected.set({ transactionId, loadRevision });
+		if (event.detail === 0 || window.matchMedia('(width < 1000px)').matches) requestAnimationFrame(() => {
+			if (this.active() && this.workspace().loadRevision === loadRevision && this.selectedRow()?.transactionId === transactionId) {
+				document.getElementById('match-detail-heading')?.focus();
+			}
+		});
 	}
+	focusSelectedTransaction(transactionId: string) { document.getElementById('match-transaction-' + transactionId)?.focus(); }
 	retrySummaries() { this.summaryRequest.set(null); this.summaryRetry.update(value => value + 1); }
 	retryDetails() { this.detailRequest.set(null); this.detailRetry.update(value => value + 1); }
 }

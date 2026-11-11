@@ -177,6 +177,16 @@ export class DocumentImports {
     });
     readonly detailsError = computed(() => this.requestKey() !== null && this.failedRequest() === this.requestKey());
     readonly openFileIds = signal<ReadonlySet<string>>(new Set());
+    private latestReportId: string | null = null;
+    readonly fileRows = computed(() => {
+        const records = this.records();
+        const open = this.openReports();
+        const rows = new Map<string, { file: DocumentFileResult; total: string | null }[]>();
+        if (records && open.workspaceKey === this.workspaceKey()) {
+            for (const id of open.ids) rows.set(id, records.get(id)?.files.map(file => ({ file, total: this.billedTotal(file) })) ?? []);
+        }
+        return rows;
+    });
     readonly basename = basename;
     readonly timestamp = (value: string) => dateTimeFormat.format(new Date(value));
     readonly filePath = (file: DocumentFileResult) => file.status === 'imported' ? file.record.filePath : file.filePath;
@@ -192,12 +202,17 @@ export class DocumentImports {
     constructor() {
         effect(() => {
             const workspaceKey = this.workspaceKey();
+            const latestId = this.summaries().at(-1)?.id ?? null;
             untracked(() => {
                 if (this.cache()?.workspaceKey !== workspaceKey) this.cache.set(null);
-                if (this.openReports().workspaceKey !== workspaceKey) {
+                const open = this.openReports();
+                if (open.workspaceKey !== workspaceKey) {
                     this.openReports.set({ workspaceKey, ids: new Set() });
                     this.openFileIds.set(new Set());
+                } else if (latestId && latestId !== this.latestReportId) {
+                    this.openReports.set({ workspaceKey, ids: new Set([...open.ids, latestId]) });
                 }
+                this.latestReportId = latestId;
             });
         });
         effect(onCleanup => {
@@ -225,20 +240,29 @@ export class DocumentImports {
     isReportOpen(id: string) { return this.openReports().workspaceKey === this.workspaceKey() && this.openReports().ids.has(id); }
     toggleReport(id: string, event: Event) {
         if (!this.summaries().some(report => report.id === id)) return;
+        if (this.isReportOpen(id) === expanded(event)) return;
         const workspaceKey = this.workspaceKey();
         const ids = new Set(this.openReports().workspaceKey === workspaceKey ? this.openReports().ids : []);
         if (expanded(event)) ids.add(id);
         else ids.delete(id);
         this.openReports.set({ workspaceKey, ids });
-        if (!ids.has(id)) this.openFileIds.update(open => new Set([...open].filter(key => !key.startsWith(id + '/'))));
+        if (!ids.has(id)) this.openFileIds.update(open => new Set([...open].filter(key => !key.startsWith('document-file-' + id + '-'))));
     }
-    toggleFile(key: string, event: Event) {
+    toggleFile(key: string) {
         this.openFileIds.update(current => {
             const next = new Set(current);
-            if (expanded(event)) next.add(key);
-            else next.delete(key);
+            if (!next.delete(key)) next.add(key);
             return next;
         });
+    }
+    private billedTotal(file: DocumentFileResult) {
+        if (file.status !== 'imported') return null;
+        const { sections, issues } = file.record.result;
+        if (sections.length !== 1) return null;
+        const totals = sections[0].amounts.filter(field => field.role === 'billed-total');
+        const total = totals[0];
+        if (totals.length !== 1 || total.candidates.length !== 1 || !total.candidates[0].currency || issues.some(issue => issue.fieldId === total.id)) return null;
+        return formatMoney(total.candidates[0]);
     }
     retryDetails() { this.retryVersion.update(value => value + 1); }
     reportCounts(report: DocumentImportSummary) {

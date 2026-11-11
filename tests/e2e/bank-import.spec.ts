@@ -75,7 +75,7 @@ const test = base.extend<{ bankImport: BankImportTest }>({
 			});
 			const page = await application.firstWindow({ timeout: 30_000 });
 			page.setDefaultTimeout(30_000);
-			await page.getByRole('heading', { name: 'Your records. Your workspace.' }).waitFor();
+			await page.getByRole('heading', { name: 'ReceiptMatch', exact: true }).waitFor();
 			return { application, page };
 		}
 		async function close() {

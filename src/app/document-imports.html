@@ -1,7 +1,10 @@
-<section class="document-imports" aria-labelledby="documents-heading">
-	<div class="section-heading">
-		<h2 id="documents-heading">Supporting documents</h2>
-		<button class="button-primary compact" (click)="workspaceCommand.emit({ type: 'import-documents' })" [disabled]="state().busy">Choose folder</button>
+<section class="document-imports source-panel" aria-labelledby="documents-heading">
+	<div class="section-heading source-panel-heading">
+		<div>
+			<h2 id="documents-heading">Supporting documents</h2>
+			<p class="source-panel-count">{{ summaries().length }} {{ summaries().length === 1 ? 'folder analysis' : 'folder analyses' }}</p>
+		</div>
+		<button type="button" class="button-primary compact" (click)="workspaceCommand.emit({ type: 'import-documents' })" [disabled]="state().busy">Choose folder</button>
 	</div>
 	@if (state().documentImport; as active) {
 		<div class="import-progress">
@@ -34,16 +37,13 @@
 					}
 				</ul>
 			}
-			@if (outcome.importId && state().workspace?.dirty) {
-				<p>Save your workspace to keep this analysis.</p>
-			}
 		</div>
 	}
 	@if (summaries().length) {
 		<div class="analysis-history">
 			<h3>Analysis history</h3>
 			@for (report of summaries(); track workspaceKey() + report.id) {
-				<details class="report-details" (toggle)="toggleReport(report.id, $event)">
+				<details class="report-details" [open]="isReportOpen(report.id)" (toggle)="toggleReport(report.id, $event)">
 					<summary>
 						<span class="summary-name">{{ basename(report.folderPath) }}</span>
 						<span class="summary-status muted">&nbsp;· {{ report.status === 'cancelled' ? 'Cancelled' : 'Finished' }} · {{ reportCounts(report) }}</span>
@@ -64,36 +64,78 @@
 										}
 									</ul>
 								}
-								@for (file of record.files; track $index) {
-									@let fileKey = report.id + '/' + $index;
-									<details class="file-details" (toggle)="toggleFile(fileKey, $event)">
-										<summary>
-											<span class="summary-name">{{ basename(filePath(file)) }}</span>
-											<span class="summary-status" [class.file-warning]="file.status === 'failed' || file.status === 'unsupported'">
-												&nbsp;· {{ fileStatus(file) }}
-											</span>
-										</summary>
-										@if (openFileIds().has(fileKey)) {
-											<div class="file-body source-detail-body">
-												<p class="file-location">{{ filePath(file) }}</p>
-												@if (file.status === 'imported') {
-													<app-document-analysis [analysis]="file.record.result" [format]="file.record.format" />
-												} @else if (file.status === 'skipped') {
-													<p>Matching file content is already in this workspace.</p>
-												} @else {
-													<ul>
-														@for (issue of file.issues; track $index) {
-															<li>{{ issue.message }}</li>
-														}
-													</ul>
-													@if (file.status === 'failed' && file.analysis) {
-														<app-document-analysis [analysis]="file.analysis" [format]="file.format" />
-													}
+								@if (record.files.length) {
+									<div class="table-scroll document-table" role="region" tabindex="0" [attr.aria-label]="'Files in ' + basename(report.folderPath)">
+										<table>
+											<caption class="sr-only">
+												Files in
+												{{ basename(report.folderPath) }}
+											</caption>
+											<thead>
+												<tr>
+													<th scope="col">Document</th>
+													<th scope="col" class="document-amount">Billed total</th>
+													<th scope="col">Status</th>
+												</tr>
+											</thead>
+											<tbody>
+												@for (row of fileRows().get(report.id) ?? []; track $index) {
+													@let file = row.file;
+													@let fileKey = 'document-file-' + report.id + '-' + $index;
+													@let expanded = openFileIds().has(fileKey);
+													<tr>
+														<th scope="row">
+															<button
+																type="button"
+																class="document-file-button"
+																[attr.aria-expanded]="expanded"
+																[attr.aria-controls]="fileKey"
+																(click)="toggleFile(fileKey)"
+															>
+																{{ basename(filePath(file)) }}
+															</button>
+														</th>
+														<td class="document-amount">
+															@if (row.total; as total) {
+																{{ total }}
+															} @else {
+																<span aria-hidden="true">—</span><span class="sr-only">No single billed total</span>
+															}
+														</td>
+														<td>
+															<span
+																class="source-status"
+																[class.source-status-warning]="file.status === 'failed' || file.status === 'unsupported' || (file.status === 'imported' && file.record.result.status === 'partial')"
+																>{{ fileStatus(file) }}</span
+															>
+														</td>
+													</tr>
+													<tr class="document-file-row" [hidden]="!expanded" [id]="fileKey">
+														<td colspan="3">
+															@if (expanded) {
+																<p class="file-location">{{ filePath(file) }}</p>
+																@if (file.status === 'imported') {
+																	<app-document-analysis [analysis]="file.record.result" [format]="file.record.format" />
+																} @else if (file.status === 'skipped') {
+																	<p>Matching file content is already in this workspace.</p>
+																} @else {
+																	<ul>
+																		@for (issue of file.issues; track $index) {
+																			<li>{{ issue.message }}</li>
+																		}
+																	</ul>
+																	@if (file.status === 'failed' && file.analysis) {
+																		<app-document-analysis [analysis]="file.analysis" [format]="file.format" />
+																	}
+																}
+															}
+														</td>
+													</tr>
 												}
-											</div>
-										}
-									</details>
-								} @empty {
+											</tbody>
+										</table>
+									</div>
+								} @else {
 									<p class="muted">No file results were recorded.</p>
 								}
 							} @else if (detailsError()) {

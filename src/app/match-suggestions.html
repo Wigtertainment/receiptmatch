@@ -1,175 +1,183 @@
 <section class="match-suggestions" aria-labelledby="matches-heading">
-	<div class="section-heading">
-		<h2 id="matches-heading">Match suggestions</h2>
-		@if (rows()?.length) {
-			<div class="match-filter">
-				<label for="match-status">Result</label>
-				<select id="match-status" [value]="filter()" (change)="setFilter($event)">
-					<option value="all">All results</option>
-					@for (status of statuses; track status) {
-						<option [value]="status">{{ statusLabels[status] }}</option>
-					}
-				</select>
-			</div>
-		}
-	</div>
+	<h1 class="view-heading" id="matches-heading" tabindex="-1">Match suggestions</h1>
 	@if (rows(); as results) {
 		@if (results.length) {
-			<p class="match-overview" role="status">{{ counts().reliable }} reliable · {{ counts().uncertain }} uncertain · {{ counts().unmatched }} unmatched</p>
-			@if (counts().reliable || counts().uncertain) {
-				<p class="field-help match-approval-note">Suggestions require separate approval.</p>
-			}
-			@if (filteredRows().length) {
-				<div class="table-scroll match-table" role="region" aria-label="Transaction match results" tabindex="0">
-					<table>
-						<caption class="sr-only">
-							Transaction match results
-						</caption>
-						<thead>
-							<tr>
-								<th scope="col">Booking date</th>
-								<th scope="col">Transaction</th>
-								<th scope="col" class="amount-cell">Account amount</th>
-								<th scope="col">Result</th>
-								<th scope="col">Candidates</th>
-							</tr>
-						</thead>
-						<tbody>
-							@for (row of filteredRows(); track row.transactionId) {
-								@let expanded = selectedId() === row.transactionId;
-								<tr>
-									<td class="date-cell">{{ date(row.bookingDate) }}</td>
-									<td class="match-description">{{ row.description }}</td>
-									<td class="amount-cell">{{ money(row.accountAmount) }}</td>
-									<td>
-										<span class="match-status" [class.match-reliable]="row.status === 'reliable'" [class.match-uncertain]="row.status === 'uncertain'">
-											{{ statusLabels[row.status] }}
-										</span>
-									</td>
-									<td>
-										@if (row.candidateCount) {
-											<button
-												type="button"
-												class="match-disclosure"
-												[attr.aria-expanded]="expanded"
-												[attr.aria-controls]="'match-' + row.transactionId"
-												(click)="toggle(row.transactionId)"
-											>
-												{{ expanded ? 'Hide' : 'View' }} {{ row.candidateCount }} {{ row.candidateCount === 1 ? 'candidate' : 'candidates' }}
-												<span class="sr-only"> for {{ row.description }}</span>
-											</button>
-										} @else {
-											<span class="muted">None</span>
-										}
-									</td>
-								</tr>
-								@if (row.candidateCount) {
-									<tr [hidden]="!expanded" [id]="'match-' + row.transactionId" class="match-details-row">
-										<td colspan="5">
-											@if (expanded) {
-												@if (details(); as result) {
-													@for (candidate of result.candidates; track candidate.documentId + '/' + candidate.sectionId) {
-														<article class="match-candidate">
-															<div class="match-candidate-heading">
-																<h3>{{ basename(candidate.filePath) }}</h3>
-																<span
-																	class="match-status"
-																	[class.match-uncertain]="candidate.issues.length"
-																	[class.match-reliable]="!candidate.issues.length"
-																>
-																	{{ candidate.issues.length ? 'Uncertain' : 'Reliable' }}
-																</span>
-															</div>
-															<p class="match-location">
-																{{ sectionLabels[candidate.sectionKind] }}
-																@if (candidate.sectionNumber; as number) {
-																	· Section {{ number }}
-																}
-																· {{ candidate.pages.length === 1 ? 'Page' : 'Pages' }}
-																{{ candidate.pages.join(', ') }}
-															</p>
-															@if (candidate.issues.length) {
-																<ul class="match-issues">
-																	@for (issue of candidate.issues; track issue) {
-																		<li>{{ issueLabels[issue] }}</li>
-																	}
-																</ul>
-															}
-															<dl class="match-facts">
-																<div>
-																	<dt>Payment direction</dt>
-																	<dd>{{ candidate.direction === 'outgoing' ? 'Outgoing payment' : 'Incoming refund' }}</dd>
-																</div>
-																@for (amount of candidate.amounts; track $index) {
-																	<div>
-																		<dt>{{ amount.basis === 'account-settlement' ? 'Account amount' : 'Reported original payment amount' }}</dt>
-																		<dd>Bank {{ money(amount.transactionAmount) }} · Document {{ money(amount.documentAmount) }}</dd>
-																	</div>
-																}
-																@for (reference of candidate.references; track $index) {
-																	<div>
-																		<dt>Matching reference</dt>
-																		<dd>Bank {{ reference.bankValue }} · Document {{ reference.documentValue }}</dd>
-																	</div>
-																}
-																<div>
-																	<dt>Date evidence</dt>
-																	@if (candidate.date; as evidence) {
-																		<dd>
-																			Booked {{ date(evidence.bookingDate) }} · {{ evidence.role === 'payment' ? 'Paid' : 'Issued' }}
-																			{{ date(evidence.documentDate) }} · {{ evidence.daysApart }}
-																			{{ evidence.daysApart === 1 ? 'day' : 'days' }}
-																			apart{{ evidence.withinWindow ? ' (within 7 days)' : ' (outside 7 days)' }}
-																		</dd>
-																	} @else {
-																		<dd>No usable document date</dd>
-																	}
-																</div>
-															</dl>
-															<details class="source-details match-source">
-																<summary>
-																	Source evidence <span class="sr-only">for {{ basename(candidate.filePath) }}</span>
-																</summary>
-																<div class="match-source-columns">
-																	<div>
-																		<h4>Bank statement</h4>
-																		<p class="file-location">{{ result.statementPath }}</p>
-																		<ng-container *ngTemplateOutlet="excerpts; context: { $implicit: candidate.bankEvidence }" />
-																	</div>
-																	<div>
-																		<h4>Supporting document</h4>
-																		<p class="file-location">{{ candidate.filePath }}</p>
-																		<ng-container *ngTemplateOutlet="excerpts; context: { $implicit: candidate.documentEvidence }" />
-																	</div>
-																</div>
-															</details>
-														</article>
-													}
-												} @else if (detailsFailed()) {
-													<p role="alert">Candidate details could not be loaded.</p>
-													<button type="button" class="button-secondary" (click)="retryDetails()">Retry candidate details</button>
-												} @else {
-													<p role="status">Loading candidates…</p>
-												}
-											}
-										</td>
+			<div class="match-filters" role="group" aria-label="Filter match results">
+				@for (option of filters; track option) {
+					<button type="button" [attr.aria-pressed]="filter() === option" (click)="setFilter(option)">
+						{{ option === 'all' ? 'All' : statusLabels[option] }}
+						<span class="filter-count">{{ option === 'all' ? results.length : counts()[option] }}</span>
+					</button>
+				}
+			</div>
+			@if (selectedRow(); as selected) {
+				<div class="match-workbench">
+					<section class="match-panel match-list-panel" aria-labelledby="match-list-heading">
+						<header class="match-panel-heading">
+							<h2 id="match-list-heading">Transactions</h2>
+							<p class="match-list-count" role="status">{{ filteredRows().length }} {{ filteredRows().length === 1 ? 'transaction' : 'transactions' }}</p>
+						</header>
+						<div class="table-scroll match-table" role="region" aria-label="Transaction match results" tabindex="0">
+							<table>
+								<caption class="sr-only">
+									Transaction match results
+								</caption>
+								<thead>
+									<tr>
+										<th scope="col" class="match-date-column">Booking date</th>
+										<th scope="col">Transaction</th>
+										<th scope="col" class="match-amount-column">Account amount</th>
+										<th scope="col" class="match-result-column">Result</th>
 									</tr>
-								}
+								</thead>
+								<tbody>
+									@for (row of filteredRows(); track row.transactionId) {
+										@let isSelected = selected.transactionId === row.transactionId;
+										<tr [class.match-selected]="isSelected">
+											<td class="match-booking-date">{{ date(row.bookingDate) }}</td>
+											<th scope="row">
+												<button
+													type="button"
+													class="match-transaction"
+													[id]="'match-transaction-' + row.transactionId"
+													[attr.aria-pressed]="isSelected"
+													aria-controls="match-detail-panel"
+													(click)="selectTransaction(row.transactionId, $event)"
+												>
+													{{ transactionName(row.description) }}
+												</button>
+											</th>
+											<td class="match-account-amount">{{ money(row.accountAmount) }}</td>
+											<td>
+												<span class="match-status" [class.match-reliable]="row.status === 'reliable'" [class.match-uncertain]="row.status === 'uncertain'">
+													{{ statusLabels[row.status] }}
+												</span>
+												@if (row.candidateCount) {
+													<span class="match-candidate-count">{{ row.candidateCount }} {{ row.candidateCount === 1 ? 'candidate' : 'candidates' }}</span>
+												}
+											</td>
+										</tr>
+									}
+								</tbody>
+							</table>
+						</div>
+					</section>
+					<section class="match-panel match-detail-panel" id="match-detail-panel" aria-labelledby="match-detail-heading">
+						<header class="match-panel-heading match-detail-header">
+							<div class="match-detail-title">
+								<h2 id="match-detail-heading" tabindex="-1">{{ transactionName(selected.description) }}</h2>
+								<span class="match-status" [class.match-reliable]="selected.status === 'reliable'" [class.match-uncertain]="selected.status === 'uncertain'">
+									{{ statusLabels[selected.status] }}
+								</span>
+							</div>
+							<p>Booked {{ date(selected.bookingDate) }} · {{ money(selected.accountAmount) }}</p>
+							@if (transactionName(selected.description) !== selected.description.trim()) {
+								<details class="source-details match-description">
+									<summary>Transaction description</summary>
+									<p class="raw-text">{{ selected.description }}</p>
+								</details>
 							}
-						</tbody>
-					</table>
+							<button type="button" class="match-back" (click)="focusSelectedTransaction(selected.transactionId)">Back to transactions</button>
+						</header>
+						@if (!selected.candidateCount) {
+							<p class="match-panel-message">No supporting document met the matching rules for this transaction.</p>
+						} @else if (details(); as result) {
+							<p class="match-approval-note">Suggestions require separate approval.</p>
+							@for (candidate of result.candidates; track candidate.documentId + '/' + candidate.sectionId) {
+								<article class="match-candidate">
+									<div class="match-candidate-heading">
+										<h3>{{ basename(candidate.filePath) }}</h3>
+										<span class="match-status" [class.match-uncertain]="candidate.issues.length" [class.match-reliable]="!candidate.issues.length">
+											{{ candidate.issues.length ? 'Uncertain' : 'Reliable' }}
+										</span>
+									</div>
+									<p class="match-location">
+										{{ sectionLabels[candidate.sectionKind] }}
+										@if (candidate.sectionNumber; as number) {
+											· Section {{ number }}
+										}
+										· {{ candidate.pages.length === 1 ? 'Page' : 'Pages' }} {{ candidate.pages.join(', ') }}
+									</p>
+									@if (candidate.issues.length) {
+										<ul class="match-issues">
+											@for (issue of candidate.issues; track issue) {
+												<li>{{ issueLabels[issue] }}</li>
+											}
+										</ul>
+									}
+									<dl class="match-facts">
+										<div>
+											<dt>Payment direction</dt>
+											<dd>{{ candidate.direction === 'outgoing' ? 'Outgoing payment' : 'Incoming refund' }}</dd>
+										</div>
+										@for (amount of candidate.amounts; track $index) {
+											<div>
+												<dt>{{ amount.basis === 'account-settlement' ? 'Account amount' : 'Reported original payment amount' }}</dt>
+												<dd>Bank {{ money(amount.transactionAmount) }} · Document {{ money(amount.documentAmount) }}</dd>
+											</div>
+										}
+										@for (reference of candidate.references; track $index) {
+											<div>
+												<dt>Matching reference</dt>
+												<dd>Bank {{ reference.bankValue }} · Document {{ reference.documentValue }}</dd>
+											</div>
+										}
+										<div>
+											<dt>Date evidence</dt>
+											@if (candidate.date; as evidence) {
+												<dd>
+													Booked {{ date(evidence.bookingDate) }} · {{ evidence.role === 'payment' ? 'Paid' : 'Issued' }}
+													{{ date(evidence.documentDate) }} · {{ evidence.daysApart }}
+													{{ evidence.daysApart === 1 ? 'day' : 'days' }}
+													apart{{ evidence.withinWindow ? ' (within 7 days)' : ' (outside 7 days)' }}
+												</dd>
+											} @else {
+												<dd>No usable document date</dd>
+											}
+										</div>
+									</dl>
+									<details class="source-details match-source">
+										<summary>
+											Source evidence <span class="sr-only">for {{ basename(candidate.filePath) }}</span>
+										</summary>
+										<div class="match-source-columns">
+											<div>
+												<h4>Bank statement</h4>
+												<p class="file-location">{{ result.statementPath }}</p>
+												<ng-container *ngTemplateOutlet="excerpts; context: { $implicit: candidate.bankEvidence }" />
+											</div>
+											<div>
+												<h4>Supporting document</h4>
+												<p class="file-location">{{ candidate.filePath }}</p>
+												<ng-container *ngTemplateOutlet="excerpts; context: { $implicit: candidate.documentEvidence }" />
+											</div>
+										</div>
+									</details>
+								</article>
+							}
+						} @else if (detailsFailed()) {
+							<div class="match-panel-message">
+								<p role="alert">Candidate details could not be loaded.</p>
+								<button type="button" class="button-secondary compact" (click)="retryDetails()">Retry candidate details</button>
+							</div>
+						} @else {
+							<p class="match-panel-message" role="status">Loading candidates…</p>
+						}
+					</section>
 				</div>
 			} @else {
-				<p class="muted" role="status">No transactions with this result.</p>
+				<p class="match-panel match-panel-message" role="status">No transactions with this result.</p>
 			}
 		} @else {
-			<p class="muted">Import a bank statement with complete transactions to see match suggestions.</p>
+			<p class="match-panel match-panel-message">Import a bank statement with complete transactions to see match suggestions.</p>
 		}
 	} @else if (summariesFailed()) {
-		<p role="alert">Match suggestions could not be loaded.</p>
-		<button type="button" class="button-secondary" (click)="retrySummaries()">Retry match suggestions</button>
+		<div class="match-panel match-panel-message">
+			<p role="alert">Match suggestions could not be loaded.</p>
+			<button type="button" class="button-secondary compact" (click)="retrySummaries()">Retry match suggestions</button>
+		</div>
 	} @else {
-		<p class="muted" role="status">Loading match suggestions…</p>
+		<p class="match-panel match-panel-message" role="status">Loading match suggestions…</p>
 	}
 </section>
 
