@@ -103,7 +103,10 @@ test('opens version 3 without writing, suppresses coalesced legacy sections and 
 	const oldRun = documentRun(root, [legacyOnOnePage, legacyAcrossPages, valid]);
 	await createWorkspace(file, newMetadata(), [bank], [oldRun]);
 	const db = new Database(file);
-	try { db.exec('DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews; DROP TABLE match_results; PRAGMA user_version=3;'); } finally { db.close(); }
+	try {
+		db.exec(`DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections;
+			DROP TABLE match_reviews; DROP TABLE match_results; PRAGMA user_version=3;`);
+	} finally { db.close(); }
 	const oldBytes = await readFile(file);
 	const opened = await loadWorkspace(file);
 	assert.equal(opened.schemaVersion, 3);
@@ -240,7 +243,8 @@ test('opens version 4 without writing and saves review decisions and migration a
 	const document = invoice(root, 'invoice.pdf');
 	await createWorkspace(file, newMetadata(), [bank], [documentRun(root, [document])]);
 	const db = new Database(file);
-	try { db.exec('DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews; PRAGMA user_version=4;'); } finally { db.close(); }
+	try { db.exec('DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews; PRAGMA user_version=4;'); }
+	finally { db.close(); }
 	const bytes = await readFile(file);
 	const opened = await loadWorkspace(file);
 	assert.equal(opened.schemaVersion, 4);
@@ -277,7 +281,7 @@ test('corrects booking values with exact money, retains original evidence and pr
 	const documents = documentRun(root, [invoice(root, 'invoice.pdf')]);
 	const created = await createWorkspace(file, newMetadata(), [bank], [documents]);
 	const db = new Database(file);
-	try { db.exec('DROP TABLE document_corrections; DROP TABLE bank_corrections; PRAGMA user_version=5;'); } finally { db.close(); }
+	try { db.exec('DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; PRAGMA user_version=5;'); } finally { db.close(); }
 	const before = await readFile(file);
 	const session = new WorkspaceSession({ open: async () => file, save: async () => file, unsaved: async () => 'discard' });
 	await session.dispatch({ type: 'open' });
@@ -342,7 +346,7 @@ test('recalculates matches from corrected document fields and saves originals, r
 	const source = documentRun(root, [receipt, missing]);
 	await createWorkspace(file, newMetadata(), [bank], [source]);
 	const db = new Database(file);
-	try { db.exec('DROP TABLE document_corrections; PRAGMA user_version=6;'); } finally { db.close(); }
+	try { db.exec('DROP TABLE match_approval_state; DROP TABLE document_corrections; PRAGMA user_version=6;'); } finally { db.close(); }
 	const before = await readFile(file);
 	const session = new WorkspaceSession({ open: async () => file, save: async () => file, unsaved: async () => 'discard' });
 	assert.equal((await session.dispatch({ type: 'open' })).error, null);

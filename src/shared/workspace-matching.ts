@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { calendarDateSchema } from './bank-import.js';
 import { moneySchema } from './money.js';
 import type { DocumentSection } from './supporting-document.js';
+import type { MatchApproval, MatchApprovalSelection, MatchApprovalStatus } from './match-approvals.js';
 
 const fieldId = z.string().min(1).max(128);
 const reference = z.string().min(1).max(16384);
@@ -64,6 +65,9 @@ export interface MatchSummary {
 	candidateCount: number;
 	bankValuesCorrected: boolean;
 	review: MatchReview;
+	approvalSelection: MatchApprovalSelection | null;
+	approval: MatchApproval | null;
+	approvalStatus: MatchApprovalStatus;
 }
 
 export interface MatchSourceExcerpt {

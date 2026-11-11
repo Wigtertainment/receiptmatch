@@ -7,6 +7,7 @@ import { expect, test as base, type ElectronApplication, type Page } from '@play
 import Database from 'better-sqlite3';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { statement, row } from '../unit/bank-fixtures.js';
+import { documentRun, retainedDocument } from '../unit/document-fixtures.js';
 import { storedBankImportSchema, type StoredBankImport } from '../../src/shared/workspace-import.js';
 import { createWorkspace, newMetadata, SCHEMA_VERSION } from '../../electron/store.js';
 import type { extractPdfBytes } from '../../electron/extraction/host.js';
@@ -365,7 +366,8 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		seed.pragma('foreign_keys=ON');
 		try {
 			// The seven original tables are unchanged; remove the additive manifest to reproduce format 1.
-			seed.exec(`DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews; DROP TABLE match_results; DROP TABLE document_imports; DROP TABLE bank_imports; PRAGMA user_version=1;
+			seed.exec(`DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
+                DROP TABLE match_results; DROP TABLE document_imports; DROP TABLE bank_imports; PRAGMA user_version=1;
                 INSERT INTO sources VALUES('legacy-source','/synthetic/original.pdf',NULL);
                 INSERT INTO accounts VALUES('legacy-account','Legacy account','EUR');
                 INSERT INTO statements VALUES('legacy-statement','legacy-account','legacy-source');
@@ -436,6 +438,87 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 			rowId: source.drafts[0].draftId, revision: 2, bookingDate: '2032-02-25', accountAmount: { currency: 'EUR', coefficient: '-25620', scale: 2 }
 		});
 		await expect(page.getByTestId('transactions-table').getByRole('row', { name: /Cedar Tools.*Corrected/ })).toBeVisible();
+	});
+	await check('batch-approval-rejects-a-changed-selection-and-preserves-approved-status-after-reopening', async () => {
+		const source = structuredClone(retained.find(record => record.filePath === original));
+		assert.ok(source);
+		const [assigned, second] = source.transactions;
+		const completed = { rowId: 'completed-without-document', transactionId: randomUUID() };
+		const seed = source.result.transactions[0];
+		source.result.transactions.push({ ...seed, rowId: completed.rowId, references: [], description: { ...seed.description, value: 'Synthetic no document' } });
+		source.transactions.push(completed);
+		const document = retainedDocument(root, 'approved-receipt.pdf');
+		const other = retainedDocument(root, 'second-approved-receipt.pdf');
+		const file = path.join(root, 'approved.receiptmatch');
+		const decisions = new Map([[assigned.transactionId, document.id], [second.transactionId, other.id], [completed.transactionId, null]]);
+		await createWorkspace(file, newMetadata(), [source], [documentRun(root, [document, other])], decisions);
+		const opened = await reopen(file);
+		assert.ok(opened.workspace);
+		const summaries = (revision: number) => page.evaluate(value => window.receiptmatch.matchSummaries(value), revision);
+		await page.getByRole('button', { name: 'Match suggestions', exact: true }).click();
+		const view = page.getByRole('region', { name: 'Match suggestions', exact: true });
+		const approve = view.getByRole('button', { name: 'Approve selected' });
+		const firstChoice = view.getByRole('checkbox', { name: /Orchard Workshop/ });
+		const secondChoice = view.getByRole('checkbox', { name: /River Studio/ });
+		await expect(approve).toBeDisabled();
+		await expect(view.getByRole('checkbox', { name: /Synthetic no document/ })).toHaveCount(0);
+		await firstChoice.press('Space');
+		await secondChoice.check();
+		await expect(view.getByText('2 selected for approval', { exact: true })).toBeVisible();
+		await view.getByRole('button', { name: 'Clear selection' }).click();
+		await expect(approve).toBeDisabled();
+		await expect(view.getByRole('heading', { name: 'Transactions', exact: true })).toBeFocused();
+		await firstChoice.check();
+		await secondChoice.check();
+		await view.getByRole('button', { name: 'Reliable 0' }).click();
+		await expect(view.getByText('No transactions with this result.')).toBeVisible();
+		await expect(view.getByText(/2 selected for approval.*2 outside this filter/)).toBeVisible();
+		await expect(approve).toBeEnabled();
+		await view.getByRole('button', { name: 'All 3' }).click();
+		await expect(view.getByText('2 selected for approval', { exact: true })).toBeVisible();
+		const before = await fingerprint(file);
+		const changed = await command({ type: 'correct-bank-row', revision: opened.workspace.matchRevision, rowId: second.transactionId,
+			changes: { bookingDate: '2032-02-24' } });
+		assert.equal(changed.error, null);
+		await expect(approve).toBeEnabled();
+		await approve.click();
+		await expect(view.getByRole('alert')).toContainText(/selection for.*River Studio.*changed/);
+		await expect(view.getByRole('button', { name: /River Studio/ })).toBeFocused();
+		await expect(firstChoice).toBeChecked();
+		await expect(secondChoice).not.toBeChecked();
+		assert.ok((await summaries(changed.workspace!.matchRevision))?.every(row => row.approval === null));
+		await secondChoice.check();
+		await approve.press('Enter');
+		await expect(view.getByText('Selected transactions approved.', { exact: true })).toBeVisible();
+		await expect(view.getByText('0 selected for approval', { exact: true })).toBeVisible();
+		await expect(firstChoice).toHaveCount(0);
+		const approved = await command({ type: 'get-state' });
+		assert.equal(approved.workspace?.dirty, true);
+		assert.equal(await fingerprint(file), before);
+		const rows = await summaries(approved.workspace!.matchRevision);
+		const snapshot = rows?.find(row => row.transactionId === assigned.transactionId)?.approval;
+		assert.ok(snapshot);
+		assert.equal(snapshot.documentId, document.id);
+		assert.equal(rows?.find(row => row.transactionId === second.transactionId)?.approval?.batchId, snapshot.batchId);
+		assert.equal((await command({ type: 'save' })).error, null);
+		const reopened = await reopen(file);
+		const restored = await summaries(reopened.workspace!.matchRevision);
+		assert.deepEqual(restored?.find(row => row.transactionId === assigned.transactionId)?.approval, snapshot);
+		assert.equal(restored?.find(row => row.transactionId === completed.transactionId)?.approval, null);
+		await page.getByRole('button', { name: 'Match suggestions', exact: true }).click();
+		const matches = page.getByRole('region', { name: 'Match suggestions', exact: true });
+		const transaction = matches.getByRole('row', { name: /Orchard Workshop/ });
+		await transaction.getByRole('button', { name: /Orchard Workshop/ }).click();
+		const manual = matches.getByRole('region', { name: 'Manual review' });
+		await expect(manual.getByText('Approved', { exact: true })).toBeVisible();
+		const corrected = await command({ type: 'correct-bank-row', revision: reopened.workspace!.matchRevision, rowId: assigned.transactionId,
+			changes: { bookingDate: '2032-02-25' } });
+		assert.equal(corrected.error, null);
+		await expect(transaction.getByText('Approval needs review', { exact: true })).toBeVisible();
+		await expect(manual.getByText('The booking was corrected.', { exact: false })).toBeVisible();
+		await manual.getByRole('button', { name: 'Remove assignment' }).click();
+		await expect(manual.getByText('Approval revoked', { exact: true })).toBeVisible();
+		await expect(manual.getByText('The document assignment changed.', { exact: false })).toBeVisible();
 	});
 	assert.equal(await fingerprint(original), originalHash);
 	report.limits = [

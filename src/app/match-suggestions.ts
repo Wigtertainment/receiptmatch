@@ -2,6 +2,7 @@ import { Component, computed, effect, input, signal, untracked } from '@angular/
 import { NgTemplateOutlet } from '@angular/common';
 import { formatCalendarDate, formatDocumentTotal, formatMoney } from '../shared/display.js';
 import { applyDocumentCorrections, documentCorrectionKey } from '../shared/document-corrections.js';
+import type { MatchApprovalSelection } from '../shared/match-approvals.js';
 import type { WorkspaceView } from '../shared/protocol.js';
 import type { MatchCandidateView, MatchDetails, MatchReview, MatchSummary } from '../shared/workspace-matching.js';
 import type { StoredSupportingDocument } from '../shared/workspace-documents.js';
@@ -22,6 +23,10 @@ export class MatchSuggestions {
 	readonly filters = ['all', 'reliable', 'uncertain', 'unmatched'] as const;
 	readonly statusLabels: Record<MatchStatus, string> = { reliable: 'Reliable', uncertain: 'Uncertain', unmatched: 'Unmatched' };
 	readonly reviewLabels: Record<MatchReview['status'], string> = { open: 'Open', assigned: 'Document assigned', 'completed-without-document': 'Completed without document' };
+	readonly approvalLabels = { approved: 'Approved', stale: 'Approval needs review', revoked: 'Approval revoked' } as const;
+	readonly approvalChanges = {
+		booking: 'The booking was corrected.', document: 'The supporting document was corrected.', 'booking-and-document': 'The booking and supporting document were corrected.',
+	} as const;
 	readonly issueLabels: Record<MatchCandidateView['issues'][number], string> = {
 		'missing-reference': 'No matching payment or document reference.',
 		'conflicting-evidence': 'Some source details are ambiguous or conflict.',
@@ -51,6 +56,8 @@ export class MatchSuggestions {
 	});
 	private readonly documentDraft = signal<{ loadRevision: number; transactionId: string; id: string } | null>(null);
 	private readonly pending = signal(false);
+	private readonly batchSelection = signal<{ loadRevision: number; rows: ReadonlyMap<string, MatchApprovalSelection> } | null>(null);
+	private readonly batchFeedback = signal<{ loadRevision: number; message: string; error: boolean; transactionId?: string } | null>(null);
 	private readonly reviewFeedback = signal<{ loadRevision: number; transactionId: string; message: string } | null>(null);
 	private readonly summaryRetry = signal(0);
 	private readonly detailRetry = signal(0);
@@ -75,13 +82,25 @@ export class MatchSuggestions {
 		const filter = this.filter();
 		return filter === 'all' ? rows : rows.filter(row => row.status === filter);
 	});
-	readonly selectedRow = computed(() => {
+	readonly selectedRow = computed<MatchSummary | null>(() => {
 		const rows = this.filteredRows();
 		const selected = this.selected();
 		const id = selected?.loadRevision === this.workspace().loadRevision ? selected.transactionId : null;
 		return rows.find(row => row.transactionId === id) ?? rows[0] ?? null;
 	});
 	readonly reviewDisabled = computed(() => this.busy() || this.pending() || !this.currentSummary()?.rows);
+	readonly approvalSelections = computed(() => {
+		const selection = this.batchSelection();
+		return selection?.loadRevision === this.workspace().loadRevision ? selection.rows : null;
+	});
+	readonly hiddenApprovalCount = computed(() => {
+		const selected = this.approvalSelections();
+		return selected ? selected.size - this.filteredRows().filter(row => selected.has(row.transactionId)).length : 0;
+	});
+	readonly approvalFeedback = computed(() => {
+		const feedback = this.batchFeedback();
+		return feedback?.loadRevision === this.workspace().loadRevision ? feedback : null;
+	});
 	readonly reviewError = computed(() => {
 		const feedback = this.reviewFeedback();
 		return feedback?.loadRevision === this.workspace().loadRevision && feedback.transactionId === this.selectedRow()?.transactionId ? feedback.message : null;
@@ -205,6 +224,60 @@ export class MatchSuggestions {
 	}
 	toggleDocumentPreview(documentId: string, event: Event) {
 		if (this.selectedDocumentId() === documentId) this.previewDocumentId.set((event.target as HTMLDetailsElement).open ? documentId : null);
+	}
+	selectForApproval(row: MatchSummary, event: Event) {
+		if (this.reviewDisabled()) return;
+		const rows = new Map(this.approvalSelections());
+		if (!(event.target as HTMLInputElement).checked) rows.delete(row.transactionId);
+		else if (row.approvalSelection && !row.approval) rows.set(row.transactionId, row.approvalSelection);
+		this.batchSelection.set({ loadRevision: this.workspace().loadRevision, rows });
+		this.batchFeedback.set(null);
+	}
+	clearApprovalSelection() {
+		this.batchSelection.set(null);
+		this.batchFeedback.set(null);
+		document.getElementById('match-list-heading')?.focus({ preventScroll: true });
+	}
+	async approveSelected() {
+		const selected = this.approvalSelections();
+		if (!selected?.size || this.reviewDisabled()) return;
+		const { loadRevision } = this.workspace();
+		const trigger = document.activeElement;
+		let focusId = 'match-batch-result';
+		this.pending.set(true);
+		this.batchFeedback.set(null);
+		try {
+			const result = await window.receiptmatch.command({ type: 'approve-matches', loadRevision, selections: [...selected.values()] });
+			if (this.workspace().loadRevision !== loadRevision) return;
+			if (result.error) {
+				const transactionId = result.approvalIssue?.transactionId;
+				if (transactionId) {
+					const remaining = new Map(selected);
+					remaining.delete(transactionId);
+					this.batchSelection.set({ loadRevision, rows: remaining });
+					if (this.rows()?.some(row => row.transactionId === transactionId)) {
+						if (!this.filteredRows().some(row => row.transactionId === transactionId)) this.setFilter('all');
+						if (this.selectedRow()?.transactionId !== transactionId) this.resetDetail();
+						this.selected.set({ transactionId, loadRevision });
+						focusId = 'match-transaction-' + transactionId;
+					}
+				}
+				if (transactionId || result.busy) this.batchFeedback.set({ loadRevision, message: result.error, error: true, transactionId });
+			} else {
+				this.batchSelection.set(null);
+				this.batchFeedback.set({ loadRevision, message: 'Selected transactions approved.', error: false });
+			}
+		} catch {
+			this.batchFeedback.set({ loadRevision, message: 'The selected transactions could not be approved. Try again.', error: true });
+		} finally {
+			this.pending.set(false);
+			requestAnimationFrame(() => {
+				if (!this.active() || this.workspace().loadRevision !== loadRevision || (document.activeElement !== trigger && document.activeElement !== document.body)) return;
+				const target = document.getElementById(focusId);
+				target?.focus({ preventScroll: true });
+				if (focusId !== 'match-batch-result') target?.scrollIntoView({ block: 'center', inline: 'nearest' });
+			});
+		}
 	}
 	async applyReview(review: MatchReview) {
 		const row = this.selectedRow();
