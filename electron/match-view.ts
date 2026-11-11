@@ -1,12 +1,14 @@
 import type { SourceEvidence } from '../src/shared/bank-import.js';
 import type { BankCorrection } from '../src/shared/bank-corrections.js';
 import type { DocumentCorrection } from '../src/shared/document-corrections.js';
+import { matchApprovalStatus, type ReviewApprovalState } from '../src/shared/match-approvals.js';
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
 import type { StoredDocumentImport } from '../src/shared/workspace-documents.js';
 import type { MatchDetails, MatchSourceExcerpt, MatchSummary, TransactionMatch } from '../src/shared/workspace-matching.js';
 
 export function summarizeMatches(
 	matches: TransactionMatch[], imports: StoredBankImport[], decisions: ReadonlyMap<string, string | null>, corrections: ReadonlyMap<string, BankCorrection>,
+	reviewApprovals: ReadonlyMap<string, ReviewApprovalState>, documentRevisions: ReadonlyMap<string, number>,
 ): MatchSummary[] {
 	const byTransaction = new Map(matches.map(match => [match.transactionId, match]));
 	return imports.flatMap(record => {
@@ -15,8 +17,14 @@ export function summarizeMatches(
 			const transactionId = ids.get(row.rowId)!;
 			const match = byTransaction.get(transactionId)!;
 			const documentId = decisions.get(transactionId);
+			const reviewApproval = reviewApprovals.get(transactionId);
+			const approvalSelection = documentId ? { transactionId, documentId, transactionRevision: corrections.get(transactionId)?.revision ?? 1,
+				documentRevision: documentRevisions.get(documentId) ?? 1, associationRevision: reviewApproval?.associationRevision ?? 1 } : null;
+			const approval = reviewApproval?.approval ?? null;
+			const approvalStatus = matchApprovalStatus(approval, approvalSelection);
 			return { transactionId, bookingDate: row.bookingDate.value, description: row.description.value,
 				accountAmount: row.accountAmount.value, status: match.status, candidateCount: match.candidates.length, bankValuesCorrected: corrections.has(transactionId),
+				approvalSelection, approvalStatus, approval: approvalStatus.status === 'approved' ? approval : null,
 				review: documentId === undefined ? { status: 'open' } : documentId === null ? { status: 'completed-without-document' } : { status: 'assigned', documentId } };
 		});
 	});

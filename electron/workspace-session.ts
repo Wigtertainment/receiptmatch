@@ -1,10 +1,12 @@
 import { isDeepStrictEqual } from 'node:util';
+import { randomUUID } from 'node:crypto';
 import { ZodError } from 'zod';
 import type { WorkspaceCommand, WorkspaceState } from '../src/shared/protocol.js';
 import { importIssue } from '../src/shared/bank-import.js';
 import { applyBankCorrections, bankCorrectionSchema, type BankCorrection } from '../src/shared/bank-corrections.js';
 import { applyDocumentCorrections, documentCorrectionKey, documentCorrectionSchema, type DocumentCorrection } from '../src/shared/document-corrections.js';
 import { sameMoneyValue } from '../src/shared/money.js';
+import { advanceReviewRevision, documentRevisionIndex, sameApprovalSelection, type MatchApprovalSelection, type ReviewApprovalState } from '../src/shared/match-approvals.js';
 import { storedBankImportSchema, type StoredBankImport } from '../src/shared/workspace-import.js';
 import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, type SavedWorkspace, type WorkspaceMetadata } from './store.js';
 import type { BankImportService } from './import/service.js';
@@ -39,6 +41,7 @@ export class WorkspaceSession {
   private saved: SavedWorkspace | null = null;
   private busy = false;
   private error: string | null = null;
+  private approvalIssue: WorkspaceState['approvalIssue'];
   private importRecords: StoredBankImport[] = [];
   private effectiveImports: StoredBankImport[] = [];
   private bankCorrections = new Map<string, BankCorrection>();
@@ -47,6 +50,7 @@ export class WorkspaceSession {
   private documentCorrections = new Map<string, DocumentCorrection>();
   private matches: TransactionMatch[] = [];
   private matchDecisions = new Map<string, string | null>();
+  private reviewApprovals = new Map<string, ReviewApprovalState>();
   private importController: AbortController | null = null;
   private statementImport: WorkspaceState['statementImport'] = null;
   private importOutcome: WorkspaceState['importOutcome'] = null;
@@ -78,11 +82,12 @@ export class WorkspaceSession {
         id: this.metadata.id, loadRevision: this.loadRevision, matchRevision: this.matchRevision, name: this.metadata.name,
         dirty: !this.saved || this.metadata.name !== this.saved.metadata.name || !sameImports || !sameDocuments ||
           !isDeepStrictEqual(this.matchDecisions, this.saved.matchDecisions) || !isDeepStrictEqual(this.bankCorrections, this.saved.bankCorrections) ||
-          !isDeepStrictEqual(this.documentCorrections, this.saved.documentCorrections),
+          !isDeepStrictEqual(this.documentCorrections, this.saved.documentCorrections) || !isDeepStrictEqual(this.reviewApprovals, this.saved.reviewApprovals),
         filePath: this.saved?.filePath ?? null, savedAt: this.saved?.metadata.savedAt ?? null, imports, documentImports, matchReviewCounts,
         bankCorrections: structuredClone([...this.bankCorrections.values()]), documentCorrections: structuredClone([...this.documentCorrections.values()])
       } : null,
-      busy: this.busy, error: this.error, statementImport: structuredClone(this.statementImport), importOutcome: structuredClone(this.importOutcome),
+      busy: this.busy, error: this.error, ...(this.approvalIssue ? { approvalIssue: { ...this.approvalIssue } } : {}),
+      statementImport: structuredClone(this.statementImport), importOutcome: structuredClone(this.importOutcome),
       documentImport: structuredClone(this.documentImport), documentOutcome: structuredClone(this.documentOutcome)
     };
   }
@@ -90,7 +95,9 @@ export class WorkspaceSession {
   documentImports(): StoredDocumentImport[] { return structuredClone(this.documentRecords); }
   matchResults(): TransactionMatch[] { return structuredClone(this.matches); }
   matchSummaries(revision: number): MatchSummary[] | null {
-    return this.metadata && revision === this.matchRevision ? summarizeMatches(this.matches, this.effectiveImports, this.matchDecisions, this.bankCorrections) : null;
+    return this.metadata && revision === this.matchRevision ? summarizeMatches(
+      this.matches, this.effectiveImports, this.matchDecisions, this.bankCorrections, this.reviewApprovals, documentRevisionIndex(this.documentCorrections.values())
+    ) : null;
   }
   matchDetails(revision: number, transactionId: string): MatchDetails | null {
     if (!this.metadata || revision !== this.matchRevision) return null;
@@ -115,12 +122,14 @@ export class WorkspaceSession {
     if (!this.metadata) return false;
     if (!this.metadata.name.trim()) throw new Error('Enter a workspace name before saving.');
     if (this.saved) this.saved = await saveWorkspace(
-      this.saved, this.metadata, this.importRecords, this.documentRecords, this.matchDecisions, this.bankCorrections, this.documentCorrections
+      this.saved, this.metadata, this.importRecords, this.documentRecords, this.matchDecisions, this.bankCorrections, this.documentCorrections, this.reviewApprovals
     );
     else {
       const destination = await this.dialogs.save(this.metadata.name);
       if (!destination) return false;
-      this.saved = await createWorkspace(destination, this.metadata, this.importRecords, this.documentRecords, this.matchDecisions, this.bankCorrections, this.documentCorrections);
+      this.saved = await createWorkspace(
+        destination, this.metadata, this.importRecords, this.documentRecords, this.matchDecisions, this.bankCorrections, this.documentCorrections, this.reviewApprovals
+      );
     }
     this.metadata = { ...this.saved.metadata };
     this.importRecords = structuredClone(this.saved.imports);
@@ -128,6 +137,7 @@ export class WorkspaceSession {
     this.effectiveImports = applyBankCorrections(this.importRecords, this.bankCorrections);
     this.documentRecords = structuredClone(this.saved.documentImports);
     this.documentCorrections = new Map(this.saved.documentCorrections);
+    this.reviewApprovals = new Map(this.saved.reviewApprovals);
     this.effectiveDocuments = applyDocumentCorrections(this.documentRecords, this.documentCorrections);
     this.matches = structuredClone(this.saved.matches);
     return true;
@@ -247,8 +257,36 @@ export class WorkspaceSession {
     }
     const documentId = review.status === 'assigned' ? review.documentId : review.status === 'completed-without-document' ? null : undefined;
     if (this.matchDecisions.get(transactionId) === documentId) return;
+    const approval = advanceReviewRevision(this.reviewApprovals.get(transactionId));
     if (documentId === undefined) this.matchDecisions.delete(transactionId);
     else this.matchDecisions.set(transactionId, documentId);
+    this.reviewApprovals.set(transactionId, approval);
+    this.matchRevision++;
+  }
+  private approveMatches({ loadRevision, selections }: Extract<WorkspaceCommand, { type: 'approve-matches' }>) {
+    if (!this.metadata || loadRevision !== this.loadRevision) throw new Error('The workspace has changed. Select the transactions again before approving.');
+    const rows = new Map(this.matchSummaries(this.matchRevision)!.map(row => [row.transactionId, row]));
+    const documents = new Set(this.documentRecords.flatMap(record => record.files.flatMap(file => file.status === 'imported' ? [file.record.id] : [])));
+    const pending: MatchApprovalSelection[] = [];
+    for (const selection of selections) {
+      const row = rows.get(selection.transactionId);
+      const current = row?.approvalSelection;
+      const reason = !current ? 'not-assigned' : !documents.has(current.documentId) ? 'document-unavailable' :
+        !sameApprovalSelection(current, selection) ? 'selection-changed' : null;
+      if (reason) {
+        this.approvalIssue = { transactionId: selection.transactionId, reason };
+        const label = row?.description.trim().split(/\r?\n/, 1)[0].slice(0, 120) || selection.transactionId;
+        if (reason === 'not-assigned') throw new Error(`Transaction “${label}” has no assigned document.`);
+        if (reason === 'document-unavailable') throw new Error(`The document assigned to “${label}” is unavailable.`);
+        throw new Error(`The selection for “${label}” has changed. Review it again before approving.`);
+      }
+      if (!row?.approval && current) pending.push(current);
+    }
+    if (!pending.length) return;
+    const batchId = randomUUID();
+    const approvedAt = new Date().toISOString();
+    for (const selection of pending) this.reviewApprovals.set(selection.transactionId, { associationRevision: selection.associationRevision,
+      approval: { ...selection, batchId, approvedAt } });
     this.matchRevision++;
   }
   private correctBankRow({ revision, rowId, changes }: Extract<WorkspaceCommand, { type: 'correct-bank-row' }>) {
@@ -325,7 +363,7 @@ export class WorkspaceSession {
     if (this.busy) return { ...this.state(), error: 'Finish the current workspace action before starting another.' };
     if (command.type === 'rename') {
       if (this.metadata) this.metadata = { ...this.metadata, name: command.name };
-      this.error = null; this.publish(); return this.state();
+      this.error = null; this.approvalIssue = undefined; this.publish(); return this.state();
     }
     if (command.type === 'import-statement') {
       if (!this.metadata) { this.error = 'Create or open a workspace before importing a statement.'; this.publish(); return this.state(); }
@@ -335,11 +373,12 @@ export class WorkspaceSession {
       if (!this.metadata) { this.error = 'Create or open a workspace before analyzing documents.'; this.publish(); return this.state(); }
       this.importController = new AbortController(); this.documentImport = { cancelling: false, progress: null }; this.documentOutcome = null;
     }
-    this.busy = true; this.error = null; this.publish();
+    this.busy = true; this.error = null; this.approvalIssue = undefined; this.publish();
     try {
       switch (command.type) {
         case 'save': await this.save(); break;
         case 'review-match': this.reviewMatch(command); break;
+        case 'approve-matches': this.approveMatches(command); break;
         case 'correct-bank-row': this.correctBankRow(command); break;
         case 'correct-document-field': this.correctDocumentField(command); break;
         case 'import-statement': await this.importStatement(); break;
@@ -349,6 +388,7 @@ export class WorkspaceSession {
             this.metadata = newMetadata(); this.saved = null; this.importRecords = []; this.documentRecords = []; this.matches = []; this.matchDecisions.clear();
             this.bankCorrections.clear(); this.effectiveImports = [];
             this.documentCorrections.clear(); this.effectiveDocuments = [];
+            this.reviewApprovals.clear();
             this.importOutcome = null; this.documentOutcome = null; this.loadRevision++; this.matchRevision++;
           }
           break;
@@ -360,6 +400,7 @@ export class WorkspaceSession {
           this.metadata = { ...loaded.metadata }; this.saved = loaded; this.importRecords = structuredClone(loaded.imports); this.documentRecords = structuredClone(loaded.documentImports);
           this.matches = structuredClone(loaded.matches);
           this.matchDecisions = new Map(loaded.matchDecisions);
+          this.reviewApprovals = new Map(loaded.reviewApprovals);
           this.bankCorrections = new Map(loaded.bankCorrections);
           this.effectiveImports = applyBankCorrections(this.importRecords, this.bankCorrections);
           this.documentCorrections = new Map(loaded.documentCorrections);
@@ -386,7 +427,7 @@ export class WorkspaceSession {
   }
   async requestClose(): Promise<boolean> {
     if (this.busy) return false;
-    this.busy = true; this.error = null; this.publish();
+    this.busy = true; this.error = null; this.approvalIssue = undefined; this.publish();
     try { return await this.canLeave(); }
     catch (error) { this.error = message(error); return false; }
     finally { this.busy = false; this.publish(); }

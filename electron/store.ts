@@ -5,6 +5,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { applyBankCorrections, bankCorrectionSchema, type BankCorrection } from '../src/shared/bank-corrections.js';
 import { applyDocumentCorrections, documentCorrectionKey, documentCorrectionSchema, type DocumentCorrection } from '../src/shared/document-corrections.js';
+import { advanceReviewRevision, documentRevisionIndex, reviewApprovalStateSchema, type ReviewApprovalState } from '../src/shared/match-approvals.js';
 import { workspaceName } from '../src/shared/protocol.js';
 import { moneySchema, type Money } from '../src/shared/money.js';
 import { storedBankImportSchema, type StoredBankImport } from '../src/shared/workspace-import.js';
@@ -16,7 +17,7 @@ import { suggestWorkspaceMatches } from './matching.js';
 export { moneySchema } from '../src/shared/money.js';
 
 export const APPLICATION_ID = 0x52434d54;
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 const metadataSchema = z.strictObject({ id: z.uuid(), name: workspaceName.refine(value => value.trim().length > 0), createdAt: z.iso.datetime(), savedAt: z.iso.datetime().nullable() });
 export type WorkspaceMetadata = z.infer<typeof metadataSchema>;
 export interface SavedWorkspace {
@@ -25,6 +26,7 @@ export interface SavedWorkspace {
   matchDecisions: Map<string, string | null>;
   bankCorrections: Map<string, BankCorrection>;
   documentCorrections: Map<string, DocumentCorrection>;
+  reviewApprovals: Map<string, ReviewApprovalState>;
 }
 
 export function newMetadata(): WorkspaceMetadata { return { id: randomUUID(), name: 'Untitled workspace', createdAt: new Date().toISOString(), savedAt: null }; }
@@ -77,6 +79,11 @@ const matchReviewSchema = `CREATE TABLE match_reviews(
 const bankCorrectionsSchema = 'CREATE TABLE bank_corrections(row_id TEXT PRIMARY KEY NOT NULL, record_json TEXT NOT NULL);';
 const documentCorrectionsSchema = `CREATE TABLE document_corrections(
   correction_key TEXT PRIMARY KEY NOT NULL, document_id TEXT NOT NULL REFERENCES documents(id), record_json TEXT NOT NULL
+);`;
+const matchApprovalSchema = `CREATE TABLE match_approval_state(
+  transaction_id TEXT PRIMARY KEY NOT NULL REFERENCES transactions(id),
+  document_id TEXT REFERENCES documents(id),
+  record_json TEXT NOT NULL
 );`;
 
 function importIdentities(record: StoredBankImport): [string, string | null][] {
@@ -308,6 +315,59 @@ function writeMatchDecisions(db: Database.Database, previous: ReadonlyMap<string
   for (const [transactionId, documentId] of decisions) if (previous.get(transactionId) !== documentId) insert.run(transactionId, documentId);
 }
 
+function parseReviewApprovals(entries: Iterable<readonly [string, unknown]>): Map<string, ReviewApprovalState> {
+  const result = new Map<string, ReviewApprovalState>();
+  for (const [id, value] of entries) {
+    const state = reviewApprovalStateSchema.parse(value);
+    if (result.has(id) || (state.approval !== null && state.approval.transactionId !== id)) throw new Error('Stored match approval identities are damaged.');
+    result.set(id, state);
+  }
+  return result;
+}
+
+function validateReviewApprovals(
+  approvals: ReadonlyMap<string, ReviewApprovalState>, decisions: ReadonlyMap<string, string | null>,
+  imports: StoredBankImport[], documentImports: StoredDocumentImport[], bankCorrections: ReadonlyMap<string, BankCorrection>, documentRevisions: ReadonlyMap<string, number>
+) {
+  if (!approvals.size) return;
+  const transactions = new Set(imports.flatMap(record => record.transactions.map(row => row.transactionId)));
+  const documents = new Set(documentImports.flatMap(record => record.files.flatMap(file => file.status === 'imported' ? [file.record.id] : [])));
+  for (const [id, { associationRevision, approval }] of approvals) {
+    if (!transactions.has(id)) throw new Error('A match approval state refers to a transaction outside the workspace imports.');
+    if (approval === null) continue;
+    if (!documents.has(approval.documentId)) throw new Error('A match approval refers to a document outside the workspace imports.');
+    if (approval.associationRevision > associationRevision || approval.transactionRevision > (bankCorrections.get(id)?.revision ?? 1) ||
+      approval.documentRevision > (documentRevisions.get(approval.documentId) ?? 1) ||
+      (approval.associationRevision === associationRevision && decisions.get(id) !== approval.documentId)) {
+      throw new Error('Stored match approval revisions do not agree with the workspace.');
+    }
+  }
+}
+
+function changedDecisionIds(previous: ReadonlyMap<string, string | null>, decisions: ReadonlyMap<string, string | null>): string[] {
+  return [...new Set([...previous.keys(), ...decisions.keys()])].filter(id => previous.get(id) !== decisions.get(id));
+}
+
+function writeReviewApprovals(
+  db: Database.Database, previous: ReadonlyMap<string, ReviewApprovalState>, approvals: ReadonlyMap<string, ReviewApprovalState>, changed: string[]
+) {
+  for (const [id, prior] of previous) {
+    const current = approvals.get(id);
+    if (!current || current.associationRevision < prior.associationRevision || (prior.approval !== null && current.approval === null)) {
+      throw new Error('Saved match approval states cannot be removed or rolled back.');
+    }
+  }
+  for (const id of changed) {
+    if ((approvals.get(id)?.associationRevision ?? 1) <= (previous.get(id)?.associationRevision ?? 1)) {
+      throw new Error('A changed review decision requires a new association revision.');
+    }
+  }
+  const write = db.prepare(`INSERT INTO match_approval_state(transaction_id,document_id,record_json) VALUES(?,?,?)
+    ON CONFLICT(transaction_id) DO UPDATE SET document_id=excluded.document_id, record_json=excluded.record_json
+    WHERE match_approval_state.record_json<>excluded.record_json`);
+  for (const [id, state] of approvals) write.run(id, state.approval?.documentId ?? null, JSON.stringify(state));
+}
+
 function parseBankCorrections(entries: Iterable<readonly [string, unknown]>): Map<string, BankCorrection> {
   const result = new Map<string, BankCorrection>();
   for (const [id, value] of entries) {
@@ -362,17 +422,11 @@ function parseDocumentCorrections(entries: Iterable<readonly [string, unknown]>)
   return result;
 }
 
-function documentRevisions(corrections: ReadonlyMap<string, DocumentCorrection>): Map<string, number> {
-  const revisions = new Map<string, number>();
-  for (const { documentId, revision } of corrections.values()) revisions.set(documentId, Math.max(revisions.get(documentId) ?? 1, revision));
-  return revisions;
-}
-
 function writeDocumentCorrections(db: Database.Database, previous: ReadonlyMap<string, DocumentCorrection>, corrections: ReadonlyMap<string, DocumentCorrection>): boolean {
   if ([...previous.keys()].some(key => !corrections.has(key))) throw new Error('Saved document corrections cannot be removed.');
   const changed = new Map([...corrections].filter(([key, value]) => JSON.stringify(previous.get(key)) !== JSON.stringify(value)));
   if (!changed.size) return false;
-  const revisions = documentRevisions(previous);
+  const revisions = documentRevisionIndex(previous.values());
   const save = db.prepare(`INSERT INTO document_corrections(correction_key,document_id,record_json) VALUES(?,?,?)
     ON CONFLICT(correction_key) DO UPDATE SET record_json=excluded.record_json`);
   for (const [key, correction] of changed) {
@@ -380,7 +434,7 @@ function writeDocumentCorrections(db: Database.Database, previous: ReadonlyMap<s
     save.run(key, correction.documentId, JSON.stringify(correction));
   }
   const update = db.prepare('UPDATE documents SET revision=? WHERE id=?');
-  for (const [id, revision] of documentRevisions(changed)) update.run(revision, id);
+  for (const [id, revision] of documentRevisionIndex(changed.values())) update.run(revision, id);
   return true;
 }
 
@@ -442,6 +496,7 @@ function validateDatabase(db: Database.Database): Omit<SavedWorkspace, 'filePath
   if (version >= 5n) expected.push('match_reviews');
   if (version >= 6n) expected.push('bank_corrections');
   if (version >= 7n) expected.push('document_corrections');
+  if (version >= 8n) expected.push('match_approval_state');
   expected.sort();
   if (JSON.stringify(tables) !== JSON.stringify(expected) || db.prepare("SELECT name FROM sqlite_schema WHERE type IN ('trigger','view')").all().length) throw new Error('The workspace structure is not supported.');
   if (db.pragma('quick_check', { simple: true }) !== 'ok' || (db.pragma('foreign_key_check') as unknown[]).length) throw new Error('The workspace is damaged.');
@@ -470,7 +525,8 @@ function validateDatabase(db: Database.Database): Omit<SavedWorkspace, 'filePath
   }
   const effective = applyBankCorrections(imports, bankCorrections);
   const effectiveDocuments = applyDocumentCorrections(documentImports, documentCorrections);
-  validateImports(db, effective, owned, bankCorrections); validateDocumentImports(db, documentImports, owned, documentRevisions(documentCorrections));
+  const documentRevisions = documentRevisionIndex(documentCorrections.values());
+  validateImports(db, effective, owned, bankCorrections); validateDocumentImports(db, documentImports, owned, documentRevisions);
   const matches = version >= 4n ? readMatches(db, effective, effectiveDocuments) : suggestWorkspaceMatches(effective, effectiveDocuments);
   const reviewRows = version < 5n ? [] : db.prepare('SELECT transaction_id,document_id FROM match_reviews').all() as {
     transaction_id: string; document_id: string | null;
@@ -478,8 +534,16 @@ function validateDatabase(db: Database.Database): Omit<SavedWorkspace, 'filePath
   const matchDecisions = new Map(reviewRows.map(row => [row.transaction_id, row.document_id]));
   if (matchDecisions.size !== reviewRows.length) throw new Error('The workspace contains duplicate review decisions.');
   validateMatchDecisions(matchDecisions, effective, documentImports);
+  const approvalRows = version < 8n ? [] : db.prepare('SELECT transaction_id,document_id,record_json FROM match_approval_state').all() as {
+    transaction_id: string; document_id: string | null; record_json: string;
+  }[];
+  const reviewApprovals = parseReviewApprovals(approvalRows.map(row => [row.transaction_id, JSON.parse(row.record_json) as unknown]));
+  if (approvalRows.some(row => (reviewApprovals.get(row.transaction_id)?.approval?.documentId ?? null) !== row.document_id)) {
+    throw new Error('Stored match approvals do not agree with their documents.');
+  }
+  validateReviewApprovals(reviewApprovals, matchDecisions, effective, documentImports, bankCorrections, documentRevisions);
   return { metadata: metadataSchema.parse(rows[0]), schemaVersion: Number(version), imports, documentImports, sources: sourceCatalog(db), matches, matchDecisions,
-    bankCorrections, documentCorrections };
+    bankCorrections, documentCorrections, reviewApprovals };
 }
 
 function checkHeader(filePath: string) {
@@ -515,7 +579,7 @@ export async function loadWorkspace(filePath: string): Promise<SavedWorkspace> {
 export async function createWorkspace(
   filePath: string, metadata: WorkspaceMetadata, imports: StoredBankImport[] = [], documentImports: StoredDocumentImport[] = [],
   decisions: ReadonlyMap<string, string | null> = new Map(), corrections: ReadonlyMap<string, BankCorrection> = new Map(),
-  documentEdits: ReadonlyMap<string, DocumentCorrection> = new Map()
+  documentEdits: ReadonlyMap<string, DocumentCorrection> = new Map(), approvalEdits: ReadonlyMap<string, ReviewApprovalState> = new Map()
 ): Promise<SavedWorkspace> {
   if (path.extname(filePath).toLowerCase() !== '.receiptmatch') throw new Error('Use the .receiptmatch filename extension for a workspace.');
   const saved = metadataSchema.parse({ ...metadata, savedAt: new Date().toISOString() });
@@ -524,9 +588,11 @@ export async function createWorkspace(
   const matchDecisions = new Map(decisions);
   const bankCorrections = parseBankCorrections(corrections);
   const documentCorrections = parseDocumentCorrections(documentEdits);
+  const reviewApprovals = parseReviewApprovals(approvalEdits);
   const effective = applyBankCorrections(retained, bankCorrections);
   const effectiveDocuments = applyDocumentCorrections(retainedDocuments, documentCorrections);
   validateMatchDecisions(matchDecisions, effective, retainedDocuments);
+  validateReviewApprovals(reviewApprovals, matchDecisions, effective, retainedDocuments, bankCorrections, documentRevisionIndex(documentCorrections.values()));
   const matches = suggestWorkspaceMatches(effective, effectiveDocuments);
   const descriptor = openSync(filePath, 'wx+', 0o600);
   const owned = fstatSync(descriptor, { bigint: true });
@@ -548,6 +614,7 @@ export async function createWorkspace(
       db!.exec(matchReviewSchema);
       db!.exec(bankCorrectionsSchema);
       db!.exec(documentCorrectionsSchema);
+      db!.exec(matchApprovalSchema);
       db!.pragma(`application_id = ${APPLICATION_ID}`); db!.pragma(`user_version = ${SCHEMA_VERSION}`);
       db!.prepare('INSERT INTO workspace VALUES(?,?,?,?)').run(saved.id, saved.name, saved.createdAt, saved.savedAt);
       validateAppend(db!, [], retained, [], retainedDocuments); appendImports(db!, retained); appendDocumentImports(db!, retainedDocuments);
@@ -555,12 +622,13 @@ export async function createWorkspace(
       writeDocumentCorrections(db!, new Map(), documentCorrections);
       writeMatches(db!, matches);
       writeMatchDecisions(db!, new Map(), matchDecisions);
+      writeReviewApprovals(db!, new Map(), reviewApprovals, []);
     }).exclusive();
     // SQLite EXCLUSIVE locking mode retains the committed-file lock until this connection closes.
     const committedFingerprint = fingerprintDescriptor(descriptor, filePath);
     completed = true;
     return { metadata: saved, filePath, fingerprint: committedFingerprint, schemaVersion: SCHEMA_VERSION, imports: retained,
-      documentImports: retainedDocuments, sources: sourceCatalog(db), matches, matchDecisions, bankCorrections, documentCorrections };
+      documentImports: retainedDocuments, sources: sourceCatalog(db), matches, matchDecisions, bankCorrections, documentCorrections, reviewApprovals };
   } finally {
     try { db?.close(); }
     finally {
@@ -573,19 +641,23 @@ export async function createWorkspace(
 export async function saveWorkspace(
   current: SavedWorkspace, metadata: WorkspaceMetadata, imports: StoredBankImport[] = current.imports, documentImports: StoredDocumentImport[] = current.documentImports,
   decisions: ReadonlyMap<string, string | null> = current.matchDecisions, corrections: ReadonlyMap<string, BankCorrection> = current.bankCorrections,
-  documentEdits: ReadonlyMap<string, DocumentCorrection> = current.documentCorrections
+  documentEdits: ReadonlyMap<string, DocumentCorrection> = current.documentCorrections, approvalEdits?: ReadonlyMap<string, ReviewApprovalState>
 ): Promise<SavedWorkspace> {
   const matchDecisions = new Map(decisions);
   const bankCorrections = parseBankCorrections(corrections);
   const documentCorrections = parseDocumentCorrections(documentEdits);
   const recognized = await loadWorkspace(current.filePath);
   if (recognized.metadata.id !== current.metadata.id || recognized.fingerprint !== current.fingerprint) throw new Error('The workspace file changed outside ReceiptMatch. Reopen it before saving.');
+  const changed = changedDecisionIds(recognized.matchDecisions, matchDecisions);
+  const reviewApprovals = parseReviewApprovals(approvalEdits ?? recognized.reviewApprovals);
+  if (!approvalEdits) for (const id of changed) reviewApprovals.set(id, advanceReviewRevision(reviewApprovals.get(id)));
   const saved = metadataSchema.parse({ ...metadata, savedAt: new Date().toISOString() });
   const retained = z.array(storedBankImportSchema).parse(imports);
   const retainedDocuments = z.array(storedDocumentImportSchema).parse(documentImports);
   const effective = applyBankCorrections(retained, bankCorrections);
   const effectiveDocuments = applyDocumentCorrections(retainedDocuments, documentCorrections);
   validateMatchDecisions(matchDecisions, effective, retainedDocuments);
+  validateReviewApprovals(reviewApprovals, matchDecisions, effective, retainedDocuments, bankCorrections, documentRevisionIndex(documentCorrections.values()));
   const descriptor = openSync(current.filePath, 'r');
   let db: Database.Database | undefined;
   try {
@@ -606,6 +678,7 @@ export async function saveWorkspace(
       if (existing.schemaVersion < 5) db!.exec(matchReviewSchema);
       if (existing.schemaVersion < 6) db!.exec(bankCorrectionsSchema);
       if (existing.schemaVersion < 7) db!.exec(documentCorrectionsSchema);
+      if (existing.schemaVersion < 8) db!.exec(matchApprovalSchema);
       if (existing.schemaVersion < SCHEMA_VERSION) db!.pragma(`user_version = ${SCHEMA_VERSION}`);
       const newImports = retained.slice(existing.imports.length);
       const newDocumentImports = retainedDocuments.slice(existing.documentImports.length);
@@ -617,11 +690,12 @@ export async function saveWorkspace(
       const updated = evidenceChanged ? suggestWorkspaceMatches(effective, effectiveDocuments) : existing.matches;
       if (existing.schemaVersion < 4 || updated !== existing.matches) writeMatches(db!, updated);
       writeMatchDecisions(db!, existing.matchDecisions, matchDecisions);
+      writeReviewApprovals(db!, existing.reviewApprovals, reviewApprovals, changed);
       db!.prepare('UPDATE workspace SET name=?,saved_at=? WHERE id=?').run(saved.name, saved.savedAt, saved.id);
       return updated;
     }).exclusive();
     const committedFingerprint = fingerprintDescriptor(descriptor, current.filePath);
     return { metadata: saved, filePath: current.filePath, fingerprint: committedFingerprint, schemaVersion: SCHEMA_VERSION, imports: retained,
-      documentImports: retainedDocuments, sources: sourceCatalog(db), matches, matchDecisions, bankCorrections, documentCorrections };
+      documentImports: retainedDocuments, sources: sourceCatalog(db), matches, matchDecisions, bankCorrections, documentCorrections, reviewApprovals };
   } finally { try { db?.close(); } finally { closeSync(descriptor); } }
 }

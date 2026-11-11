@@ -21,6 +21,10 @@ export class MatchSuggestions {
 	readonly filters = ['all', 'reliable', 'uncertain', 'unmatched'] as const;
 	readonly statusLabels: Record<MatchStatus, string> = { reliable: 'Reliable', uncertain: 'Uncertain', unmatched: 'Unmatched' };
 	readonly reviewLabels: Record<MatchReview['status'], string> = { open: 'Open', assigned: 'Document assigned', 'completed-without-document': 'Completed without document' };
+	readonly approvalLabels = { approved: 'Approved', stale: 'Approval needs review', revoked: 'Approval revoked' } as const;
+	readonly approvalChanges = {
+		booking: 'The booking was corrected.', document: 'The supporting document was corrected.', 'booking-and-document': 'The booking and supporting document were corrected.',
+	} as const;
 	readonly issueLabels: Record<MatchCandidateView['issues'][number], string> = {
 		'missing-reference': 'No matching payment or document reference.',
 		'conflicting-evidence': 'Some source details are ambiguous or conflict.',

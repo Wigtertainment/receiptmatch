@@ -54,6 +54,10 @@
 											<td class="match-account-amount">{{ money(row.accountAmount) }}</td>
 											<td>
 												<span class="match-row-review">{{ reviewLabels[row.review.status] }}</span>
+												@let approval = row.approvalStatus.status;
+												@if (approval !== 'none') {
+													<span class="match-row-approval" [class.match-approval-changed]="approval !== 'approved'">{{ approvalLabels[approval] }}</span>
+												}
 												<span class="match-status" [class.match-reliable]="row.status === 'reliable'" [class.match-uncertain]="row.status === 'uncertain'">
 													{{ statusLabels[row.status] }}
 												</span>
@@ -97,6 +101,17 @@
 									}
 								</p>
 							</div>
+							@let approval = selected.approvalStatus;
+							@if (approval.status !== 'none') {
+								<p class="match-approval-status" [class.match-approval-changed]="approval.status !== 'approved'" role="status">
+									<strong>{{ approvalLabels[approval.status] }}</strong>
+									@if (approval.status === 'stale') {
+										· {{ approvalChanges[approval.change] }}
+									} @else if (approval.status === 'revoked') {
+										· The document assignment changed.
+									}
+								</p>
+							}
 							@if (documents(); as available) {
 								@if (available.length) {
 									<label for="match-review-document">Supporting document</label>

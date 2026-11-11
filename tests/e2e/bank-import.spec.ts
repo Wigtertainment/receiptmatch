@@ -7,6 +7,7 @@ import { expect, test as base, type ElectronApplication, type Page } from '@play
 import Database from 'better-sqlite3';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { statement, row } from '../unit/bank-fixtures.js';
+import { documentRun, retainedDocument } from '../unit/document-fixtures.js';
 import { storedBankImportSchema, type StoredBankImport } from '../../src/shared/workspace-import.js';
 import { createWorkspace, newMetadata, SCHEMA_VERSION } from '../../electron/store.js';
 import type { extractPdfBytes } from '../../electron/extraction/host.js';
@@ -365,7 +366,8 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		seed.pragma('foreign_keys=ON');
 		try {
 			// The seven original tables are unchanged; remove the additive manifest to reproduce format 1.
-			seed.exec(`DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews; DROP TABLE match_results; DROP TABLE document_imports; DROP TABLE bank_imports; PRAGMA user_version=1;
+			seed.exec(`DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
+                DROP TABLE match_results; DROP TABLE document_imports; DROP TABLE bank_imports; PRAGMA user_version=1;
                 INSERT INTO sources VALUES('legacy-source','/synthetic/original.pdf',NULL);
                 INSERT INTO accounts VALUES('legacy-account','Legacy account','EUR');
                 INSERT INTO statements VALUES('legacy-statement','legacy-account','legacy-source');
@@ -436,6 +438,50 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 			rowId: source.drafts[0].draftId, revision: 2, bookingDate: '2032-02-25', accountAmount: { currency: 'EUR', coefficient: '-25620', scale: 2 }
 		});
 		await expect(page.getByTestId('transactions-table').getByRole('row', { name: /Cedar Tools.*Corrected/ })).toBeVisible();
+	});
+	await check('explicit-approval-survives-reopening-and-shows-why-it-became-invalid', async () => {
+		const source = retained.find(record => record.filePath === original);
+		assert.ok(source);
+		const [assigned, completed] = source.transactions;
+		const document = retainedDocument(root, 'approved-receipt.pdf');
+		const file = path.join(root, 'approved.receiptmatch');
+		await createWorkspace(file, newMetadata(), [source], [documentRun(root, [document])], new Map([[assigned.transactionId, document.id], [completed.transactionId, null]]));
+		const opened = await reopen(file);
+		assert.ok(opened.workspace);
+		const summaries = (revision: number) => page.evaluate(value => window.receiptmatch.matchSummaries(value), revision);
+		const review = await summaries(opened.workspace.matchRevision);
+		assert.ok(review);
+		const selection = review.find(row => row.transactionId === assigned.transactionId)?.approvalSelection;
+		assert.ok(selection);
+		assert.equal(review.find(row => row.transactionId === completed.transactionId)?.approvalSelection, null);
+		const before = await fingerprint(file);
+		const approved = await command({ type: 'approve-matches', loadRevision: opened.workspace.loadRevision, selections: [selection] });
+		assert.equal(approved.error, null);
+		assert.equal(approved.workspace?.dirty, true);
+		assert.equal(await fingerprint(file), before);
+		const rows = await summaries(approved.workspace!.matchRevision);
+		const snapshot = rows?.find(row => row.transactionId === assigned.transactionId)?.approval;
+		assert.ok(snapshot);
+		assert.equal(snapshot.documentId, document.id);
+		assert.equal((await command({ type: 'save' })).error, null);
+		const reopened = await reopen(file);
+		const restored = await summaries(reopened.workspace!.matchRevision);
+		assert.deepEqual(restored?.find(row => row.transactionId === assigned.transactionId)?.approval, snapshot);
+		assert.equal(restored?.find(row => row.transactionId === completed.transactionId)?.approval, null);
+		await page.getByRole('button', { name: 'Match suggestions', exact: true }).click();
+		const matches = page.getByRole('region', { name: 'Match suggestions', exact: true });
+		const transaction = matches.getByRole('row', { name: /Orchard Workshop/ });
+		await transaction.getByRole('button', { name: /Orchard Workshop/ }).click();
+		const manual = matches.getByRole('region', { name: 'Manual review' });
+		await expect(manual.getByText('Approved', { exact: true })).toBeVisible();
+		const corrected = await command({ type: 'correct-bank-row', revision: reopened.workspace!.matchRevision, rowId: assigned.transactionId,
+			changes: { bookingDate: '2032-02-25' } });
+		assert.equal(corrected.error, null);
+		await expect(transaction.getByText('Approval needs review', { exact: true })).toBeVisible();
+		await expect(manual.getByText('The booking was corrected.', { exact: false })).toBeVisible();
+		await manual.getByRole('button', { name: 'Remove assignment' }).click();
+		await expect(manual.getByText('Approval revoked', { exact: true })).toBeVisible();
+		await expect(manual.getByText('The document assignment changed.', { exact: false })).toBeVisible();
 	});
 	assert.equal(await fingerprint(original), originalHash);
 	report.limits = [

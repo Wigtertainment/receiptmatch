@@ -186,6 +186,9 @@ app-match-suggestions { display: block; min-width: 0; }
 .match-transaction:hover { background: #d9ece3; }
 .match-candidate-count { display: block; color: var(--muted); font-size: 11px; }
 .match-row-review { display: block; margin-bottom: 4px; font-size: 12px; font-weight: 650; overflow-wrap: anywhere; }
+.match-row-approval { display: block; margin-bottom: 4px; font-size: 11px; }
+.match-row-approval, .match-approval-status { color: #205648; }
+.match-approval-changed { color: #754725; }
 .match-status { display: inline-block; padding: 2px 8px; border-radius: 4px; color: #45594a; background: #edf0e8; font-size: 11px; font-weight: 650; white-space: nowrap; }
 .match-reliable { color: #205648; background: #e3efe7; }
 .match-uncertain { color: #754725; background: #f5ebdc; }
