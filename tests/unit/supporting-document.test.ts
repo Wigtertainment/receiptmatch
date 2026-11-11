@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { bankImportInputSchema, importIssue, type BankImportInput, type PositionedSpan } from '../../src/shared/bank-import.js';
 import { supportingDocumentSchema, type DocumentSection } from '../../src/shared/supporting-document.js';

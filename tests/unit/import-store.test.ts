@@ -1,4 +1,4 @@
-import test, { mock } from 'node:test';
+import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import fsModule from 'node:fs';
@@ -182,13 +182,13 @@ test('broken manifests and mismatched normalized source, account, statement and 
 
 test('an actual append failure rolls back migration, projections and metadata together', async () => {
   const root = await directory(); const { file, saved } = await legacy(root); const before = await readFile(file); const original = Database.prototype.prepare;
-  const probe = mock.method(Database.prototype, 'prepare', function(this: Database.Database, sql: string) {
+  const probe = vi.spyOn(Database.prototype, 'prepare').mockImplementation(function(this: Database.Database, sql: string) {
     const query = Reflect.apply(original, this, [sql]) as Database.Statement;
     if (sql.startsWith('INSERT INTO bank_imports')) query.run = () => { throw new Error('Controlled manifest write failure'); };
     return query;
   } as typeof Database.prototype.prepare);
   try { await assert.rejects(() => saveWorkspace(saved, { ...saved.metadata, name: 'Must roll back' }, [record(root)]), /Controlled manifest write failure/); }
-  finally { probe.mock.restore(); }
+  finally { probe.mockRestore(); }
   assert.deepEqual(await readFile(file), before);
   const reopened = await loadWorkspace(file); assert.equal(reopened.schemaVersion, 1); assert.deepEqual(reopened.imports, []); assert.deepEqual(reopened.metadata, saved.metadata);
 });
@@ -212,7 +212,7 @@ for (const operation of ['load', 'save', 'create'] as const) test(`${operation} 
   const externalBytes = await readFile(replacement); const originalBytes = current ? await readFile(file) : Buffer.alloc(0);
   const originalOpen = fsModule.openSync; let opens = 0; let replacements = 0;
   const protectedOpen = operation === 'load' ? 2 : operation === 'save' ? 3 : 1;
-  const probe = mock.method(fsModule, 'openSync', ((selected: fsModule.PathLike, flags: string | number, mode?: fsModule.Mode) => {
+  const probe = vi.spyOn(fsModule, 'openSync').mockImplementation(((selected: fsModule.PathLike, flags: string | number, mode?: fsModule.Mode) => {
     const descriptor = originalOpen(selected, flags, mode);
     if (selected === file && flags === (operation === 'create' ? 'wx+' : 'r') && ++opens === protectedOpen) {
       fsModule.renameSync(file, parked); fsModule.renameSync(replacement, file); replacements++;
@@ -224,7 +224,7 @@ for (const operation of ['load', 'save', 'create'] as const) test(`${operation} 
     if (operation === 'load') await assert.rejects(() => loadWorkspace(file), /replaced or linked/);
     else if (operation === 'save') await assert.rejects(() => saveWorkspace(current!, { ...current!.metadata, name: 'Must never overwrite replacement' }, [record(root)]), /replaced or linked/);
     else await assert.rejects(() => createWorkspace(file, metadata, [record(root)]), /replaced or linked/);
-  } finally { probe.mock.restore(); syncBuiltinESMExports(); }
+  } finally { probe.mockRestore(); syncBuiltinESMExports(); }
   assert.equal(replacements, 1, 'The replacement must occur after the protected descriptor has actually opened.');
   assert.deepEqual(await readFile(file), externalBytes); assert.deepEqual(await readFile(parked), originalBytes);
   if (operation !== 'create') assert.equal((await loadWorkspace(file)).metadata.name, 'External replacement with same workspace UUID');

@@ -1,5 +1,4 @@
 {
   "extends": "./tsconfig.electron.json",
-  "compilerOptions": { "noEmit": false, "outDir": ".build/node" },
-  "include": ["tests/unit/**/*.ts"]
+  "include": ["vitest.config.ts", "tests/unit/**/*.ts"]
 }

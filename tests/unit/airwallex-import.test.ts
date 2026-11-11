@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { bankImportInputSchema, bankImportResultSchema, importIssue, type BankImportInput } from '../../src/shared/bank-import.js';
 import { parseBankStatement } from '../../electron/import/registry.js';

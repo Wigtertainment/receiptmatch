@@ -58,7 +58,7 @@ npm run test:ui-import
 
 `npm run test:development` builds the app and uses Playwright Test to exercise direct Electron execution, SQLite/local OCR and live CSS replacement. It temporarily adds an isolated marker to `src/styles.css` and restores the original bytes afterward. Avoid editing that file during this check.
 
-`npm run test:unit` prepares its own compiled test modules. Run the packaging command for your platform before running checks against the desktop executable. `npm run test:electron` runs all packaged checks with Playwright Test. Use the individual commands above to run a single suite. Generated results and screenshots go under ignored `artifacts/`. Remove temporary `release/`, `.build/`, `.angular/` and test outputs after successful use.
+`npm run test:unit` type-checks the unit tests and runs them from TypeScript source with Vitest. Run the packaging command for your platform before running checks against the desktop executable. `npm run test:electron` runs all packaged checks with Playwright Test. Use the individual commands above to run a single suite. Generated results and screenshots go under ignored `artifacts/`. Remove temporary `release/`, `.build/`, `.angular/` and test outputs after successful use.
 
 Extraction checks exercise isolated PDF text and local English OCR using synthetic PDF, PNG and JPEG inputs and bundled resources, including image limits, orientation and failures.
 

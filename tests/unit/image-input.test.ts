@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { imageInputDimensions, assertImageDimensions, ImageInputError, IMAGE_MIME_TYPES } from "../../electron/extraction/image-input.js";
 import { extractionJobSchema, PDF_EXTRACTION_LIMITS } from "../../src/shared/pdf-extraction.js";
