@@ -42,6 +42,12 @@
 				@if (state().error || commandError(); as error) {
 					<p class="error" role="alert">{{ error }}</p>
 				}
+				@if (section() === 'matches' && (state().statementImport || state().documentImport)) {
+					<div class="workspace-import-status">
+						<p role="status">{{ state().statementImport ? 'Statement import in progress.' : 'Folder analysis in progress.' }}</p>
+						<button type="button" class="button-secondary compact" (click)="showSection('sources')">View import</button>
+					</div>
+				}
 				<section [hidden]="section() !== 'sources'" aria-labelledby="sources-heading">
 					<h1 class="view-heading" id="sources-heading" tabindex="-1">Sources</h1>
 					<div class="workspace-imports">

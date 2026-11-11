@@ -174,6 +174,13 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		assert.notEqual(await details.getAttribute("open"), null);
 		return details;
 	}
+	async function openFile(report: Locator, name: string) {
+		const button = report.getByRole("button", { name, exact: true });
+		if ((await button.getAttribute("aria-expanded")) !== "true") await button.press("Enter");
+		const details = report.locator(`[id="${await button.getAttribute("aria-controls")}"]`);
+		await details.waitFor();
+		return details;
+	}
 	await check("document-command-is-path-free-and-readonly-data-is-restricted-to-the-active-frame", async () => {
 		assert.equal((await command({ type: "import-documents", path: folder } as unknown as WorkspaceCommand)).workspace, null);
 		const probes = await application.evaluate(async ({ app, BrowserWindow }) => {
@@ -201,6 +208,7 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		await dialogs([folder]);
 		await chooseFolder().press("Enter");
 		await documents().locator("summary").filter({ hasText: "mixed" }).first().waitFor();
+		await documents().getByRole("table", { name: "Files in mixed", exact: true }).waitFor();
 		assert.deepEqual(await application.evaluate(() => (globalThis as DocumentTestMainGlobals).documentTestDialogProperties), ["openDirectory"]);
 		const state = await command({ type: "get-state" });
 		assert.equal(state.documentOutcome?.status, "finished");
@@ -233,9 +241,14 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 			["e-broken.pdf", "Failed"],
 			["notes.txt", "Unsupported"],
 		]) {
-			await report.locator("summary").filter({ hasText: file }).filter({ hasText: status }).waitFor();
+			const row = report.getByRole("row").filter({ has: page.getByRole("button", { name: file, exact: true }) });
+			await row.getByText(status, { exact: false }).waitFor();
 		}
-		const pdf = await openDetails(report, "a.PDF");
+		const pdfRow = report.getByRole("row").filter({ has: page.getByRole("button", { name: "a.PDF", exact: true }) });
+		await pdfRow.getByText(/EUR\s*73[.,]25|73[.,]25\s*EUR/).waitFor();
+		const failedRow = report.getByRole("row").filter({ has: page.getByRole("button", { name: "e-broken.pdf", exact: true }) });
+		await failedRow.getByText("No single billed total", { exact: true }).waitFor();
+		const pdf = await openFile(report, "a.PDF");
 		await pdf.getByRole("heading", { name: "Extracted fields" }).waitFor();
 		const total = await openDetails(pdf, /Billed total/i);
 		await total
@@ -262,7 +275,7 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		await raw.getByText(rawNote, { exact: false }).first().waitFor();
 		assert.equal(await raw.locator("img, script").count(), 0);
 		assert.equal(await page.evaluate(() => window.documentTestInjection), undefined);
-		const image = await openDetails(report, "b.PNG");
+		const image = await openFile(report, "b.PNG");
 		const imageSource = await openDetails(image, /^Source text/);
 		await imageSource.getByText("Local English OCR", { exact: true }).first().waitFor();
 		await imageSource
@@ -280,9 +293,9 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		await dialogs([workspaceFile]);
 		await page.getByRole("button", { name: "Open workspace", exact: true }).press("Enter");
 		const report = await openDetails(documents(), /^\s*mixed/i);
-		const broken = await openDetails(report, "e-broken.pdf");
+		const broken = await openFile(report, "e-broken.pdf");
 		await broken.getByText(/PDF engine could not open/i).waitFor();
-		const pdf = await openDetails(report, "a.PDF");
+		const pdf = await openFile(report, "a.PDF");
 		await pdf
 			.locator("summary")
 			.filter({ hasText: /Invoice reference.*SYNTHETIC-PDF/ })

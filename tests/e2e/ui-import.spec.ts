@@ -756,6 +756,9 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		await page.waitForFunction(async () => (await window.receiptmatch.command({ type: 'get-state' })).statementImport?.progress?.phase === 'ocr');
 		await page.getByTestId('import-progress').waitFor();
 		for (const name of ['New', 'Open', 'Save']) assert.equal(await page.getByRole('button', { name, exact: true }).isDisabled(), true);
+		await page.getByRole('navigation', { name: 'Workspace views' }).getByRole('button', { name: 'Match suggestions' }).click();
+		await page.getByText('Statement import in progress.', { exact: true }).waitFor();
+		await page.getByRole('button', { name: 'View import', exact: true }).click();
 		await page.getByRole('button', { name: 'Cancel import', exact: true }).click();
 		const cancelled = await outcome('cancelled');
 		assert.equal(cancelled.workspace.dirty, false);

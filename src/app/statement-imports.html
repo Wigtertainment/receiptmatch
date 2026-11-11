@@ -1,7 +1,11 @@
-<section class="statement-imports" aria-labelledby="statements-heading">
-	<div class="section-heading">
-		<h2 id="statements-heading">Bank statements</h2>
-		<button class="button-primary compact" (click)="workspaceCommand.emit({type:'import-statement'})" [disabled]="state().busy">Import statement</button>
+<section class="statement-imports source-panel" aria-labelledby="statements-heading">
+	<div class="section-heading source-panel-heading">
+		<div>
+			<h2 id="statements-heading">Bank statements</h2>
+			@let count = state().workspace?.imports?.length ?? 0;
+			<p class="source-panel-count">{{ count }} {{ count === 1 ? 'statement' : 'statements' }}</p>
+		</div>
+		<button type="button" class="button-primary compact" (click)="workspaceCommand.emit({ type: 'import-statement' })" [disabled]="state().busy">Import statement</button>
 	</div>
 	@if (state().statementImport; as active) {
 		<div class="import-progress" data-testid="import-progress" role="status" aria-live="polite">
@@ -25,9 +29,6 @@
 			@switch (outcome.status) {
 				@case ('imported') {
 					<p>Statement imported.</p>
-					@if (state().workspace?.dirty) {
-						<p>Save your workspace to keep these changes.</p>
-					}
 				}
 				@case ('skipped') {
 					<p>This PDF is already in the workspace.</p>
@@ -54,7 +55,6 @@
 	@if (!state().workspace?.imports?.length) {
 		<div class="import-empty">
 			<p>Import a PDF bank statement to read its transactions here.</p>
-			<p class="muted">Files are read on this computer. Save your workspace to keep imported records.</p>
 		</div>
 	} @else if (loading()) {
 		<p class="details-loading" role="status">Loading statement details…</p>
@@ -77,23 +77,29 @@
 		</div>
 		@if (selected(); as record) {
 			<div class="statement-summary">
-				<h3>{{ filename(record.filePath) }}</h3>
-				<p class="muted">
-					{{ record.result.adapter?.bankId }} · {{ record.result.transactions.length }} transactions · {{ record.result.unresolvedDrafts.length }} unresolved drafts
-				</p>
-				<p class="import-status-label">{{ record.result.status === 'partial' ? 'Partial import · review needed' : 'Complete import' }}</p>
+				<div class="statement-summary-heading">
+					<h3>{{ filename(record.filePath) }}</h3>
+					<span
+						class="source-status"
+						[class.source-status-warning]="record.result.status === 'partial'"
+						>{{ record.result.status === 'partial' ? 'Partial import' : 'Complete import' }}</span
+					>
+				</div>
 				<details class="source-location">
-					<summary>Source location</summary>
-					<p class="file-location">{{ record.filePath }}</p>
-				</details>
-				<dl class="account-list">
-					@for (account of record.result.accountSections; track account.sectionId) {
-						<div>
-							<dt>Account · {{ account.currency.value }}</dt>
-							<dd>{{ account.accountReference?.value || 'Unknown account reference' }}</dd>
-						</div>
+					<summary>Statement details</summary>
+					@if (record.result.adapter; as adapter) {
+						<p>Bank · {{ adapter.bankId === 'revolut' ? 'Revolut' : adapter.bankId === 'airwallex' ? 'Airwallex' : adapter.bankId }}</p>
 					}
-				</dl>
+					<p class="file-location">{{ record.filePath }}</p>
+					<dl class="account-list">
+						@for (account of record.result.accountSections; track account.sectionId) {
+							<div>
+								<dt>Account · {{ account.currency.value }}</dt>
+								<dd>{{ account.accountReference?.value || 'Unknown account reference' }}</dd>
+							</div>
+						}
+					</dl>
+				</details>
 			</div>
 			@if (record.result.status === 'partial' || record.result.issues.length) {
 				<aside class="statement-warnings" aria-labelledby="statement-notes-heading" data-testid="statement-warnings">
