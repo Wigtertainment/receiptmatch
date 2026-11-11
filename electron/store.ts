@@ -4,19 +4,22 @@ import { createReadStream, closeSync, fstatSync, lstatSync, openSync, readSync, 
 import path from 'node:path';
 import { z } from 'zod';
 import { workspaceName } from '../src/shared/protocol.js';
-import { moneySchema } from '../src/shared/money.js';
+import { moneySchema, type Money } from '../src/shared/money.js';
 import { storedBankImportSchema, type StoredBankImport } from '../src/shared/workspace-import.js';
 import { storedDocumentImportSchema, type StoredDocumentImport, type WorkspaceSource } from '../src/shared/workspace-documents.js';
+import { transactionMatchSchema, type TransactionMatch } from '../src/shared/workspace-matching.js';
+import type { TransactionCandidate } from '../src/shared/bank-import.js';
+import { suggestWorkspaceMatches } from './matching.js';
 
 export { moneySchema } from '../src/shared/money.js';
 
 export const APPLICATION_ID = 0x52434d54;
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 const metadataSchema = z.strictObject({ id: z.uuid(), name: workspaceName.refine(value => value.trim().length > 0), createdAt: z.iso.datetime(), savedAt: z.iso.datetime().nullable() });
 export type WorkspaceMetadata = z.infer<typeof metadataSchema>;
 export interface SavedWorkspace {
   metadata: WorkspaceMetadata; filePath: string; fingerprint: string; schemaVersion: number;
-  imports: StoredBankImport[]; documentImports: StoredDocumentImport[]; sources: WorkspaceSource[];
+  imports: StoredBankImport[]; documentImports: StoredDocumentImport[]; sources: WorkspaceSource[]; matches: TransactionMatch[];
 }
 
 export function newMetadata(): WorkspaceMetadata { return { id: randomUUID(), name: 'Untitled workspace', createdAt: new Date().toISOString(), savedAt: null }; }
@@ -60,6 +63,7 @@ CREATE INDEX associations_document ON associations(document_id);`;
 const expectedTables = ['accounts', 'associations', 'documents', 'sources', 'statements', 'transactions', 'workspace'];
 const importSchema = 'CREATE TABLE bank_imports(id TEXT PRIMARY KEY, source_id TEXT NOT NULL UNIQUE REFERENCES sources(id), record_json TEXT NOT NULL);';
 const documentImportSchema = 'CREATE TABLE document_imports(id TEXT PRIMARY KEY, record_json TEXT NOT NULL);';
+const matchSchema = 'CREATE TABLE match_results(transaction_id TEXT PRIMARY KEY REFERENCES transactions(id), record_json TEXT NOT NULL);';
 
 function importIdentities(record: StoredBankImport): [string, string | null][] {
   return [
@@ -262,13 +266,64 @@ function appendDocumentImports(db: Database.Database, imports: StoredDocumentImp
   }
 }
 
+function writeMatches(db: Database.Database, matches: TransactionMatch[]) {
+  const write = db.prepare(`INSERT INTO match_results(transaction_id,record_json) VALUES(?,?)
+    ON CONFLICT(transaction_id) DO UPDATE SET record_json=excluded.record_json WHERE match_results.record_json<>excluded.record_json`);
+  for (const match of matches) write.run(match.transactionId, JSON.stringify(match));
+}
+
+function readMatches(db: Database.Database, imports: StoredBankImport[], documentImports: StoredDocumentImport[]): TransactionMatch[] {
+  const invalid = () => new Error('The saved match suggestions do not agree with the workspace imports.');
+  const sameMoney = (stored: Money, original?: Omit<Money, 'currency'> & { currency: string | null }) => original !== undefined &&
+    stored.currency === original.currency && stored.coefficient === original.coefficient && stored.scale === original.scale;
+  const transactions = new Map<string, TransactionCandidate>();
+  for (const record of imports) {
+    const byRow = new Map(record.result.transactions.map(row => [row.rowId, row]));
+    for (const { transactionId, rowId } of record.transactions) transactions.set(transactionId, byRow.get(rowId)!);
+  }
+  const documents = new Map(documentImports.flatMap(record => record.files.flatMap(file => file.status === 'imported'
+    ? [[file.record.id, new Map(file.record.result.sections.map(section => [section.sectionId, section]))] as const] : [])));
+  const matches: TransactionMatch[] = [];
+  const rows = db.prepare('SELECT transaction_id,record_json FROM match_results ORDER BY transaction_id').iterate() as Iterable<{ transaction_id: string; record_json: string }>;
+  for (const row of rows) {
+    let input: unknown;
+    try { input = JSON.parse(row.record_json); } catch { throw invalid(); }
+    const parsed = transactionMatchSchema.safeParse(input);
+    const transaction = transactions.get(row.transaction_id);
+    if (!parsed.success || !transaction || parsed.data.transactionId !== row.transaction_id) throw invalid();
+    transactions.delete(row.transaction_id);
+    const candidateIds = new Set<string>();
+    for (const candidate of parsed.data.candidates) {
+      const section = documents.get(candidate.documentId)?.get(candidate.sectionId);
+      const key = JSON.stringify([candidate.documentId, candidate.sectionId]);
+      if (!section || candidateIds.has(key) || candidate.direction !== transaction.direction) throw invalid();
+      candidateIds.add(key);
+      for (const evidence of candidate.amounts) {
+        const bankAmount = evidence.basis === 'account-settlement' ? transaction.accountAmount : transaction.reportedOriginalAmount;
+        if (!sameMoney(evidence.transactionAmount, bankAmount?.value) || !section.amounts.some(field => field.id === evidence.documentFieldId &&
+          field.candidates.some(value => sameMoney(evidence.documentAmount, value)))) throw invalid();
+      }
+      for (const evidence of candidate.references) {
+        if (!transaction.references.some(field => field.label === evidence.bankLabel && field.value === evidence.bankValue) ||
+          !section.references.some(field => field.id === evidence.documentFieldId && field.candidates.includes(evidence.documentValue))) throw invalid();
+      }
+      const date = candidate.date;
+      if (date && (date.bookingDate !== transaction.bookingDate.value || !section.dates.some(field => field.id === date.documentFieldId &&
+        field.role === date.role && field.candidates.includes(date.documentDate)))) throw invalid();
+    }
+    matches.push(parsed.data);
+  }
+  if (transactions.size) throw invalid();
+  return matches;
+}
+
 function configure(db: Database.Database) { db.pragma('foreign_keys = ON'); db.pragma('trusted_schema = OFF'); db.defaultSafeIntegers(true); }
-function validateDatabase(db: Database.Database): Pick<SavedWorkspace, 'metadata' | 'schemaVersion' | 'imports' | 'documentImports' | 'sources'> {
+function validateDatabase(db: Database.Database): Omit<SavedWorkspace, 'filePath' | 'fingerprint'> {
   if (db.pragma('application_id', { simple: true }) !== BigInt(APPLICATION_ID)) throw new Error('This file is not a ReceiptMatch workspace.');
   const version = db.pragma('user_version', { simple: true });
-  if (version !== 1n && version !== 2n && version !== BigInt(SCHEMA_VERSION)) throw new Error('This workspace uses an unsupported format version.');
+  if (typeof version !== 'bigint' || version < 1n || version > BigInt(SCHEMA_VERSION)) throw new Error('This workspace uses an unsupported format version.');
   const tables = (db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map(row => row.name);
-  const expected = [...expectedTables, ...(version >= 2n ? ['bank_imports'] : []), ...(version >= 3n ? ['document_imports'] : [])].sort();
+  const expected = [...expectedTables, ...(version >= 2n ? ['bank_imports'] : []), ...(version >= 3n ? ['document_imports'] : []), ...(version >= 4n ? ['match_results'] : [])].sort();
   if (JSON.stringify(tables) !== JSON.stringify(expected) || db.prepare("SELECT name FROM sqlite_schema WHERE type IN ('trigger','view')").all().length) throw new Error('The workspace structure is not supported.');
   if (db.pragma('quick_check', { simple: true }) !== 'ok' || (db.pragma('foreign_key_check') as unknown[]).length) throw new Error('The workspace is damaged.');
   const rows = db.prepare('SELECT id,name,created_at AS createdAt,saved_at AS savedAt FROM workspace').all();
@@ -286,7 +341,8 @@ function validateDatabase(db: Database.Database): Pick<SavedWorkspace, 'metadata
   });
   const owned = new Set<string>();
   validateImports(db, imports, owned); validateDocumentImports(db, documentImports, owned);
-  return { metadata: metadataSchema.parse(rows[0]), schemaVersion: Number(version), imports, documentImports, sources: sourceCatalog(db) };
+  const matches = version >= 4n ? readMatches(db, imports, documentImports) : suggestWorkspaceMatches(imports, documentImports);
+  return { metadata: metadataSchema.parse(rows[0]), schemaVersion: Number(version), imports, documentImports, sources: sourceCatalog(db), matches };
 }
 
 function checkHeader(filePath: string) {
@@ -297,7 +353,8 @@ function checkHeader(filePath: string) {
     const buffer = Buffer.alloc(100);
     const bytesRead = readSync(descriptor, buffer, 0, 100, 0);
     if (bytesRead !== 100 || buffer.subarray(0, 16).toString('binary') !== 'SQLite format 3\0' || buffer.readUInt32BE(68) !== APPLICATION_ID) throw new Error('This file is not a ReceiptMatch workspace.');
-    if (![1, 2, SCHEMA_VERSION].includes(buffer.readUInt32BE(60))) throw new Error('This workspace uses an unsupported format version.');
+    const version = buffer.readUInt32BE(60);
+    if (version < 1 || version > SCHEMA_VERSION) throw new Error('This workspace uses an unsupported format version.');
     if (buffer[18] !== 1 || buffer[19] !== 1) throw new Error('This workspace journal format is not supported.');
   } finally { closeSync(descriptor); }
 }
@@ -325,6 +382,7 @@ export async function createWorkspace(
   const saved = metadataSchema.parse({ ...metadata, savedAt: new Date().toISOString() });
   const retained = z.array(storedBankImportSchema).parse(imports);
   const retainedDocuments = z.array(storedDocumentImportSchema).parse(documentImports);
+  const matches = suggestWorkspaceMatches(retained, retainedDocuments);
   const descriptor = openSync(filePath, 'wx+', 0o600);
   const owned = fstatSync(descriptor, { bigint: true });
   let db: Database.Database | undefined;
@@ -341,15 +399,17 @@ export async function createWorkspace(
       db!.exec(schema);
       db!.exec(importSchema);
       db!.exec(documentImportSchema);
+      db!.exec(matchSchema);
       db!.pragma(`application_id = ${APPLICATION_ID}`); db!.pragma(`user_version = ${SCHEMA_VERSION}`);
       db!.prepare('INSERT INTO workspace VALUES(?,?,?,?)').run(saved.id, saved.name, saved.createdAt, saved.savedAt);
       validateAppend(db!, [], retained, [], retainedDocuments); appendImports(db!, retained); appendDocumentImports(db!, retainedDocuments);
+      writeMatches(db!, matches);
     }).exclusive();
     // SQLite EXCLUSIVE locking mode retains the committed-file lock until this connection closes.
     const committedFingerprint = fingerprintDescriptor(descriptor, filePath);
     completed = true;
     return { metadata: saved, filePath, fingerprint: committedFingerprint, schemaVersion: SCHEMA_VERSION, imports: retained,
-      documentImports: retainedDocuments, sources: sourceCatalog(db) };
+      documentImports: retainedDocuments, sources: sourceCatalog(db), matches };
   } finally {
     try { db?.close(); }
     finally {
@@ -375,20 +435,28 @@ export async function saveWorkspace(
     assertDescriptorPath(descriptor, current.filePath);
     configure(db);
     db.pragma('locking_mode = EXCLUSIVE');
-    db.transaction(() => {
+    const matches = db.transaction(() => {
       assertDescriptorPath(descriptor, current.filePath);
       const existing = validateDatabase(db!);
       const currentFingerprint = fingerprintDescriptor(descriptor, current.filePath);
       if (existing.metadata.id !== saved.id || currentFingerprint !== current.fingerprint) throw new Error('The workspace file changed outside ReceiptMatch. Reopen it before saving.');
       validateAppend(db!, existing.imports, retained, existing.documentImports, retainedDocuments);
       if (existing.schemaVersion === 1) db!.exec(importSchema);
-      if (existing.schemaVersion < SCHEMA_VERSION) { db!.exec(documentImportSchema); db!.pragma(`user_version = ${SCHEMA_VERSION}`); }
-      appendImports(db!, retained.slice(existing.imports.length));
-      appendDocumentImports(db!, retainedDocuments.slice(existing.documentImports.length));
+      if (existing.schemaVersion < 3) db!.exec(documentImportSchema);
+      if (existing.schemaVersion < 4) db!.exec(matchSchema);
+      if (existing.schemaVersion < SCHEMA_VERSION) db!.pragma(`user_version = ${SCHEMA_VERSION}`);
+      const newImports = retained.slice(existing.imports.length);
+      const newDocumentImports = retainedDocuments.slice(existing.documentImports.length);
+      appendImports(db!, newImports);
+      appendDocumentImports(db!, newDocumentImports);
+      const evidenceChanged = newImports.length || newDocumentImports.some(record => record.files.some(file => file.status === 'imported'));
+      const updated = evidenceChanged ? suggestWorkspaceMatches(retained, retainedDocuments) : existing.matches;
+      if (existing.schemaVersion < 4 || updated !== existing.matches) writeMatches(db!, updated);
       db!.prepare('UPDATE workspace SET name=?,saved_at=? WHERE id=?').run(saved.name, saved.savedAt, saved.id);
+      return updated;
     }).exclusive();
     const committedFingerprint = fingerprintDescriptor(descriptor, current.filePath);
     return { metadata: saved, filePath: current.filePath, fingerprint: committedFingerprint, schemaVersion: SCHEMA_VERSION, imports: retained,
-      documentImports: retainedDocuments, sources: sourceCatalog(db) };
+      documentImports: retainedDocuments, sources: sourceCatalog(db), matches };
   } finally { try { db?.close(); } finally { closeSync(descriptor); } }
 }

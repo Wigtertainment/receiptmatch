@@ -9,7 +9,7 @@ const field = { id, label: text, evidence: evidence.min(1) };
 const amount = moneySchema.extend({ currency: moneySchema.shape.currency.nullable() });
 const amountField = z.strictObject({
 	...field,
-	role: z.enum(['billed-total', 'balance-due', 'payment', 'credit-note-component', 'informational-fx', 'tax', 'subtotal', 'line-item', 'unknown']),
+	role: z.enum(['billed-total', 'balance-due', 'payment', 'refund-payment', 'credit-note-component', 'informational-fx', 'tax', 'subtotal', 'line-item', 'unknown']),
 	candidates: z.array(amount).max(8)
 });
 const dateField = z.strictObject({
@@ -52,7 +52,7 @@ const issue = z.strictObject({
 // Candidate arrays retain alternative readings; no bank payment direction is inferred from document signs or labels.
 export const supportingDocumentSchema = z.strictObject({
 	contractVersion: z.literal('1'),
-	parserVersion: z.literal('1'),
+	parserVersion: z.enum(['1', '2']),
 	status: z.enum(['complete', 'partial', 'failed']),
 	input: bankImportInputSchema.nullable(),
 	sections: z.array(section).max(10000),

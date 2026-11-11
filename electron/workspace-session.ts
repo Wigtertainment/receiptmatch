@@ -6,6 +6,9 @@ import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, type SavedW
 import type { BankImportService } from './import/service.js';
 import type { DocumentImportService } from './documents/service.js';
 import { storedDocumentImportSchema, type StoredDocumentImport, type WorkspaceSource } from '../src/shared/workspace-documents.js';
+import type { MatchDetails, MatchSummary, TransactionMatch } from '../src/shared/workspace-matching.js';
+import { suggestWorkspaceMatches } from './matching.js';
+import { describeMatch, summarizeMatches } from './match-view.js';
 
 export interface WorkspaceDialogs {
   open(): Promise<string | null>;
@@ -34,12 +37,14 @@ export class WorkspaceSession {
   private error: string | null = null;
   private importRecords: StoredBankImport[] = [];
   private documentRecords: StoredDocumentImport[] = [];
+  private matches: TransactionMatch[] = [];
   private importController: AbortController | null = null;
   private statementImport: WorkspaceState['statementImport'] = null;
   private importOutcome: WorkspaceState['importOutcome'] = null;
   private documentImport: WorkspaceState['documentImport'] = null;
   private documentOutcome: WorkspaceState['documentOutcome'] = null;
   private loadRevision = 0;
+  private matchRevision = 0;
   constructor(private readonly dialogs: WorkspaceDialogs, private readonly changed?: (state: WorkspaceState) => void, private readonly importService?: BankImportService,
     private readonly documentService?: DocumentImportService) {}
 
@@ -59,7 +64,8 @@ export class WorkspaceSession {
     }));
     return {
       workspace: this.metadata ? {
-        id: this.metadata.id, loadRevision: this.loadRevision, name: this.metadata.name, dirty: !this.saved || this.metadata.name !== this.saved.metadata.name || !sameImports || !sameDocuments,
+        id: this.metadata.id, loadRevision: this.loadRevision, matchRevision: this.matchRevision, name: this.metadata.name,
+        dirty: !this.saved || this.metadata.name !== this.saved.metadata.name || !sameImports || !sameDocuments,
         filePath: this.saved?.filePath ?? null, savedAt: this.saved?.metadata.savedAt ?? null, imports, documentImports
       } : null,
       busy: this.busy, error: this.error, statementImport: structuredClone(this.statementImport), importOutcome: structuredClone(this.importOutcome),
@@ -68,6 +74,15 @@ export class WorkspaceSession {
   }
   bankImports(): StoredBankImport[] { return structuredClone(this.importRecords); }
   documentImports(): StoredDocumentImport[] { return structuredClone(this.documentRecords); }
+  matchResults(): TransactionMatch[] { return structuredClone(this.matches); }
+  matchSummaries(revision: number): MatchSummary[] | null {
+    return this.metadata && revision === this.matchRevision ? summarizeMatches(this.matches, this.importRecords) : null;
+  }
+  matchDetails(revision: number, transactionId: string): MatchDetails | null {
+    if (!this.metadata || revision !== this.matchRevision) return null;
+    const match = this.matches.find(row => row.transactionId === transactionId);
+    return match ? describeMatch(match, this.importRecords, this.documentRecords) : null;
+  }
   private sources(): WorkspaceSource[] {
     const sources = new Map((this.saved?.sources ?? []).map(source => [source.id, source]));
     for (const record of this.importRecords) {
@@ -94,6 +109,7 @@ export class WorkspaceSession {
     this.metadata = { ...this.saved.metadata };
     this.importRecords = structuredClone(this.saved.imports);
     this.documentRecords = structuredClone(this.saved.documentImports);
+    this.matches = structuredClone(this.saved.matches);
     return true;
   }
   private async canLeave(): Promise<boolean> {
@@ -133,7 +149,11 @@ export class WorkspaceSession {
       ];
       const existingIds = new Set([...this.importRecords.flatMap(identities), ...this.documentIdentities(), ...this.sources().map(source => source.id), this.metadata!.id].map(id => id.toLowerCase()));
       if (identities(record).some(id => existingIds.has(id.toLowerCase()))) { this.failedImport('invalid-import', 'The statement import contains reused workspace identities.'); return; }
-      this.importRecords = [...this.importRecords, record];
+      const imports = [...this.importRecords, record];
+      const matches = suggestWorkspaceMatches(imports, this.documentRecords);
+      this.importRecords = imports;
+      this.matches = matches;
+      this.matchRevision++;
       this.importOutcome = { status: 'imported', importId: record.id, issues: structuredClone(record.result.issues) };
     } else if (result.status === 'skipped') {
       if (result.importId === null) {
@@ -182,7 +202,12 @@ export class WorkspaceSession {
         if (sources.get(file.existingSourceId)?.sha256 !== file.sha256) throw new Error('The skipped file does not identify existing source content.');
       } else if (file.status === 'failed' && file.analysis?.input) reserve(file.analysis.input.source.sourceId);
     }
-    this.documentRecords = [...this.documentRecords, record];
+    const imports = [...this.documentRecords, record];
+    const hasNewDocuments = record.files.some(file => file.status === 'imported');
+    const matches = hasNewDocuments ? suggestWorkspaceMatches(this.importRecords, imports) : this.matches;
+    this.documentRecords = imports;
+    this.matches = matches;
+    if (hasNewDocuments) this.matchRevision++;
     this.documentOutcome = { status: record.status, importId: record.id, issues: [] };
   }
   async dispatch(command: WorkspaceCommand): Promise<WorkspaceState> {
@@ -215,7 +240,10 @@ export class WorkspaceSession {
         case 'import-statement': await this.importStatement(); break;
         case 'import-documents': await this.importDocuments(); break;
         case 'new':
-          if (await this.canLeave()) { this.metadata = newMetadata(); this.saved = null; this.importRecords = []; this.documentRecords = []; this.importOutcome = null; this.documentOutcome = null; this.loadRevision++; }
+          if (await this.canLeave()) {
+            this.metadata = newMetadata(); this.saved = null; this.importRecords = []; this.documentRecords = []; this.matches = [];
+            this.importOutcome = null; this.documentOutcome = null; this.loadRevision++; this.matchRevision++;
+          }
           break;
         case 'open': {
           if (!await this.canLeave()) break;
@@ -223,7 +251,8 @@ export class WorkspaceSession {
           if (!selected) break;
           const loaded = await loadWorkspace(selected);
           this.metadata = { ...loaded.metadata }; this.saved = loaded; this.importRecords = structuredClone(loaded.imports); this.documentRecords = structuredClone(loaded.documentImports);
-          this.importOutcome = null; this.documentOutcome = null; this.loadRevision++;
+          this.matches = structuredClone(loaded.matches);
+          this.importOutcome = null; this.documentOutcome = null; this.loadRevision++; this.matchRevision++;
           break;
         }
       }

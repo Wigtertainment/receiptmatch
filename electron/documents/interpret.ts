@@ -8,6 +8,12 @@ type ReferenceRole = DocumentSection['references'][number]['role'];
 const code = '(?:EUR|USD|GBP|CHF|CAD|AUD|NZD|JPY|CNY|HKD|SGD|SEK|NOK|DKK|PLN|CZK|RON|HUF|INR|BRL|ZAR|AED|ILS|TRY)';
 const currencyPattern = new RegExp(`\\b${code}\\b`, 'g');
 const numberPattern = /(?<![\p{L}\d])(?:[-−+(]\s*)*(?:[$€£]\s*)?(?:[-−+(]\s*)*\d[\d.,'’]*(?: \d{3}(?!\d)(?:[.,'’]\d+)*)*(?:\s*\))?[\p{L}?+−-]*/gu;
+const amountText = `(?:${code}\\s*)?[-−+(\\s]*[$€£]?\\s*\\d[\\d.,'’]*(?: \\d{3}(?:[.,'’]\\d+)*)*\\s*\\)?(?:\\s*${code})?`;
+const explicitRefund = new RegExp(`^\\s*(?:amount refunded|refunded amount|refund issued|refund paid|refund completed)\\s*:?\\s*${amountText}\\s*$`, 'i');
+const explicitPayment = new RegExp(`^\\s*(?:payment(?: received| made| completed)?|paid amount|amount paid|cash (?:amount|payment)|received payment|gezahlter betrag)\\s*:?\\s*${amountText}\\s*$`, 'i');
+const appliedTransactions = /applied transactions?:?$/i;
+const endPaymentBlock = /balance due|subtotal|invoice total|grand total/i;
+const plannedPayment = /^\s*payment\s+(?:scheduled|pending|due|expected|planned)\b/i;
 const monthNames = [
 	['jan', 'january', 'januar'], ['feb', 'february', 'februar'], ['mar', 'march', 'mär', 'märz'], ['apr', 'april'], ['may', 'mai'], ['jun', 'june', 'juni'],
 	['jul', 'july', 'juli'], ['aug', 'august'], ['sep', 'sept', 'september'], ['oct', 'october', 'okt', 'oktober'], ['nov', 'november'], ['dec', 'december', 'dez', 'dezember']
@@ -59,6 +65,7 @@ function heading(raw: string): DocumentSection['kind'] | null {
 }
 function amountRole(raw: string, kind: DocumentSection['kind'], paymentBlock: boolean, informationalFx: boolean): AmountRole | null {
 	if (/exchange rate|pricing currency|informational (?:fx|amount)/i.test(raw) || informationalFx) return 'informational-fx';
+	if (explicitRefund.test(raw)) return 'refund-payment';
 	const totalRole = kind === 'credit-note' ? 'credit-note-component' : 'billed-total';
 	const labels: [AmountRole, RegExp][] = [
 		['credit-note-component', /credit note total|gutschriftsbetrag|credit[- ]note component/gi],
@@ -153,6 +160,63 @@ function dateRole(raw: string): DateRole {
 	return matches.sort((a, b) => b.index - a.index)[0]?.role ?? 'unknown';
 }
 const referencePattern = /\b(tax invoice number|credit note number|invoice (?:number|no\.?|#)|invoice\s*#|receipt (?:number|no\.?|#)|document no\.?|billing number|bill no\.?|order (?:number|no\.?|#)|customer (?:number|no\.?|#)|account (?:number|no\.?|#)|table (?:number|no\.?|#)|payment (?:reference|id)|reference|rechnungsnummer|rechnungsnr\.?|kundennummer|mandantennummer|auftragsnr\.?|bestellnummer|transaktions-id)\s*[:#]?\s*/ig;
+const referenceValue = /^[\p{L}\d][\p{L}\d_\-/.]*(?:[ \t]+[\p{L}\d][\p{L}\d_\-/.]*)*$/u;
+function referencesOnLine(line: string) {
+	const matches = [...line.matchAll(referencePattern)];
+	return matches.map((match, index) => ({ label: match[1], value: line.slice(match.index! + match[0].length, matches[index + 1]?.index).trim() }));
+}
+export function hasFullDocumentReference(field: DocumentSection['references'][number], value: string): boolean {
+	const lines = field.evidence.flatMap(item => referencesOnLine(item.rawText));
+	const labelled = lines.filter(line => line.label.toLowerCase() === field.label.toLowerCase());
+	return labelled.some(line => line.value === value) ||
+		(labelled.some(line => !line.value) && field.evidence.some(item => item.rawText.trim() === value));
+}
+export function recordedDocumentPayments(result: SupportingDocument): Set<string> {
+	const recorded = new Set<string>();
+	const unclassified = new Map<string, string[]>();
+	const evidenceKey = (item: SourceEvidence) => JSON.stringify([item.pageId, item.region.x, item.region.y, item.rawText]);
+	for (const section of result.sections) for (const field of section.amounts) {
+		if (field.role !== 'payment' || plannedPayment.test(field.label)) continue;
+		if (explicitPayment.test(field.label) || field.evidence.some(item => appliedTransactions.test(item.rawText))) recorded.add(field.id);
+		else for (const item of field.evidence) {
+			const key = evidenceKey(item);
+			const fields = unclassified.get(key) ?? [];
+			fields.push(field.id);
+			unclassified.set(key, fields);
+		}
+	}
+	if (!unclassified.size) return recorded;
+	// Older imports retain the payment row but may omit its table heading from the field evidence.
+	for (const page of result.input?.pages ?? []) {
+		let inPaymentBlock = false;
+		for (const line of linesOf({ ...page, spans: [...page.spans].sort(order) })) {
+			if (appliedTransactions.test(line.text)) inPaymentBlock = true;
+			else if (heading(line.text) || endPaymentBlock.test(line.text)) inPaymentBlock = false;
+			if (inPaymentBlock) for (const item of source(line)) {
+				for (const fieldId of unclassified.get(evidenceKey(item)) ?? []) recorded.add(fieldId);
+			}
+		}
+	}
+	return recorded;
+}
+
+export function mergedLegacySections(result: SupportingDocument): Set<string> {
+	const merged = new Set<string>();
+	if (result.parserVersion !== '1' || !result.input) return merged;
+	const pageHeadings = new Map(result.input.pages.map(page => [page.pageId, linesOf(page).map(line => heading(line.text))]));
+	const possiblyMerged = result.sections.filter(section => (section.kind === 'invoice' || section.kind === 'receipt') &&
+		section.pageIds.flatMap(pageId => pageHeadings.get(pageId) ?? []).filter(kind => kind === section.kind).length > 1);
+	if (!possiblyMerged.length) return merged;
+	const updated = interpretSupportingDocument(result.input);
+	const locatedFields = (section: DocumentSection) => [...section.amounts, ...section.references].flatMap(field => field.evidence.map(item =>
+		JSON.stringify([item.pageId, item.region.x, item.region.y, item.rawText])));
+	const updatedSections = updated.sections.map(section => new Set(locatedFields(section)));
+	for (const section of possiblyMerged) {
+		const fields = locatedFields(section);
+		if (updated.status === 'failed' || updatedSections.filter(locations => fields.some(field => locations.has(field))).length > 1) merged.add(section.sectionId);
+	}
+	return merged;
+}
 function referenceRole(label: string, section: DocumentSection): ReferenceRole {
 	if (/customer|kunden|mandanten/i.test(label)) return 'customer';
 	if (/account/i.test(label)) return 'account';
@@ -166,7 +230,7 @@ function referenceRole(label: string, section: DocumentSection): ReferenceRole {
 
 export function interpretSupportingDocument(rawInput: unknown): SupportingDocument {
 	const checked = bankImportInputSchema.safeParse(rawInput);
-	if (!checked.success) return supportingDocumentSchema.parse({ contractVersion: '1', parserVersion: '1', status: 'failed', input: null, sections: [],
+	if (!checked.success) return supportingDocumentSchema.parse({ contractVersion: '1', parserVersion: '2', status: 'failed', input: null, sections: [],
 		issues: [issue('invalid-input', 'The extracted document does not satisfy the positioned-text contract.')] });
 	const input: BankImportInput = checked.data;
 	for (const page of input.pages) page.spans.sort(order);
@@ -189,16 +253,16 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 			addIssue(page.status === 'failed' ? 'page-failed' : 'missing-text', 'This source page could not provide readable document text.');
 			continue;
 		}
-		let paymentBlock = false;
+		let paymentBlock: SourceEvidence[] = [];
 		const fxPage = lines.some(line => /^(?:exchange rate|pricing currency)\b/i.test(line.text));
 		for (const [index, line] of lines.entries()) {
 			if (fieldNumber >= 9000 || sections.length >= 9000 || issues.length >= 9000) { addIssue('interpretation-limit', 'Further field interpretation exceeded the local limit; full source text is retained.'); break pages; }
 			const kind = heading(line.text);
 			const pageStartHeading = index < 4 && kind !== null;
 			const followingReferences = kind ? lines.slice(index + 1, lines.findIndex((next, nextIndex) => nextIndex > index && heading(next.text)) < 0 ? undefined :
-				lines.findIndex((next, nextIndex) => nextIndex > index && heading(next.text))).flatMap(next => [...next.text.matchAll(referencePattern)].flatMap(match => {
-					if (!/^(?:tax invoice|credit note|invoice|rechnungsnummer|rechnungsnr|document no|billing number)/i.test(match[1])) return [];
-					return /^([\p{L}\d][\p{L}\d_\-/.]*)/u.exec(next.text.slice(match.index! + match[0].length).trim())?.[1] ?? [];
+				lines.findIndex((next, nextIndex) => nextIndex > index && heading(next.text))).flatMap(next => referencesOnLine(next.text).flatMap(({ label, value }) => {
+					if (!/^(?:tax invoice|credit note|invoice|rechnungsnummer|rechnungsnr|document no|billing number)/i.test(label)) return [];
+					return referenceValue.test(value) ? [value] : [];
 				})) : [];
 			const knownReferences = current?.references.filter(field => field.role === 'invoice').flatMap(field => field.candidates) ?? [];
 			const sameDocument = kind === current?.kind && followingReferences.length > 0 && knownReferences.length > 0 && followingReferences.every(value => knownReferences.includes(value));
@@ -206,35 +270,33 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 			if (!current) current = createSection(page, kind ?? 'unknown', line);
 			else if (kind && current.kind === 'unknown' && current.pageIds.length === 1 && current.pageIds[0] === page.pageId) {
 				current.kind = kind; current.evidence = source(line);
-			} else if (kind && (kind !== current.kind || changedReference || (pageStartHeading && !current.pageIds.includes(page.pageId) && !sameDocument))) {
-				if (kind === 'payment-information' && !pageStartHeading) { paymentBlock = false; }
-				else current = createSection(page, kind, line);
+			} else if (kind && (kind !== current.kind || changedReference || (pageStartHeading && !current.pageIds.includes(page.pageId) && !sameDocument) ||
+				(!sameDocument && (kind === 'invoice' || kind === 'receipt') && current.pageIds.includes(page.pageId)))) {
+				paymentBlock = [];
+				if (kind !== 'payment-information' || pageStartHeading) current = createSection(page, kind, line);
 			}
 			if (!current.pageIds.includes(page.pageId)) current.pageIds.push(page.pageId);
 			const recordedLines = sectionLines.get(current.sectionId) ?? [];
 			recordedLines.push(line); sectionLines.set(current.sectionId, recordedLines);
 			const evidence = source(line);
 			if (/\0|\(cid:\d+\)|�/.test(line.text)) addIssue('uncertain-text', 'Source text contains unreadable glyphs; retain the printed evidence for correction.', current, null, null, evidence);
-			if (/applied transactions?:?$/i.test(line.text)) paymentBlock = true;
-			else if (/balance due|subtotal|invoice total|grand total/i.test(line.text)) paymentBlock = false;
+			if (appliedTransactions.test(line.text)) paymentBlock = evidence;
+			else if (endPaymentBlock.test(line.text)) paymentBlock = [];
 			const ownCurrencies = currencies(line.text);
 			if (ownCurrencies.length && (/\bcurrency\b|betrag in|\(EUR\)|\(USD\)|\(GBP\)/i.test(line.text) || current.kind === 'payment-information' && fxPage)) {
 				current.currencies.push({ id: nextId(), role: current.kind === 'payment-information' && fxPage || /pricing currency|exchange rate/i.test(line.text) ? 'informational-fx' : 'settlement',
 					label: line.text.slice(0, 16384), candidates: ownCurrencies, evidence });
 			}
-			const referenceMatches = [...line.text.matchAll(referencePattern)];
-			for (const [refIndex, match] of referenceMatches.entries()) {
+			for (const { label, value } of referencesOnLine(line.text)) {
 				if (fieldNumber >= 9000) { addIssue('interpretation-limit', 'Further field interpretation exceeded the local limit; full source text is retained.'); break pages; }
-				const tail = line.text.slice(match.index! + match[0].length, referenceMatches[refIndex + 1]?.index).trim();
-				const value = tail.split(/\s+/)[0] || null;
 				const next = lines[index + 1];
-				const continuation = !tail && next && /^[\p{L}\d][\p{L}\d_\-/.\0]+$/u.test(next.text.trim()) ? next : null;
-				current.references.push({ id: nextId(), role: referenceRole(match[1], current), label: match[1], candidates: value && /^[\p{L}\d][\p{L}\d_\-/.]*$/u.test(value) ? [value] : continuation ? [continuation.text.trim()] : [],
+				const continuation = !value && next && /^[\p{L}\d][\p{L}\d_\-/.]+$/u.test(next.text.trim()) ? next : null;
+				current.references.push({ id: nextId(), role: referenceRole(label, current), label, candidates: referenceValue.test(value) ? [value] : continuation ? [continuation.text.trim()] : [],
 					evidence: continuation ? [...evidence, ...source(continuation)] : evidence });
 			}
 			const merchant = /\b(?:merchant|seller|supplier|issued by|aussteller|lieferant)\s*:\s*(.+)$/i.exec(line.text);
 			if (merchant && !/received by/i.test(merchant[1])) current.merchants.push({ id: nextId(), role: 'merchant', label: merchant[0], candidates: [merchant[1].trim()], evidence });
-			const dateMatches = [...line.text.matchAll(datePattern)].filter(match => dateRole(line.text.slice(0, match.index)) !== 'unknown' || dateCandidates(match[0]).length > 0 || !amountRole(line.text, current!.kind, paymentBlock, current!.kind === 'payment-information' && fxPage));
+			const dateMatches = [...line.text.matchAll(datePattern)].filter(match => dateRole(line.text.slice(0, match.index)) !== 'unknown' || dateCandidates(match[0]).length > 0 || !amountRole(line.text, current!.kind, paymentBlock.length > 0, current!.kind === 'payment-information' && fxPage));
 			const periodDates = dateMatches.filter(match => dateRole(line.text.slice(0, match.index)) === 'service-period');
 			for (const [dateIndex, match] of dateMatches.entries()) {
 				if (fieldNumber >= 9000) { addIssue('interpretation-limit', 'Further field interpretation exceeded the local limit; full source text is retained.'); break pages; }
@@ -246,7 +308,7 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 				const next = lines[index + 1], values = dateCandidates(next.text.trim());
 				if (values.length) current.dates.push({ id: nextId(), role: dateRole(line.text), label: line.text, candidates: values, evidence: [...evidence, ...source(next)] });
 			}
-			const amountKind = amountRole(line.text, current.kind, paymentBlock, current.kind === 'payment-information' && fxPage);
+			const amountKind = amountRole(line.text, current.kind, paymentBlock.length > 0, current.kind === 'payment-information' && fxPage);
 			if (!amountKind) for (const cell of columnAmounts(line, lines[index + 1], current.kind, lines[index - 1])) {
 				const numeric = cell.value.replace(currencyPattern, '').trim(), own = currencies(cell.value);
 				const candidates = numberCandidates(numeric).map(value => ({ ...value, currency: own.length === 1 ? own[0] : null }));
@@ -270,8 +332,9 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 				const token = match[0].endsWith(',') && /^\s/.test(line.text.slice(match.index! + match[0].length)) ? match[0].slice(0, -1) : match[0];
 				const values = numberCandidates(`${prefixSign}${token}`);
 				const candidates = values.flatMap<DocumentSection['amounts'][number]['candidates'][number]>(value => explicit.length ? explicit.map(currency => ({ ...value, currency })) : [{ ...value, currency: null }]);
-				const role = amountRole(before, current.kind, paymentBlock, current.kind === 'payment-information' && fxPage) ?? amountKind;
-				current.amounts.push({ id: nextId(), role, label: line.text.slice(0, 16384), candidates, evidence });
+				const role = amountKind === 'refund-payment' ? amountKind : amountRole(before, current.kind, paymentBlock.length > 0, current.kind === 'payment-information' && fxPage) ?? amountKind;
+				const amountEvidence = role === 'payment' ? [...paymentBlock, ...evidence] : evidence;
+				current.amounts.push({ id: nextId(), role, label: line.text.slice(0, 16384), candidates, evidence: amountEvidence });
 			}
 		}
 	}
@@ -314,8 +377,8 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 	}
 	for (const item of input.issues) addIssue(item.code, item.message, undefined, null, item.field, item.evidence);
 	if (!sections.length) addIssue('no-readable-document', 'No readable document sections were established.');
-	const result = issueOverflow ? null : supportingDocumentSchema.safeParse({ contractVersion: '1', parserVersion: '1', status: sections.length ? issues.length ? 'partial' : 'complete' : 'failed', input, sections, issues });
+	const result = issueOverflow ? null : supportingDocumentSchema.safeParse({ contractVersion: '1', parserVersion: '2', status: sections.length ? issues.length ? 'partial' : 'complete' : 'failed', input, sections, issues });
 	if (result?.success) return result.data;
-	return supportingDocumentSchema.parse({ contractVersion: '1', parserVersion: '1', status: 'failed', input, sections: [],
+	return supportingDocumentSchema.parse({ contractVersion: '1', parserVersion: '2', status: 'failed', input, sections: [],
 		issues: [issue('interpretation-limit', 'The interpreted fields exceed the validated local contract; full extracted source text is retained.')] });
 }

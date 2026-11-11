@@ -3,6 +3,7 @@ import type { ExtractionProgress } from './pdf-extraction.js';
 import type { BankImportSummary, StoredBankImport } from './workspace-import.js';
 import type { ImportIssue } from './bank-import.js';
 import type { DocumentImportProgress, StoredDocumentImport } from './workspace-documents.js';
+import type { MatchDetails, MatchSummary } from './workspace-matching.js';
 
 export const workspaceName = z.string().max(120);
 export const commandSchema = z.discriminatedUnion('type', [
@@ -16,8 +17,9 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('rename'), name: workspaceName })
 ]);
 export type WorkspaceCommand = z.infer<typeof commandSchema>;
+export const matchRequestSchema = z.strictObject({ revision: z.number().int().nonnegative(), transactionId: z.uuid().optional() });
 export interface DocumentImportSummary { id: string; folderPath: string; status: 'finished' | 'cancelled'; imported: number; skipped: number; failed: number; unsupported: number; directoryIssues: number; }
-export interface WorkspaceView { id: string; loadRevision: number; name: string; filePath: string | null; dirty: boolean; savedAt: string | null; imports: BankImportSummary[]; documentImports: DocumentImportSummary[]; }
+export interface WorkspaceView { id: string; loadRevision: number; matchRevision: number; name: string; filePath: string | null; dirty: boolean; savedAt: string | null; imports: BankImportSummary[]; documentImports: DocumentImportSummary[]; }
 export interface ImportOutcome { status: 'imported' | 'skipped' | 'cancelled' | 'failed' | 'unsupported'; importId: string | null; issues: ImportIssue[]; }
 export interface WorkspaceState {
   workspace: WorkspaceView | null;
@@ -32,5 +34,7 @@ export interface WorkspaceBridge {
   command(value: WorkspaceCommand): Promise<WorkspaceState>;
   bankImports(): Promise<StoredBankImport[]>;
   documentImports(): Promise<StoredDocumentImport[]>;
+  matchSummaries(revision: number): Promise<MatchSummary[] | null>;
+  matchDetails(revision: number, transactionId: string): Promise<MatchDetails | null>;
   subscribe(listener: (state: WorkspaceState) => void): () => void;
 }

@@ -20,7 +20,7 @@ const kinds: Record<DocumentSection['kind'], string> = {
     'payment-information': 'Payment information', unknown: 'Unrecognized section'
 };
 const amountRoles: Record<DocumentSection['amounts'][number]['role'], string> = {
-    'billed-total': 'Billed total', 'balance-due': 'Balance due', payment: 'Payment', 'credit-note-component': 'Credit note component',
+    'billed-total': 'Billed total', 'balance-due': 'Balance due', payment: 'Payment', 'refund-payment': 'Refund paid', 'credit-note-component': 'Credit note component',
     'informational-fx': 'Informational FX value', tax: 'Tax', subtotal: 'Subtotal', 'line-item': 'Line item', unknown: 'Unrecognized amount'
 };
 const dateRoles: Record<DocumentSection['dates'][number]['role'], string> = {
