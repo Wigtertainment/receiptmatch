@@ -57,7 +57,7 @@ npm run test:ui-import
 
 `npm run test:development` builds and exercises direct Electron execution, SQLite/local OCR and live CSS replacement without a distribution package. It temporarily adds an isolated marker to `src/styles.css` and restores the original bytes afterward; avoid editing that file during this check.
 
-`npm run test:unit` prepares its own compiled test modules. Before running packaged checks separately, run `npm run build:tests` and the packaging command for your platform. They exercise the actual desktop executable; generated results and screenshots go under ignored `artifacts/`. Remove temporary `release/`, `.build/`, `.angular/` and test outputs after successful use.
+`npm run test:unit` prepares its own compiled test modules. Run the packaging command for your platform before running checks against the desktop executable. `npm run test:packaged` runs the workspace smoke test with Playwright Test. The other packaged checks still require `npm run build:tests` when run separately. Generated results and screenshots go under ignored `artifacts/`. Remove temporary `release/`, `.build/`, `.angular/` and test outputs after successful use.
 
 Extraction checks exercise isolated PDF text and local English OCR using synthetic PDF, PNG and JPEG inputs and bundled resources, including image limits, orientation and failures.
 
