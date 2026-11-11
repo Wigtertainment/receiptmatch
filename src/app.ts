@@ -1,13 +1,14 @@
 import { Component, DestroyRef, inject, signal } from '@angular/core';
 import { bootstrapApplication } from '@angular/platform-browser';
 import { DocumentImports } from './app/document-imports.js';
+import { MatchSuggestions } from './app/match-suggestions.js';
 import type { WorkspaceBridge, WorkspaceCommand, WorkspaceState } from './shared/protocol.js';
 import { StatementImports } from './statement-imports.js';
 
 declare global { interface Window { receiptmatch: WorkspaceBridge; } }
 
 @Component({
-  selector: 'app-root', standalone: true, imports: [StatementImports, DocumentImports],
+  selector: 'app-root', standalone: true, imports: [StatementImports, DocumentImports, MatchSuggestions],
   template: `
     <header class="toolbar">
       <div class="identity"><span class="brand-mark" aria-hidden="true">r<span>m</span></span><strong>ReceiptMatch</strong></div>
@@ -29,8 +30,11 @@ declare global { interface Window { receiptmatch: WorkspaceBridge; } }
             <div class="saved-row"><span class="detail-label">Status</span><p aria-live="polite">{{ workspace.dirty ? 'You have unsaved changes.' : 'Your workspace is saved on this computer.' }}</p></div>
           </div>
           @if (!workspace.filePath) { <div class="save-prompt"><p>Save your workspace to come back to it later.</p><button class="button-primary" (click)="run({type:'save'})" [disabled]="state().busy">Save workspace <span aria-hidden="true">↗</span></button></div> }
-          <app-statement-imports [state]="state()" (workspaceCommand)="run($event)" />
-          <app-document-imports [state]="state()" (workspaceCommand)="run($event)" />
+          <div class="workspace-imports">
+            <app-statement-imports [state]="state()" (workspaceCommand)="run($event)" />
+            <app-document-imports [state]="state()" (workspaceCommand)="run($event)" />
+          </div>
+          <app-match-suggestions [workspace]="workspace" />
         </section>
       } @else {
         <section class="welcome" aria-labelledby="welcome-heading">

@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, session } from 'el
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { commandSchema, type WorkspaceState } from '../src/shared/protocol.js';
+import { commandSchema, matchRequestSchema, type WorkspaceState } from '../src/shared/protocol.js';
 import { WorkspaceSession } from './workspace-session.js';
 import { StatementImportService } from './import/service.js';
 import { FolderDocumentImportService } from './documents/service.js';
@@ -86,6 +86,13 @@ async function launch() {
   ipcMain.handle('workspace:document-imports', (event, ...payload: unknown[]) => {
     if (!authorized(event) || payload.length) throw new Error('Workspace request denied.');
     return workspace.documentImports();
+  });
+  ipcMain.handle('workspace:matches', (event, ...payload: unknown[]) => {
+    if (!authorized(event) || payload.length !== 1) throw new Error('Workspace request denied.');
+    const request = matchRequestSchema.safeParse(payload[0]);
+    if (!request.success) throw new Error('Workspace request denied.');
+    const { revision, transactionId } = request.data;
+    return transactionId ? workspace.matchDetails(revision, transactionId) : workspace.matchSummaries(revision);
   });
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));

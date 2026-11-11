@@ -1,9 +1,6 @@
 <section class="statement-imports" aria-labelledby="statements-heading">
 	<div class="section-heading">
-		<div>
-			<div class="eyebrow">BANK STATEMENTS</div>
-			<h2 id="statements-heading">Read your records.</h2>
-		</div>
+		<h2 id="statements-heading">Bank statements</h2>
 		<button class="button-primary compact" (click)="workspaceCommand.emit({type:'import-statement'})" [disabled]="state().busy">Import statement</button>
 	</div>
 	@if (state().statementImport; as active) {
