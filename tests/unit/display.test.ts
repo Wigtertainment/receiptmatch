@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { formatCalendarDate, formatMoney } from '../../src/shared/display.js';
@@ -30,7 +30,7 @@ test('calendar display follows locale order without changing the printed booking
 });
 
 test('calendar display keeps the same booking day in distant host time zones', () => {
-    const moduleUrl = new URL('../../src/shared/display.js', import.meta.url).href;
+    const moduleUrl = new URL('../../src/shared/display.ts', import.meta.url).href;
     for (const zone of ['Pacific/Honolulu', 'Pacific/Kiritimati']) {
         const code = "const {formatCalendarDate,formatMoney}=await import(process.argv[1]);console.log(JSON.stringify({date:formatCalendarDate('2032-02-28','en-US'),money:formatMoney({coefficient:'900719925474099301',currency:'EUR',scale:2},'en-US')}));";
         const run = spawnSync(process.execPath, ['--input-type=module', '-e', code, moduleUrl], { encoding: 'utf8', env: { ...process.env, TZ: zone }, timeout: 10000, windowsHide: true });

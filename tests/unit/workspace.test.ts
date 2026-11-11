@@ -1,4 +1,4 @@
-import test, { mock } from 'node:test';
+import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import fsModule from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
@@ -70,7 +70,7 @@ for (const operation of ['create', 'save'] as const) test(`${operation} captures
   const existing = operation === 'save' ? await createWorkspace(file, newMetadata()) : null;
   const originalRead = fsModule.readSync; let reads = 0; let attempts = 0;
   const captureRead = operation === 'create' ? 1 : 3;
-  const probe = mock.method(fsModule, 'readSync', ((selected: unknown, ...rest: unknown[]) => {
+  const probe = vi.spyOn(fsModule, 'readSync').mockImplementation(((selected: unknown, ...rest: unknown[]) => {
     if (rest[2] === 65536 && rest[3] === 0 && fsModule.fstatSync(Number(selected)).ino === fsModule.statSync(file).ino && ++reads === captureRead) {
       attempts++;
       const other = spawnSync(process.execPath, ['-e', "const Database=require('better-sqlite3');let db;try{db=new Database(process.argv[1],{timeout:0});db.prepare('UPDATE workspace SET name=?').run('External writer');process.exitCode=2;}catch(error){if(error.code==='SQLITE_BUSY'){console.log(error.code);}else{console.error(error);process.exitCode=3;}}finally{db?.close();}", file], { encoding: 'utf8', timeout: 10000, windowsHide: true });
@@ -81,7 +81,7 @@ for (const operation of ['create', 'save'] as const) test(`${operation} captures
   syncBuiltinESMExports();
   let saved;
   try { saved = existing ? await saveWorkspace(existing, { ...existing.metadata, name: metadata.name }) : await createWorkspace(file, metadata); }
-  finally { probe.mock.restore(); syncBuiltinESMExports(); }
+  finally { probe.mockRestore(); syncBuiltinESMExports(); }
   assert.equal(attempts, 1, 'Probe must run at committed-file capture, not merely before commit');
   assert.equal(saved.fingerprint, await fingerprint(file)); assert.equal((await loadWorkspace(file)).metadata.name, 'Protected revision');
 });

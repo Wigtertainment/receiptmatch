@@ -1,4 +1,4 @@
-import test, { mock } from "node:test";
+import { test, vi } from "vitest";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import fsPromises from "node:fs/promises";
@@ -123,7 +123,7 @@ test("directory links are reported without following them and unreadable sibling
 	const link = path.join(folder, "linked");
 	await symlink(external, link, "junction");
 	const original = fsPromises.opendir;
-	const patched = mock.method(fsPromises, "opendir", ((selected: unknown, ...args: unknown[]) => {
+	const patched = vi.spyOn(fsPromises, "opendir").mockImplementation(((selected: unknown, ...args: unknown[]) => {
 		if (String(selected) === path.join(folder, "denied")) return Promise.reject(Object.assign(new Error("Synthetic access denial."), { code: "EACCES" }));
 		return Reflect.apply(original, fsPromises, [selected, ...args]);
 	}) as typeof fsPromises.opendir);
@@ -137,7 +137,7 @@ test("directory links are reported without following them and unreadable sibling
 		assert.ok(run.files.some((file) => file.status === "unsupported" && file.filePath === link) || run.directoryIssues.some((issue) => issue.directoryPath === link));
 		assert.ok(!run.files.some((file) => (file.status === "imported" ? file.record.filePath : file.filePath).includes("outside.pdf")));
 	} finally {
-		patched.mock.restore();
+		patched.mockRestore();
 		syncBuiltinESMExports();
 		await unlink(link);
 	}
@@ -181,12 +181,12 @@ test("a transient ancestor replacement cannot replace the file identity selected
 	const originalLstat = fsPromises.lstat,
 		originalOpen = fsPromises.open;
 	let selections = 0;
-	const statPatch = mock.method(fsPromises, "lstat", (async (selected: unknown, ...args: unknown[]) => {
+	const statPatch = vi.spyOn(fsPromises, "lstat").mockImplementation((async (selected: unknown, ...args: unknown[]) => {
 		let requested = selected;
 		if (String(selected) === source && [2, 3].includes(++selections)) requested = external;
 		return Reflect.apply(originalLstat, fsPromises, [requested, ...args]);
 	}) as typeof fsPromises.lstat);
-	const openPatch = mock.method(fsPromises, "open", (async (selected: unknown, ...args: unknown[]) => {
+	const openPatch = vi.spyOn(fsPromises, "open").mockImplementation((async (selected: unknown, ...args: unknown[]) => {
 		return Reflect.apply(originalOpen, fsPromises, [String(selected) === source ? external : selected, ...args]);
 	}) as typeof fsPromises.open);
 	syncBuiltinESMExports();
@@ -205,8 +205,8 @@ test("a transient ancestor replacement cannot replace the file identity selected
 		if (run.files[0].status === "failed") assert.ok(run.files[0].issues.some((issue) => issue.code === "source-changed"));
 		assert.deepEqual(extracted, ["healthy sibling"]);
 	} finally {
-		statPatch.mock.restore();
-		openPatch.mock.restore();
+		statPatch.mockRestore();
+		openPatch.mockRestore();
 		syncBuiltinESMExports();
 	}
 	assert.equal((await readFile(source)).toString(), "selected original");

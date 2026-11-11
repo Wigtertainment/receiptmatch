@@ -1,4 +1,4 @@
-import test, { mock } from 'node:test';
+import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import fsPromises from 'node:fs/promises';
@@ -132,11 +132,12 @@ test('service detects file growth during bounded reads and never passes an unsta
     const { source } = await fixtures();
     const originalOpen = fsPromises.open;
     let changed = false;
-    const probe = mock.method(fsPromises, 'open', (async (...args: Parameters<typeof fsPromises.open>) => {
+    let restoreRead: (() => void) | undefined;
+    const probe = vi.spyOn(fsPromises, 'open').mockImplementation((async (...args: Parameters<typeof fsPromises.open>) => {
         const file = await originalOpen(...args);
         if (args[0] === source) {
             const read = file.read.bind(file);
-            mock.method(file, 'read', (async (...readArgs: Parameters<typeof file.read>) => {
+            const readProbe = vi.spyOn(file, 'read').mockImplementation((async (...readArgs: Parameters<typeof file.read>) => {
                 const result = await Reflect.apply(read, file, readArgs);
                 if (!changed) {
                     changed = true;
@@ -144,6 +145,7 @@ test('service detects file growth during bounded reads and never passes an unsta
                 }
                 return result;
             }) as typeof file.read);
+            restoreRead = () => readProbe.mockRestore();
         }
         return file;
     }) as typeof fsPromises.open);
@@ -160,7 +162,8 @@ test('service detects file growth during bounded reads and never passes an unsta
         assert.equal(result.status, 'failed');
         if (result.status === 'failed') assert.equal(result.issues[0].code, 'source-changed');
     } finally {
-        probe.mock.restore();
+        restoreRead?.();
+        probe.mockRestore();
         syncBuiltinESMExports();
     }
 });

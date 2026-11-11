@@ -46,6 +46,7 @@ Under **Supporting documents**, choose a folder to analyse PDFs, PNGs and JPEGs 
 npm run check
 npm run test:unit
 npm run test:development
+npm run test:electron
 npm run test:packaged
 npm run test:extraction
 npm run test:import
@@ -55,9 +56,9 @@ npm run test:ui-import
 
 `npm run check` runs ESLint with zero tolerated warnings and checks HTML formatting. Use `npm run lint:fix` and `npm run format` to apply available fixes. Prettier uses tabs and a 180-character line width; generated outputs and dependencies are excluded.
 
-`npm run test:development` builds and exercises direct Electron execution, SQLite/local OCR and live CSS replacement without a distribution package. It temporarily adds an isolated marker to `src/styles.css` and restores the original bytes afterward; avoid editing that file during this check.
+`npm run test:development` builds the app and uses Playwright Test to exercise direct Electron execution, SQLite/local OCR and live CSS replacement. It temporarily adds an isolated marker to `src/styles.css` and restores the original bytes afterward. Avoid editing that file during this check.
 
-`npm run test:unit` prepares its own compiled test modules. Before running packaged checks separately, run `npm run build:tests` and the packaging command for your platform. They exercise the actual desktop executable; generated results and screenshots go under ignored `artifacts/`. Remove temporary `release/`, `.build/`, `.angular/` and test outputs after successful use.
+`npm run test:unit` type-checks the unit tests and runs them from TypeScript source with Vitest. Run the packaging command for your platform before running checks against the desktop executable. `npm run test:electron` runs all packaged checks with Playwright Test. Use the individual commands above to run a single suite. Generated results and screenshots go under ignored `artifacts/`. Remove temporary `release/`, `.build/`, `.angular/` and test outputs after successful use.
 
 Extraction checks exercise isolated PDF text and local English OCR using synthetic PDF, PNG and JPEG inputs and bundled resources, including image limits, orientation and failures.
 

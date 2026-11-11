@@ -1,4 +1,4 @@
-import test, { mock } from "node:test";
+import { test, vi } from "vitest";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -197,14 +197,14 @@ test("an append failure rolls back schema migration, document projection and met
 	const saved = await loadWorkspace(file),
 		before = await readFile(file);
 	const original = Database.prototype.prepare;
-	const patched = mock.method(Database.prototype, "prepare", function (this: Database.Database, sql: string) {
+	const patched = vi.spyOn(Database.prototype, "prepare").mockImplementation(function (this: Database.Database, sql: string) {
 		if (sql.startsWith("INSERT INTO documents")) throw new Error("Synthetic document append failure.");
 		return original.call(this, sql);
 	});
 	try {
 		await assert.rejects(() => saveWorkspace(saved, { ...saved.metadata, name: "Never committed" }, [], [documentRun(root)]), /Synthetic/);
 	} finally {
-		patched.mock.restore();
+		patched.mockRestore();
 	}
 	assert.deepEqual(await readFile(file), before);
 	assert.equal((await loadWorkspace(file)).schemaVersion, 2);

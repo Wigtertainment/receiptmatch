@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { embeddedTextGeometry, ocrWordGeometry } from '../../electron/extraction/geometry.js';
 import { extractionResultSchema } from '../../src/shared/pdf-extraction.js';

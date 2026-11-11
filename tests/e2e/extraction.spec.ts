@@ -4,24 +4,86 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { PDFDocument, StandardFonts, degrees } from "pdf-lib";
-import { _electron as electron } from "playwright";
-import { bankImportInputSchema } from "../.build/node/src/shared/bank-import.js";
+import { test as base, type ElectronApplication, type Page } from "@playwright/test";
+import type * as extractionHost from "../../electron/extraction/host.js";
+import { bankImportInputSchema, type ImportPage } from "../../src/shared/bank-import.js";
+import type { ExtractionJob, ExtractionProgress, ExtractionResult } from "../../src/shared/pdf-extraction.js";
 
-await mkdir("artifacts", { recursive: true });
-const root = await mkdtemp(path.resolve("artifacts/extraction-"));
-const reportPath = path.resolve(`artifacts/extraction-${process.platform}.json`);
-const report = { runId: randomUUID(), startedAt: new Date().toISOString(), status: "running", platform: process.platform, syntheticOnly: true, root, checks: [] };
-await writeFile(reportPath, JSON.stringify(report, null, 2));
-let application;
-let page;
-
-async function check(name, action) {
-	const started = performance.now();
-	const detail = await action();
-	report.checks.push({ name, status: "passed", milliseconds: Math.round(performance.now() - started), ...(detail === undefined ? {} : { detail }) });
-	console.log(`PASS ${name}`);
+interface ExtractionReport {
+	runId: string;
+	startedAt: string;
+	status: "running" | "passed" | "failed";
+	platform: NodeJS.Platform;
+	syntheticOnly: boolean;
+	root: string;
+	checks: { name: string; status: "passed"; milliseconds: number; detail?: unknown }[];
+	limits?: string[];
+	error?: string;
+	stack?: string;
+	finishedAt?: string;
 }
-async function pdfFixture(kinds, png) {
+
+interface ExtractionTestScope {
+	extractionTestSessions: { created: number; sessions: Set<Electron.Session> };
+}
+
+interface ExtractionFixture {
+	report: ExtractionReport;
+	check<Detail>(name: string, action: () => Promise<Detail>): Promise<void>;
+	launch(): Promise<ElectronApplication>;
+}
+
+const test = base.extend<{ extraction: ExtractionFixture }>({
+	extraction: async ({ playwright }, use, testInfo) => {
+		await mkdir("artifacts", { recursive: true });
+		const root = await mkdtemp(path.resolve("artifacts/extraction-"));
+		const reportPath = path.resolve(`artifacts/extraction-${process.platform}.json`);
+		const report: ExtractionReport = {
+			runId: randomUUID(),
+			startedAt: new Date().toISOString(),
+			status: "running",
+			platform: process.platform,
+			syntheticOnly: true,
+			root,
+			checks: [],
+		};
+		await writeFile(reportPath, JSON.stringify(report, null, 2));
+		let application: ElectronApplication | undefined;
+
+		async function check<Detail>(name: string, action: () => Promise<Detail>) {
+			const started = performance.now();
+			const detail = await test.step(name, action);
+			report.checks.push({ name, status: "passed", milliseconds: Math.round(performance.now() - started), ...(detail === undefined ? {} : { detail }) });
+		}
+
+		async function launch() {
+			application = await playwright._electron.launch({
+				executablePath: path.resolve(process.platform === "win32" ? "release/win-unpacked/ReceiptMatch.exe" : "release/linux-unpacked/receiptmatch"),
+				args: ["--hidden", "--disable-gpu", `--user-data-dir=${path.join(root, "fresh-profile")}`],
+				timeout: 30000,
+				env: { ...process.env, ELECTRON_ENABLE_LOGGING: "1" },
+			});
+			return application;
+		}
+
+		await use({ report, check, launch });
+
+		let cleanupError: unknown;
+		try {
+			if (application) await application.close();
+		} catch (error) {
+			cleanupError = error;
+		}
+		report.status = testInfo.status === "passed" && cleanupError === undefined ? "passed" : "failed";
+		report.error = testInfo.error?.message ?? testInfo.error?.value ?? (cleanupError === undefined ? undefined : String(cleanupError));
+		report.stack = testInfo.error?.stack ?? (cleanupError instanceof Error ? cleanupError.stack : undefined);
+		report.finishedAt = new Date().toISOString();
+		await writeFile(reportPath, JSON.stringify(report, null, 2));
+		if (cleanupError !== undefined) throw cleanupError;
+	},
+});
+
+async function pdfFixture(kinds: string[], png?: Uint8Array) {
 	const document = await PDFDocument.create();
 	const font = await document.embedFont(StandardFonts.Helvetica);
 	for (const kind of kinds) {
@@ -32,57 +94,68 @@ async function pdfFixture(kinds, png) {
 			sheet.setRotation(degrees(90));
 			sheet.drawText("ROTATEDMARK", { x: 80, y: 100, size: 20, font });
 		}
-		if (kind === "scan") sheet.drawImage(await document.embedPng(png), { x: 0, y: 0, width: 600, height: 180 });
-		if (kind === "same-page") sheet.drawImage(await document.embedPng(png), { x: 0, y: 0, width: 300, height: 90 });
-		if (kind === "scan-long") sheet.drawImage(await document.embedPng(png), { x: 0, y: 0, width: 600, height: 800 });
+		if (kind === "scan" || kind === "same-page" || kind === "scan-long") {
+			assert.ok(png);
+			const size = kind === "scan" ? { width: 600, height: 180 } : kind === "same-page" ? { width: 300, height: 90 } : { width: 600, height: 800 };
+			sheet.drawImage(await document.embedPng(png), { x: 0, y: 0, ...size });
+		}
 	}
 	return document.save();
 }
-function inputOf(result, expected = "complete") {
+function inputOf(result: ExtractionResult, expected = "complete") {
 	assert.equal(result.status, expected, JSON.stringify(result));
+	assert.ok("input" in result);
 	return bankImportInputSchema.parse(result.input);
 }
-function codes(result) {
-	return (result.input?.issues ?? result.issues ?? []).map((issue) => issue.code);
+function codes(result: ExtractionResult) {
+	return ("input" in result ? result.input.issues : result.issues).map((issue) => issue.code);
 }
 
-async function invoke(bytes, mode = "normal", format = "pdf") {
+async function invoke(application: ElectronApplication, bytes: Uint8Array, mode = "normal", format = "pdf") {
 	return application.evaluate(
 		async ({ app, BrowserWindow, ipcMain }, request) => {
 			const { createRequire } = process.getBuiltinModule("module");
 			const { join } = process.getBuiltinModule("path");
 			const { performance } = process.getBuiltinModule("perf_hooks");
 			const require = createRequire(join(app.getAppPath(), "package.json"));
-			const host = require(join(app.getAppPath(), ".build/extraction-host.cjs"));
-			const fileSystem = require("node:fs/promises");
+			const host = require(join(app.getAppPath(), ".build/extraction-host.cjs")) as typeof extractionHost;
+			const fileSystem = require("node:fs/promises") as typeof import("node:fs/promises");
 			const bytes = request.mode === "over-byte-limit" ? new Uint8Array(25 * 1024 * 1024 + 1) : Buffer.from(request.base64, "base64");
 			const controller = new AbortController();
-			const progress = [];
-			const windows = [];
-			const networkProbes = [];
-			const storageProbes = [];
+			const progress: ExtractionProgress[] = [];
+			const windows: (Pick<Electron.WebPreferences, "sandbox" | "contextIsolation" | "nodeIntegration"> & { persistent: boolean })[] = [];
+			const networkProbes: (string | number)[] = [];
+			const storageProbes: (string | null)[] = [];
 			const originalRead = fileSystem.readFile;
 			const originalTimeout = globalThis.setTimeout;
 			const originalEmit = ipcMain.emit;
-			let activeWindow;
+			let activeWindow: Electron.BrowserWindow | undefined;
 			let injected = false;
-			let abortTimer;
+			let abortTimer: NodeJS.Timeout | undefined;
 			let finished = false;
 			let abortedWhilePending = false;
 			if (request.mode === "preabort") controller.abort();
 			if (request.mode === "missing-language") {
-				fileSystem.readFile = async function (file, ...args) {
-					if (String(file).endsWith("eng.traineddata.gz")) throw Object.assign(new Error("Controlled missing English resource"), { code: "ENOENT" });
-					return originalRead.call(this, file, ...args);
-				};
+				fileSystem.readFile = new Proxy(originalRead, {
+					async apply(readFile, receiver, args) {
+						if (String(args[0]).endsWith("eng.traineddata.gz")) throw Object.assign(new Error("Controlled missing English resource"), { code: "ENOENT" });
+						return Reflect.apply(readFile, receiver, args);
+					},
+				});
 			}
 			if (request.mode === "timeout") {
-				globalThis.setTimeout = (callback, delay, ...args) => originalTimeout(callback, delay === 120000 ? 250 : delay, ...args);
+				globalThis.setTimeout = new Proxy(originalTimeout, {
+					apply(setTimeout, receiver, args) {
+						if (args[1] === 120000) args[1] = 250;
+						return Reflect.apply(setTimeout, receiver, args);
+					},
+				});
 			}
-			const created = (_event, window) => {
+			const created = (_event: Electron.Event, window: Electron.BrowserWindow) => {
 				activeWindow = window;
-				globalThis.extractionTestSessions.sessions.add(window.webContents.session);
-				const preferences = window.webContents.getLastWebPreferences();
+				(globalThis as typeof globalThis & ExtractionTestScope).extractionTestSessions.sessions.add(window.webContents.session);
+				const contents = window.webContents as Electron.WebContents & { getLastWebPreferences(): Electron.WebPreferences };
+				const preferences = contents.getLastWebPreferences();
 				windows.push({
 					sandbox: preferences.sandbox,
 					contextIsolation: preferences.contextIsolation,
@@ -95,8 +168,8 @@ async function invoke(bytes, mode = "normal", format = "pdf") {
 					if (channel === "extraction:job" && request.mode === "timeout") return;
 					if (channel === "extraction:job" && request.mode.startsWith("image-forged-") && !injected) {
 						injected = true;
-						const job = args[0];
-						const sheet = { pageId: "page-1", pageNumber: 1, width: 1200, height: 360, status: "complete", spans: [] };
+						const job = args[0] as ExtractionJob;
+						const sheet: ImportPage = { pageId: "page-1", pageNumber: 1, width: 1200, height: 360, status: "complete", spans: [] };
 						const input = { source: { sourceId: job.sourceId, sha256: job.sha256 }, extraction: { runId: job.jobId, version: "" }, pages: [sheet], issues: [] };
 						if (request.mode === "image-forged-pages") input.pages.push({ ...sheet, pageId: "page-2", pageNumber: 2 });
 						if (request.mode === "image-forged-dimensions") sheet.width = 600;
@@ -146,8 +219,7 @@ async function invoke(bytes, mode = "normal", format = "pdf") {
 					}
 					if (channel === "extraction:job" && ["spoof", "wrong-job"].includes(request.mode) && !injected) {
 						injected = true;
-						const job = args[0];
-						const ui = BrowserWindow.getAllWindows().find((candidate) => candidate !== window);
+						const job = args[0] as ExtractionJob;
 						const bogus = {
 							jobId: job.jobId,
 							event: {
@@ -166,6 +238,8 @@ async function invoke(bytes, mode = "normal", format = "pdf") {
 							);
 							return;
 						}
+						const ui = BrowserWindow.getAllWindows().find((candidate) => candidate !== window);
+						if (!ui) throw new Error("The workspace window is missing.");
 						ipcMain.emit("extraction:event", { sender: ui.webContents, senderFrame: window.webContents.mainFrame }, bogus);
 						ipcMain.emit("extraction:event", { sender: window.webContents, senderFrame: { url: "receiptmatch-extraction://engine/index.html" } }, bogus);
 					}
@@ -175,7 +249,7 @@ async function invoke(bytes, mode = "normal", format = "pdf") {
 			app.on("browser-window-created", created);
 			const started = performance.now();
 			try {
-				const onProgress = (value) => {
+				const onProgress = (value: ExtractionProgress) => {
 					progress.push(value);
 					if (value.phase === "ocr" && request.mode === "abort-ocr" && !abortTimer) {
 						abortTimer = originalTimeout(() => {
@@ -185,10 +259,11 @@ async function invoke(bytes, mode = "normal", format = "pdf") {
 					}
 					if (value.phase === "ocr" && request.mode === "crash-ocr" && activeWindow && !activeWindow.isDestroyed()) activeWindow.webContents.forcefullyCrashRenderer();
 				};
+				// The format-rejection check intentionally sends an unsupported format.
 				const pending =
 					request.format === "pdf" && request.mode !== "common-api"
 						? host.extractPdfBytes(bytes, "synthetic-source", { signal: controller.signal, onProgress })
-						: host.extractDocumentBytes(bytes, "synthetic-source", request.format, { signal: controller.signal, onProgress });
+						: host.extractDocumentBytes(bytes, "synthetic-source", request.format as ExtractionJob["format"], { signal: controller.signal, onProgress });
 				let concurrent;
 				if (request.mode === "concurrent") concurrent = await host.extractPdfBytes(bytes, "concurrent-source");
 				if (request.mode === "mutate-source") bytes.fill(0);
@@ -217,7 +292,7 @@ async function invoke(bytes, mode = "normal", format = "pdf") {
 	);
 }
 
-async function imageFixture(format, { transparent = false, blank = false, rotated = false, long = false } = {}) {
+async function imageFixture(page: Page, format: "png" | "jpeg", { transparent = false, blank = false, rotated = false, long = false } = {}) {
 	return Buffer.from(
 		await page.evaluate(
 			({ format, transparent, blank, rotated, long }) => {
@@ -225,6 +300,7 @@ async function imageFixture(format, { transparent = false, blank = false, rotate
 				canvas.width = rotated ? 360 : 1200;
 				canvas.height = rotated ? 1200 : long ? 1600 : 360;
 				const context = canvas.getContext("2d");
+				if (!context) throw new Error("Could not create the fixture canvas.");
 				if (!transparent) {
 					context.fillStyle = "white";
 					context.fillRect(0, 0, canvas.width, canvas.height);
@@ -248,12 +324,12 @@ async function imageFixture(format, { transparent = false, blank = false, rotate
 		"base64",
 	);
 }
-function withExifOrientation(bytes, orientation) {
+function withExifOrientation(bytes: Uint8Array, orientation: number) {
 	const payload = Buffer.from([69, 120, 105, 102, 0, 0, 73, 73, 42, 0, 8, 0, 0, 0, 1, 0, 18, 1, 3, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
 	payload.writeUInt16LE(orientation, 24);
 	return Buffer.concat([bytes.subarray(0, 2), Buffer.from([255, 225, 0, 34]), payload, bytes.subarray(2)]);
 }
-function jpegWithSofFirst(bytes) {
+function jpegWithSofFirst(bytes: Uint8Array) {
 	const jpeg = Buffer.from(bytes),
 		segments = [];
 	let offset = 2;
@@ -267,19 +343,18 @@ function jpegWithSofFirst(bytes) {
 	return Buffer.concat([jpeg.subarray(0, 2), frame.bytes, ...segments.filter((segment) => segment !== frame).map((segment) => segment.bytes), jpeg.subarray(offset)]);
 }
 
-try {
-	application = await electron.launch({
-		executablePath: path.resolve(process.platform === "win32" ? "release/win-unpacked/ReceiptMatch.exe" : "release/linux-unpacked/receiptmatch"),
-		args: ["--hidden", "--disable-gpu", `--user-data-dir=${path.join(root, "fresh-profile")}`],
-		timeout: 30000,
-		env: { ...process.env, ELECTRON_ENABLE_LOGGING: "1" },
-	});
-	page = await application.firstWindow();
+test.describe.configure({ timeout: 600_000 });
+
+test("packaged Electron PDF and image extraction", async ({ extraction: { report, check, launch } }) => {
+	const application = await launch();
+	const page = await application.firstWindow({ timeout: 30_000 });
+	page.setDefaultTimeout(30_000);
 	await page.getByRole("heading", { name: "Your records. Your workspace." }).waitFor();
 	await application.evaluate(({ app }) => {
-		globalThis.extractionTestSessions = { created: 0, sessions: new Set() };
+		const sessions = { created: 0, sessions: new Set<Electron.Session>() };
+		(globalThis as typeof globalThis & ExtractionTestScope).extractionTestSessions = sessions;
 		app.on("session-created", () => {
-			globalThis.extractionTestSessions.created++;
+			sessions.created++;
 		});
 	});
 	const png = Buffer.from(
@@ -288,6 +363,7 @@ try {
 			canvas.width = 1200;
 			canvas.height = 360;
 			const context = canvas.getContext("2d");
+			if (!context) throw new Error("Could not create the fixture canvas.");
 			context.fillStyle = "white";
 			context.fillRect(0, 0, canvas.width, canvas.height);
 			context.fillStyle = "black";
@@ -308,6 +384,7 @@ try {
 			canvas.width = 1200;
 			canvas.height = 1600;
 			const context = canvas.getContext("2d");
+			if (!context) throw new Error("Could not create the fixture canvas.");
 			context.fillStyle = "white";
 			context.fillRect(0, 0, canvas.width, canvas.height);
 			context.fillStyle = "black";
@@ -319,7 +396,7 @@ try {
 	);
 	const longScan = await pdfFixture(["scan-long"], longScanPng);
 	await check("real-packaged-embedded-text-provenance-and-point-geometry", async () => {
-		const value = await invoke(text);
+		const value = await invoke(application, text);
 		const input = inputOf(value.result);
 		assert.equal(input.source.sourceId, "synthetic-source");
 		assert.equal(input.source.sha256, createHash("sha256").update(text).digest("hex"));
@@ -339,7 +416,7 @@ try {
 		return { runId: input.extraction.runId, page: input.pages[0] };
 	});
 	await check("rotated-crop-page-uses-top-left-point-coordinates", async () => {
-		const input = inputOf((await invoke(await pdfFixture(["rotated"]))).result);
+		const input = inputOf((await invoke(application, await pdfFixture(["rotated"]))).result);
 		const sheet = input.pages[0];
 		assert.equal(sheet.width, 300);
 		assert.equal(sheet.height, 400);
@@ -351,7 +428,7 @@ try {
 		return sheet;
 	});
 	await check("bundled-english-ocr-and-mixed-pages-have-positioned-words", async () => {
-		const input = inputOf((await invoke(mixed)).result);
+		const input = inputOf((await invoke(application, mixed)).result);
 		assert.equal(input.pages.length, 2);
 		assert.ok(input.pages[0].spans.every((span) => span.method === "embedded-text"));
 		assert.ok(input.pages[1].spans.every((span) => span.method === "local-ocr"));
@@ -364,7 +441,7 @@ try {
 		return { pageCount: input.pages.length, ocrWord: word };
 	});
 	await check("same-page-text-and-image-is-explicitly-partial-without-pretend-ocr", async () => {
-		const value = await invoke(await pdfFixture(["same-page"], png));
+		const value = await invoke(application, await pdfFixture(["same-page"], png));
 		const input = inputOf(value.result, "partial");
 		assert.equal(input.pages.length, 1);
 		assert.equal(input.pages[0].status, "complete");
@@ -375,21 +452,21 @@ try {
 		return { issues: input.issues, extractionMethods: [...new Set(input.pages[0].spans.map((span) => span.method))] };
 	});
 	await check("shared-document-api-preserves-PDF-text-and-provenance", async () => {
-		const value = await invoke(text, "common-api");
+		const value = await invoke(application, text, "common-api");
 		const input = inputOf(value.result);
 		assert.equal(input.source.sha256, createHash("sha256").update(text).digest("hex"));
 		assert.ok(input.pages[0].spans.every((span) => span.method === "embedded-text"));
 		assert.ok(!value.progress.some((progress) => progress.phase === "ocr"));
 	});
-	const imagePng = await imageFixture("png");
-	const imageJpeg = await imageFixture("jpeg");
+	const imagePng = await imageFixture(page, "png");
+	const imageJpeg = await imageFixture(page, "jpeg");
 	await check("packaged-PNG-and-JPEG-OCR-have-image-pixel-evidence-and-local-resources", async () => {
 		for (const [format, bytes] of [
 			["png", imagePng],
 			["jpeg", imageJpeg],
-		]) {
+		] as const) {
 			const original = Buffer.from(bytes);
-			const value = await invoke(bytes, "normal", format);
+			const value = await invoke(application, bytes, "normal", format);
 			const input = inputOf(value.result);
 			assert.equal(input.source.sha256, createHash("sha256").update(original).digest("hex"));
 			assert.deepEqual(bytes, original);
@@ -400,6 +477,7 @@ try {
 			assert.ok(sheet.spans.length && sheet.spans.every((span) => span.method === "local-ocr"));
 			assert.match(sheet.spans.map((span) => span.text).join(" "), /TOTAL\s+EUR\s+123[.,]45/);
 			const total = sheet.spans.find((span) => span.text === "TOTAL");
+			assert.ok(total);
 			assert.ok(total.region.x >= 40 && total.region.x <= 65);
 			assert.ok(total.region.y >= 130 && total.region.y <= 180);
 			assert.ok(value.progress.some((progress) => progress.phase === "ocr" && progress.pageCount === 1));
@@ -414,15 +492,15 @@ try {
 		assert.match(notice, /MIT License/);
 	});
 	await check("transparent-PNG-is-composited-for-OCR-and-blank-images-stay-unresolved", async () => {
-		const transparent = inputOf((await invoke(await imageFixture("png", { transparent: true }), "normal", "png")).result);
+		const transparent = inputOf((await invoke(application, await imageFixture(page, "png", { transparent: true }), "normal", "png")).result);
 		assert.match(transparent.pages[0].spans.map((span) => span.text).join(" "), /TOTAL\s+EUR\s+123[.,]45/);
-		const blank = inputOf((await invoke(await imageFixture("png", { blank: true }), "normal", "png")).result, "partial");
+		const blank = inputOf((await invoke(application, await imageFixture(page, "png", { blank: true }), "normal", "png")).result, "partial");
 		assert.equal(blank.pages[0].spans.length, 0);
 		assert.ok(blank.issues.some((issue) => issue.code === "no-readable-text"));
 	});
 	await check("JPEG-EXIF-rotation-uses-actual-decoded-pixels-for-page-and-OCR-regions", async () => {
-		const bytes = withExifOrientation(await imageFixture("jpeg", { rotated: true }), 6);
-		const input = inputOf((await invoke(bytes, "normal", "jpeg")).result);
+		const bytes = withExifOrientation(await imageFixture(page, "jpeg", { rotated: true }), 6);
+		const input = inputOf((await invoke(application, bytes, "normal", "jpeg")).result);
 		assert.equal(input.pages[0].width, 1200);
 		assert.equal(input.pages[0].height, 360);
 		assert.match(input.pages[0].spans.map((span) => span.text).join(" "), /TOTAL\s+EUR\s+123[.,]45/);
@@ -430,7 +508,7 @@ try {
 	await check("JPEG-with-frame-as-first-segment-keeps-its-original-bytes-and-OCR", async () => {
 		const bytes = jpegWithSofFirst(imageJpeg),
 			original = Buffer.from(bytes);
-		const input = inputOf((await invoke(bytes, "normal", "jpeg")).result);
+		const input = inputOf((await invoke(application, bytes, "normal", "jpeg")).result);
 		assert.equal(input.source.sha256, createHash("sha256").update(original).digest("hex"));
 		assert.equal(input.pages[0].width, 1200);
 		assert.equal(input.pages[0].height, 360);
@@ -446,49 +524,50 @@ try {
 			[huge, "png", "pixel-limit"],
 			[Buffer.from("<svg width='100' height='100'/>"), "png", "image-format"],
 			[imagePng, "svg", "image-format"],
-		]) {
-			const value = await invoke(bytes, "normal", format);
+		] as const) {
+			const value = await invoke(application, bytes, "normal", format);
 			assert.equal(value.result.status, "failed");
 			assert.ok(codes(value.result).includes(code), JSON.stringify(value.result));
 			assert.equal(value.windows.length, 0);
 		}
-		const broken = await invoke(imagePng.subarray(0, 33), "normal", "png");
+		const broken = await invoke(application, imagePng.subarray(0, 33), "normal", "png");
 		assert.equal(broken.result.status, "failed");
 		assert.ok(codes(broken.result).includes("image-invalid"));
 		assert.equal(broken.extractionWindowsAfter, 0);
-		inputOf((await invoke(imagePng, "normal", "png")).result);
+		inputOf((await invoke(application, imagePng, "normal", "png")).result);
 	});
 	await check("images-share-host-cancellation-single-flight-and-offline-boundaries-with-PDF", async () => {
-		const beforeStart = await invoke(imagePng, "preabort", "png");
+		const beforeStart = await invoke(application, imagePng, "preabort", "png");
 		assert.equal(beforeStart.result.status, "cancelled");
 		assert.equal(beforeStart.windows.length, 0);
-		const cancelled = await invoke(await imageFixture("png", { long: true }), "abort-ocr", "png");
+		const cancelled = await invoke(application, await imageFixture(page, "png", { long: true }), "abort-ocr", "png");
 		assert.equal(cancelled.abortedWhilePending, true);
 		assert.equal(cancelled.result.status, "cancelled");
 		assert.equal(cancelled.extractionWindowsAfter, 0);
-		const overlap = await invoke(imageJpeg, "concurrent", "jpeg");
+		const overlap = await invoke(application, imageJpeg, "concurrent", "jpeg");
 		inputOf(overlap.result);
+		assert.ok(overlap.concurrent);
 		assert.equal(overlap.concurrent.status, "failed");
 		assert.ok(codes(overlap.concurrent).includes("busy"));
-		const missing = await invoke(imagePng, "missing-language", "png");
+		const missing = await invoke(application, imagePng, "missing-language", "png");
 		assert.equal(missing.result.status, "failed");
 		assert.ok(codes(missing.result).includes("ocr-unavailable"));
-		inputOf((await invoke(text)).result);
-		const probe = await invoke(imagePng, "probe", "png");
+		inputOf((await invoke(application, text)).result);
+		const probe = await invoke(application, imagePng, "probe", "png");
 		inputOf(probe.result);
 		assert.deepEqual(probe.networkProbes, ["denied", "denied", "denied", "denied", "undefined"]);
 	});
 	await check("image-results-cannot-claim-extra-pages-different-dimensions-or-embedded-text", async () => {
 		for (const mode of ["image-forged-pages", "image-forged-dimensions", "image-forged-method"]) {
-			const value = await invoke(imagePng, mode, "png");
+			const value = await invoke(application, imagePng, mode, "png");
 			assert.equal(value.result.status, "failed");
 			assert.ok(codes(value.result).includes("engine-result"));
 			assert.equal(value.extractionWindowsAfter, 0);
 		}
-		inputOf((await invoke(imagePng, "normal", "png")).result);
+		inputOf((await invoke(application, imagePng, "normal", "png")).result);
 	});
 	await check("failed-page-retains-real-geometry-and-visible-partial-issue", async () => {
-		const input = inputOf((await invoke(await pdfFixture(["text", "large"]))).result, "partial");
+		const input = inputOf((await invoke(application, await pdfFixture(["text", "large"]))).result, "partial");
 		assert.equal(input.pages.length, 2);
 		assert.equal(input.pages[0].status, "complete");
 		assert.deepEqual(input.pages[1], { pageId: input.pages[1].pageId, pageNumber: 2, width: 4000, height: 4000, status: "failed", spans: [] });
@@ -496,62 +575,63 @@ try {
 		return { failedPage: input.pages[1], issues: input.issues };
 	});
 	await check("malformed-and-over-page-limit-inputs-fail-with-stable-issues", async () => {
-		const malformed = (await invoke(Buffer.from("This is not a PDF."))).result;
+		const malformed = (await invoke(application, Buffer.from("This is not a PDF."))).result;
 		assert.equal(malformed.status, "failed");
 		assert.ok(codes(malformed).includes("pdf-invalid"));
-		const manyPages = (await invoke(await pdfFixture(Array(201).fill("blank")))).result;
+		const manyPages = (await invoke(application, await pdfFixture(Array(201).fill("blank")))).result;
 		assert.equal(manyPages.status, "failed");
 		assert.ok(codes(manyPages).includes("page-limit"));
 	});
 	await check("password-encrypted-and-over-byte-limit-inputs-fail-explicitly", async () => {
-		const password = (await invoke(await readFile("tests/fixtures/password-required.pdf"))).result;
+		const password = (await invoke(application, await readFile("tests/fixtures/password-required.pdf"))).result;
 		assert.equal(password.status, "failed");
 		assert.ok(codes(password).includes("pdf-password"));
-		const oversized = await invoke(text, "over-byte-limit");
+		const oversized = await invoke(application, text, "over-byte-limit");
 		assert.equal(oversized.result.status, "failed");
 		assert.ok(codes(oversized.result).includes("invalid-input"));
 		assert.equal(oversized.windows.length, 0);
 	});
 	await check("preabort-and-source-byte-snapshot-do-not-create-false-provenance", async () => {
-		const cancelled = await invoke(text, "preabort");
+		const cancelled = await invoke(application, text, "preabort");
 		assert.equal(cancelled.result.status, "cancelled");
 		assert.ok(codes(cancelled.result).includes("cancelled"));
 		assert.equal(cancelled.windows.length, 0);
-		const input = inputOf((await invoke(text, "mutate-source")).result);
+		const input = inputOf((await invoke(application, text, "mutate-source")).result);
 		assert.equal(input.source.sha256, createHash("sha256").update(text).digest("hex"));
 	});
 	await check("single-flight-rejects-overlap-and-preserves-first-job", async () => {
-		const value = await invoke(scan, "concurrent");
+		const value = await invoke(application, scan, "concurrent");
 		inputOf(value.result);
+		assert.ok(value.concurrent);
 		assert.equal(value.concurrent.status, "failed");
 		assert.ok(codes(value.concurrent).includes("busy"));
 	});
 	await check("ocr-delayed-abort-destroys-pending-job-and-next-job-succeeds", async () => {
-		const value = await invoke(longScan, "abort-ocr");
+		const value = await invoke(application, longScan, "abort-ocr");
 		assert.ok(value.progress.some((item) => item.phase === "ocr"));
 		assert.equal(value.abortedWhilePending, true);
 		assert.equal(value.result.status, "cancelled");
 		assert.ok(codes(value.result).includes("cancelled"));
 		assert.equal(value.extractionWindowsAfter, 0);
-		inputOf((await invoke(text)).result);
+		inputOf((await invoke(application, text)).result);
 	});
 	await check("renderer-crash-is-visible-and-next-job-succeeds", async () => {
-		const value = await invoke(scan, "crash-ocr");
+		const value = await invoke(application, scan, "crash-ocr");
 		assert.equal(value.result.status, "failed");
 		assert.ok(codes(value.result).includes("engine-crashed"));
 		assert.equal(value.extractionWindowsAfter, 0);
-		inputOf((await invoke(text)).result);
+		inputOf((await invoke(application, text)).result);
 	});
 	await check("controlled-timeout-cleans-up-and-next-job-succeeds", async () => {
-		const value = await invoke(text, "timeout");
+		const value = await invoke(application, text, "timeout");
 		assert.equal(value.result.status, "failed");
 		assert.ok(codes(value.result).includes("timeout"));
 		assert.ok(value.elapsedMilliseconds < 10000);
 		assert.equal(value.extractionWindowsAfter, 0);
-		inputOf((await invoke(text)).result);
+		inputOf((await invoke(application, text)).result);
 	});
 	await check("missing-local-language-retains-healthy-pages-and-next-job-succeeds", async () => {
-		const value = await invoke(await pdfFixture(["text", "scan", "text"], png), "missing-language");
+		const value = await invoke(application, await pdfFixture(["text", "scan", "text"], png), "missing-language");
 		const input = inputOf(value.result, "partial");
 		assert.deepEqual(
 			input.pages.map((sheet) => sheet.status),
@@ -561,54 +641,40 @@ try {
 		for (const index of [0, 2]) assert.ok(input.pages[index].spans.some((span) => span.text.includes("POSITIONCHECK")));
 		assert.ok(input.issues.some((issue) => issue.code === "ocr-unavailable" && issue.pageId === input.pages[1].pageId));
 		assert.equal(value.extractionWindowsAfter, 0);
-		inputOf((await invoke(scan)).result);
+		inputOf((await invoke(application, scan)).result);
 		return { pageStatuses: input.pages.map((sheet) => sheet.status), issues: input.issues };
 	});
 	await check("unrelated-sender-frame-and-job-cannot-spoof-extraction", async () => {
-		inputOf((await invoke(text, "spoof")).result);
-		const value = await invoke(text, "wrong-job");
+		inputOf((await invoke(application, text, "spoof")).result);
+		const value = await invoke(application, text, "wrong-job");
 		assert.equal(value.result.status, "failed");
 		assert.ok(codes(value.result).includes("engine-result"));
 		assert.equal(value.extractionWindowsAfter, 0);
-		inputOf((await invoke(text)).result);
+		inputOf((await invoke(application, text)).result);
 	});
 	await check("ephemeral-parser-cannot-fetch-network-files-app-or-host-code", async () => {
-		const value = await invoke(text, "probe");
+		const value = await invoke(application, text, "probe");
 		inputOf(value.result);
 		assert.deepEqual(value.networkProbes, ["denied", "denied", "denied", "denied", "undefined"]);
 		return { probes: value.networkProbes, boundary: "Electron extraction session and CSP; not an OS-wide Windows egress test" };
 	});
 	await check("one-ephemeral-session-is-reused-and-storage-is-cleared-between-jobs", async () => {
-		const written = await invoke(text, "storage-write");
+		const written = await invoke(application, text, "storage-write");
 		inputOf(written.result);
 		assert.deepEqual(written.storageProbes, [null, "synthetic-canary"]);
-		const read = await invoke(text, "storage-read");
+		const read = await invoke(application, text, "storage-read");
 		inputOf(read.result);
 		assert.deepEqual(read.storageProbes, [null]);
-		const evidence = await application.evaluate(() => ({
-			createdSessions: globalThis.extractionTestSessions.created,
-			usedSessions: globalThis.extractionTestSessions.sessions.size,
-		}));
+		const evidence = await application.evaluate(() => {
+			const { extractionTestSessions } = globalThis as typeof globalThis & ExtractionTestScope;
+			return { createdSessions: extractionTestSessions.created, usedSessions: extractionTestSessions.sessions.size };
+		});
 		assert.deepEqual(evidence, { createdSessions: 1, usedSessions: 1 });
 		return evidence;
 	});
-	report.status = "passed";
 	report.limits = [
 		"Synthetic fixtures, English only; no bank parser or financial normalization.",
 		"OCR abort is delayed 100ms after recognition-phase progress while the job is pending; process crash is deliberate host automation.",
 		"Hidden software-rendered packaged application; not installer or physical-GPU certification.",
 	];
-} catch (error) {
-	report.status = "failed";
-	report.error = String(error);
-	report.stack = error.stack;
-	process.exitCode = 1;
-} finally {
-	try {
-		if (application) await application.close();
-	} finally {
-		report.finishedAt = new Date().toISOString();
-		await writeFile(reportPath, JSON.stringify(report, null, 2));
-		console.log(JSON.stringify(report, null, 2));
-	}
-}
+});

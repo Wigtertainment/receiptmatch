@@ -13,10 +13,6 @@ export default defineConfig([
     languageOptions: { globals: globals.node },
   },
   {
-    files: ['tests/**/*.mjs'],
-    languageOptions: { globals: globals.browser },
-  },
-  {
     files: ['**/*.ts', '**/*.cts'],
     extends: [eslint.configs.recommended, tseslint.configs.recommended, tseslint.configs.stylistic, angular.configs.tsRecommended],
     processor: angular.processInlineTemplates,
