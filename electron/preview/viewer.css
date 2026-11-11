@@ -1,0 +1,30 @@
+:root {
+    color-scheme: light;
+    font-family: "Segoe UI", Ubuntu, system-ui, sans-serif;
+    --ink: #172d2a;
+    --muted: #526864;
+    --surface: #fff;
+    --background: #edf2f0;
+    --outline: #bfcfc9;
+    --focus: #166b9a;
+    color: var(--ink);
+    background: var(--background);
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { display: flex; flex-direction: column; height: 100dvh; margin: 0; }
+.toolbar { display: grid; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--outline); background: var(--surface); }
+.toolbar h1 { margin: 0; font-size: 16px; overflow-wrap: anywhere; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
+#pagination { margin-right: 8px; }
+#page-number { min-width: 11ch; text-align: center; font-variant-numeric: tabular-nums; }
+button, select { min-height: 40px; padding: 6px 10px; border: 1px solid var(--outline); border-radius: 6px; color: var(--ink); background: var(--surface); font: inherit; }
+button:enabled, select:enabled { cursor: pointer; }
+button:enabled:hover { background: #e4f0eb; }
+button:disabled, select:disabled { color: var(--muted); background: var(--background); }
+:is(button, select, main):focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
+.message { margin: 0; padding: 9px 16px; color: var(--muted); font-size: 13px; }
+.error { color: #823d32; }
+main { flex: 1; min-height: 0; overflow: auto; scrollbar-gutter: stable both-edges; padding: 12px; }
+canvas, img { display: block; margin-inline: auto; background: var(--surface); box-shadow: 0 2px 10px #172d2a26; }

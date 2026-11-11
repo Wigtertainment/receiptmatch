@@ -3,10 +3,12 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { commandSchema, matchRequestSchema, type WorkspaceState } from '../src/shared/protocol.js';
+import { originalPreviewRequestSchema } from '../src/shared/original-preview.js';
 import { WorkspaceSession } from './workspace-session.js';
 import { StatementImportService } from './import/service.js';
 import { FolderDocumentImportService } from './documents/service.js';
 import { isRendererRequestAllowed, resolveRendererUrl } from './runtime-policy.js';
+import { OriginalPreviewWindows } from './original-preview.js';
 
 // Load the same module instance as other main-process consumers of the extraction API.
 const { extractPdfBytes, extractDocumentBytes } = createRequire(__filename)('./extraction-host.cjs') as Pick<typeof import('./extraction/host.js'), 'extractPdfBytes' | 'extractDocumentBytes'>;
@@ -41,8 +43,14 @@ async function launch() {
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
   const window = new BrowserWindow({ title: 'ReceiptMatch', width: 1120, height: 780, minWidth: 680, minHeight: 540, backgroundColor: '#edf2f0', show: !process.argv.includes('--hidden'), webPreferences: { preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, spellcheck: false } });
+  const previews = new OriginalPreviewWindows(process.argv.includes('--hidden'));
+  let previewLoadRevision: number | undefined;
   const publish = (state: WorkspaceState) => {
     if (window.isDestroyed()) return;
+    if (state.workspace?.loadRevision !== previewLoadRevision) {
+      previewLoadRevision = state.workspace?.loadRevision;
+      previews.closeAll();
+    }
     window.setTitle(state.workspace ? `${state.workspace.dirty ? '• ' : ''}${state.workspace.name || 'Untitled workspace'} — ReceiptMatch` : 'ReceiptMatch');
     window.webContents.send('workspace:state', state);
   };
@@ -94,9 +102,17 @@ async function launch() {
     const { revision, transactionId } = request.data;
     return transactionId ? workspace.matchDetails(revision, transactionId) : workspace.matchSummaries(revision);
   });
+  ipcMain.handle('workspace:open-original', (event, ...payload: unknown[]) => {
+    if (!authorized(event) || payload.length !== 1) throw new Error('Workspace request denied.');
+    const request = originalPreviewRequestSchema.safeParse(payload[0]);
+    if (!request.success) return { error: 'This preview request is not supported.' };
+    const source = workspace.originalSource(request.data);
+    return source ? previews.open(`${request.data.kind}:${request.data.id}`, source) : { error: 'The original is not available in this workspace.' };
+  });
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   let closing = false;
+  window.once('closed', () => previews.closeAll());
   window.on('close', event => {
     if (closing) return;
     event.preventDefault();

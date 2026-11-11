@@ -3,6 +3,7 @@ import type { WorkspaceBridge, WorkspaceCommand, WorkspaceState } from '../src/s
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
 import type { StoredDocumentImport } from '../src/shared/workspace-documents.js';
 import type { MatchDetails, MatchSummary } from '../src/shared/workspace-matching.js';
+import type { OriginalPreviewRequest, OriginalPreviewResult } from '../src/shared/original-preview.js';
 
 const bridge: WorkspaceBridge = Object.freeze({
   command: (command: WorkspaceCommand) => ipcRenderer.invoke('workspace:command', command) as Promise<WorkspaceState>,
@@ -10,6 +11,7 @@ const bridge: WorkspaceBridge = Object.freeze({
   documentImports: () => ipcRenderer.invoke('workspace:document-imports') as Promise<StoredDocumentImport[]>,
   matchSummaries: (revision: number) => ipcRenderer.invoke('workspace:matches', { revision }) as Promise<MatchSummary[] | null>,
   matchDetails: (revision: number, transactionId: string) => ipcRenderer.invoke('workspace:matches', { revision, transactionId }) as Promise<MatchDetails | null>,
+  openOriginal: (request: OriginalPreviewRequest) => ipcRenderer.invoke('workspace:open-original', request) as Promise<OriginalPreviewResult>,
   subscribe: (listener: (state: WorkspaceState) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: WorkspaceState) => listener(state);
     ipcRenderer.on('workspace:state', handler);

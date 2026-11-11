@@ -6,13 +6,14 @@ import type { WorkspaceView } from '../shared/protocol.js';
 import type { MatchCandidateView, MatchDetails, MatchReview, MatchSummary } from '../shared/workspace-matching.js';
 import type { StoredSupportingDocument } from '../shared/workspace-documents.js';
 import { DocumentAnalysis } from './document-imports.js';
+import { OriginalPreviewButton } from './original-preview-button.js';
 
 type MatchStatus = MatchSummary['status'];
 type Filter = 'all' | MatchStatus;
 interface ReviewDocument { id: string; name: string; path: string; total: string | null; record: StoredSupportingDocument; }
 
 @Component({
-	selector: 'app-match-suggestions', standalone: true, imports: [NgTemplateOutlet, DocumentAnalysis], templateUrl: './match-suggestions.html',
+	selector: 'app-match-suggestions', standalone: true, imports: [NgTemplateOutlet, DocumentAnalysis, OriginalPreviewButton], templateUrl: './match-suggestions.html',
 })
 export class MatchSuggestions {
 	readonly workspace = input.required<WorkspaceView>();
