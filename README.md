@@ -56,7 +56,7 @@ npm run test:ui-import
 
 `npm run check` runs ESLint with zero tolerated warnings and checks HTML formatting. Use `npm run lint:fix` and `npm run format` to apply available fixes. Prettier uses tabs and a 180-character line width; generated outputs and dependencies are excluded.
 
-`npm run test:development` builds and exercises direct Electron execution, SQLite/local OCR and live CSS replacement without a distribution package. It temporarily adds an isolated marker to `src/styles.css` and restores the original bytes afterward; avoid editing that file during this check.
+`npm run test:development` builds the app and uses Playwright Test to exercise direct Electron execution, SQLite/local OCR and live CSS replacement. It temporarily adds an isolated marker to `src/styles.css` and restores the original bytes afterward. Avoid editing that file during this check.
 
 `npm run test:unit` prepares its own compiled test modules. Run the packaging command for your platform before running checks against the desktop executable. `npm run test:electron` runs all packaged checks with Playwright Test. Use the individual commands above to run a single suite. Generated results and screenshots go under ignored `artifacts/`. Remove temporary `release/`, `.build/`, `.angular/` and test outputs after successful use.
 
