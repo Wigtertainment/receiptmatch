@@ -14,13 +14,37 @@
 					</button>
 				}
 			</div>
-			@if (selectedRow(); as selected) {
-				<div class="match-workbench">
-					<section class="match-panel match-list-panel" aria-labelledby="match-list-heading">
-						<header class="match-panel-heading">
-							<h2 id="match-list-heading">Transactions</h2>
-							<p class="match-list-count" role="status">{{ filteredRows().length }} {{ filteredRows().length === 1 ? 'transaction' : 'transactions' }}</p>
-						</header>
+			<div class="match-workbench">
+				<section class="match-panel match-list-panel" aria-labelledby="match-list-heading">
+					<header class="match-panel-heading match-list-heading">
+						<h2 id="match-list-heading" tabindex="-1">Transactions</h2>
+						<p class="match-list-count" role="status">{{ filteredRows().length }} {{ filteredRows().length === 1 ? 'transaction' : 'transactions' }}</p>
+						<div class="match-batch-actions" role="group" aria-label="Batch approval">
+							@let count = approvalSelections()?.size ?? 0;
+							<button type="button" class="button-primary compact" [disabled]="reviewDisabled() || !count" (click)="approveSelected()">Approve selected</button>
+							<p role="status">
+								{{ count }} selected for approval
+								@if (hiddenApprovalCount(); as hidden) {
+									· {{ hidden }} outside this filter
+								}
+							</p>
+							@if (count) {
+								<button type="button" class="button-secondary compact" [disabled]="reviewDisabled()" (click)="clearApprovalSelection()">Clear selection</button>
+							}
+						</div>
+						@if (approvalFeedback(); as feedback) {
+							<p
+								id="match-batch-result"
+								class="match-batch-result"
+								tabindex="-1"
+								[class.match-approval-changed]="feedback.error"
+								[attr.role]="feedback.error ? 'alert' : 'status'"
+							>
+								{{ feedback.message }}
+							</p>
+						}
+					</header>
+					@if (filteredRows().length) {
 						<div class="table-scroll match-table" role="region" aria-label="Transaction match results" tabindex="0">
 							<table>
 								<caption class="sr-only">
@@ -28,6 +52,7 @@
 								</caption>
 								<thead>
 									<tr>
+										<th scope="col" class="match-batch-column"><span class="sr-only">Approval selection</span></th>
 										<th scope="col" class="match-date-column">Booking date</th>
 										<th scope="col">Transaction</th>
 										<th scope="col" class="match-amount-column">Account amount</th>
@@ -36,8 +61,18 @@
 								</thead>
 								<tbody>
 									@for (row of filteredRows(); track row.transactionId) {
-										@let isSelected = selected.transactionId === row.transactionId;
+										@let isSelected = selectedRow()?.transactionId === row.transactionId;
+										@let checked = approvalSelections()?.has(row.transactionId) ?? false;
+										@let approvalIssue = approvalFeedback()?.transactionId === row.transactionId;
 										<tr [class.match-selected]="isSelected">
+											<td class="match-batch-cell">
+												@if ((row.approvalSelection && !row.approval) || checked) {
+													<label class="match-batch-checkbox">
+														<input type="checkbox" [checked]="checked" [disabled]="reviewDisabled()" (change)="selectForApproval(row, $event)" />
+														<span class="sr-only">Select {{ transactionName(row.description) }} for approval</span>
+													</label>
+												}
+											</td>
 											<td class="match-booking-date">{{ date(row.bookingDate) }}</td>
 											<th scope="row">
 												<button
@@ -45,6 +80,7 @@
 													class="match-transaction"
 													[id]="'match-transaction-' + row.transactionId"
 													[attr.aria-pressed]="isSelected"
+													[attr.aria-describedby]="approvalIssue ? 'match-batch-result' : null"
 													aria-controls="match-detail-panel"
 													(click)="selectTransaction(row.transactionId, $event)"
 												>
@@ -70,7 +106,11 @@
 								</tbody>
 							</table>
 						</div>
-					</section>
+					} @else {
+						<p class="match-panel-message" role="status">No transactions with this result.</p>
+					}
+				</section>
+				@if (selectedRow(); as selected) {
 					<section class="match-panel match-detail-panel" id="match-detail-panel" aria-labelledby="match-detail-heading">
 						<header class="match-panel-heading match-detail-header">
 							<div class="match-detail-title">
@@ -287,10 +327,8 @@
 							<p class="match-panel-message" role="status">Loading candidates…</p>
 						}
 					</section>
-				</div>
-			} @else {
-				<p class="match-panel match-panel-message" role="status">No transactions with this result.</p>
-			}
+				}
+			</div>
 		} @else {
 			<p class="match-panel match-panel-message">Import a bank statement with complete transactions to see match suggestions.</p>
 		}

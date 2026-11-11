@@ -39,7 +39,7 @@
 				</div>
 			</header>
 			<main class="workspace-content">
-				@if (state().error || commandError(); as error) {
+				@if ((section() === 'matches' && state().approvalIssue ? null : state().error) || commandError(); as error) {
 					<p class="error" role="alert">{{ error }}</p>
 				}
 				@if (section() === 'matches' && (state().statementImport || state().documentImport)) {
