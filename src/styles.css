@@ -140,6 +140,7 @@ app-document-imports, app-document-analysis, app-document-source-page { display:
 .document-imports .document-source-text { margin-top: 15px; }
 .document-imports app-document-source-page { margin-top: 10px; }
 app-match-suggestions { display: block; min-width: 0; }
+.match-review-counts { margin: 0 0 12px; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
 .match-filters { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 14px; }
 .match-filters button { min-height: 34px; padding: 5px 9px; border: 1px solid var(--outline); background: var(--surface); color: var(--ink); font-size: 12px; font-weight: 650; }
 .match-filters button:hover { background: #e7f0ec; }
@@ -165,6 +166,7 @@ app-match-suggestions { display: block; min-width: 0; }
 .match-transaction { display: inline-block; min-height: 30px; max-width: 100%; padding: 2px 4px; color: #145c51; font-weight: 700; text-align: left; overflow-wrap: anywhere; text-decoration: underline; text-underline-offset: 2px; }
 .match-transaction:hover { background: #d9ece3; }
 .match-candidate-count { display: block; color: var(--muted); font-size: 11px; }
+.match-row-review { display: block; margin-bottom: 4px; font-size: 12px; font-weight: 650; overflow-wrap: anywhere; }
 .match-status { display: inline-block; padding: 2px 8px; border-radius: 4px; color: #45594a; background: #edf0e8; font-size: 11px; font-weight: 650; white-space: nowrap; }
 .match-reliable { color: #205648; background: #e3efe7; }
 .match-uncertain { color: #754725; background: #f5ebdc; }
@@ -173,6 +175,15 @@ app-match-suggestions { display: block; min-width: 0; }
 .match-back { justify-self: start; min-height: 26px; padding: 3px 4px; color: #145c51; font-size: 12px; font-weight: 650; text-decoration: underline; text-underline-offset: 2px; }
 .match-back:hover { background: #e7f0ec; }
 .match-description .raw-text { margin-top: 5px; }
+.match-review { display: grid; gap: 8px; padding: 14px; border-bottom: 1px solid var(--divider); background: #f5f8f6; font-size: 13px; }
+.match-review-title { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; }
+.match-review h3, .match-review p { margin: 0; overflow-wrap: anywhere; }
+.match-review h3 { font-size: 14px; }
+.match-review label { font-weight: 650; }
+.match-review select { width: 100%; min-width: 0; min-height: 40px; padding: 6px 8px; border: 1px solid var(--outline); border-radius: 6px; color: var(--ink); background: var(--surface); }
+.match-review .file-location { color: var(--muted); }
+.match-review-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.match-review button { justify-self: start; }
 .match-approval-note { margin: 0; padding: 9px 14px; border-bottom: 1px solid var(--divider); color: var(--muted); background: #f5f8f6; font-size: 12px; }
 .match-candidate { padding: 14px; overflow-wrap: anywhere; font-size: 13px; }
 .match-candidate + .match-candidate { border-top: 1px solid var(--divider); }

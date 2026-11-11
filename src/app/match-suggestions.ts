@@ -1,11 +1,12 @@
 import { Component, computed, effect, input, signal, untracked } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
-import { formatCalendarDate, formatMoney } from '../shared/display.js';
+import { formatCalendarDate, formatDocumentTotal, formatMoney } from '../shared/display.js';
 import type { WorkspaceView } from '../shared/protocol.js';
-import type { MatchCandidateView, MatchDetails, MatchSummary } from '../shared/workspace-matching.js';
+import type { MatchCandidateView, MatchDetails, MatchReview, MatchSummary } from '../shared/workspace-matching.js';
 
 type MatchStatus = MatchSummary['status'];
 type Filter = 'all' | MatchStatus;
+interface ReviewDocument { id: string; name: string; path: string; total: string | null; }
 
 @Component({
 	selector: 'app-match-suggestions', standalone: true, imports: [NgTemplateOutlet], templateUrl: './match-suggestions.html',
@@ -13,8 +14,10 @@ type Filter = 'all' | MatchStatus;
 export class MatchSuggestions {
 	readonly workspace = input.required<WorkspaceView>();
 	readonly active = input.required<boolean>();
+	readonly busy = input.required<boolean>();
 	readonly filters = ['all', 'reliable', 'uncertain', 'unmatched'] as const;
 	readonly statusLabels: Record<MatchStatus, string> = { reliable: 'Reliable', uncertain: 'Uncertain', unmatched: 'Unmatched' };
+	readonly reviewLabels: Record<MatchReview['status'], string> = { open: 'Open', assigned: 'Document assigned', 'completed-without-document': 'Completed without document' };
 	readonly issueLabels: Record<MatchCandidateView['issues'][number], string> = {
 		'missing-reference': 'No matching payment or document reference.',
 		'conflicting-evidence': 'Some source details are ambiguous or conflict.',
@@ -34,8 +37,14 @@ export class MatchSuggestions {
 	};
 	private readonly selected = signal<{ transactionId: string; loadRevision: number } | null>(null);
 	private readonly filterState = signal<{ filter: Filter; loadRevision: number } | null>(null);
-	private readonly summaryRequest = signal<{ revision: number; rows: MatchSummary[] | null } | null>(null);
+	private readonly summaryRequest = signal<{ revision: number; loadRevision: number; rows: MatchSummary[] | null } | null>(null);
 	private readonly detailRequest = signal<{ revision: number; transactionId: string; value: MatchDetails | null } | null>(null);
+	private readonly documentRequest = signal<{ key: string; documents: ReviewDocument[] | null } | null>(null);
+	private readonly documentRetry = signal(0);
+	private readonly documentKey = computed(() => JSON.stringify([this.workspace().loadRevision, this.workspace().documentImports.map(report => report.id)]));
+	private readonly documentDraft = signal<{ loadRevision: number; transactionId: string; id: string } | null>(null);
+	private readonly pending = signal(false);
+	private readonly reviewFeedback = signal<{ loadRevision: number; transactionId: string; message: string } | null>(null);
 	private readonly summaryRetry = signal(0);
 	private readonly detailRetry = signal(0);
 	private readonly revision = computed(() => this.workspace().matchRevision);
@@ -44,7 +53,10 @@ export class MatchSuggestions {
 		return result?.revision === this.revision() ? result : null;
 	});
 	readonly filter = computed(() => this.filterState()?.loadRevision === this.workspace().loadRevision ? this.filterState()!.filter : 'all');
-	readonly rows = computed(() => this.currentSummary()?.rows ?? null);
+	readonly rows = computed(() => {
+		const result = this.summaryRequest();
+		return result?.loadRevision === this.workspace().loadRevision ? result.rows : null;
+	});
 	readonly summariesFailed = computed(() => this.currentSummary()?.rows === null);
 	readonly counts = computed(() => {
 		const counts = { reliable: 0, uncertain: 0, unmatched: 0 };
@@ -62,6 +74,33 @@ export class MatchSuggestions {
 		const id = selected?.loadRevision === this.workspace().loadRevision ? selected.transactionId : null;
 		return rows.find(row => row.transactionId === id) ?? rows[0] ?? null;
 	});
+	readonly reviewDisabled = computed(() => this.busy() || this.pending() || !this.currentSummary()?.rows);
+	readonly reviewError = computed(() => {
+		const feedback = this.reviewFeedback();
+		return feedback?.loadRevision === this.workspace().loadRevision && feedback.transactionId === this.selectedRow()?.transactionId ? feedback.message : null;
+	});
+	readonly documents = computed(() => this.documentRequest()?.key === this.documentKey() ? this.documentRequest()!.documents : null);
+	readonly documentsFailed = computed(() => this.documentRequest()?.key === this.documentKey() && this.documentRequest()?.documents === null);
+	readonly duplicateDocumentNames = computed(() => {
+		const seen = new Set<string>();
+		const duplicates = new Set<string>();
+		for (const { name } of this.documents() ?? []) {
+			if (seen.has(name)) duplicates.add(name);
+			seen.add(name);
+		}
+		return duplicates;
+	});
+	readonly owners = computed(() => new Map((this.rows() ?? []).flatMap(row => row.review.status === 'assigned' ? [[row.review.documentId, row] as const] : [])));
+	readonly assignedDocument = computed(() => {
+		const review = this.selectedRow()?.review;
+		return review?.status === 'assigned' ? this.documents()?.find(item => item.id === review.documentId) : null;
+	});
+	readonly selectedDocumentId = computed(() => {
+		const draft = this.documentDraft();
+		if (draft?.loadRevision === this.workspace().loadRevision && draft.transactionId === this.selectedRow()?.transactionId) return draft.id;
+		return this.assignedDocument()?.id ?? '';
+	});
+	readonly selectedDocument = computed(() => this.documents()?.find(item => item.id === this.selectedDocumentId()));
 	private readonly candidateTransactionId = computed(() => {
 		const row = this.selectedRow();
 		return row?.candidateCount ? row.transactionId : null;
@@ -78,10 +117,11 @@ export class MatchSuggestions {
 			const matchRevision = this.revision();
 			this.summaryRetry();
 			if (!this.active() || untracked(() => this.currentSummary())) return;
+			const loadRevision = untracked(() => this.workspace().loadRevision);
 			let current = true;
 			onCleanup(() => { current = false; });
 			const update = (rows: MatchSummary[] | null) => {
-				if (current && this.active() && this.revision() === matchRevision) this.summaryRequest.set({ revision: matchRevision, rows });
+				if (current && this.active() && this.revision() === matchRevision) this.summaryRequest.set({ revision: matchRevision, loadRevision, rows });
 			};
 			void window.receiptmatch.matchSummaries(matchRevision).then(update, () => update(null));
 		});
@@ -99,6 +139,25 @@ export class MatchSuggestions {
 			};
 			void window.receiptmatch.matchDetails(matchRevision, transactionId).then(update, () => update(null));
 		});
+		effect(onCleanup => {
+			const key = this.documentKey();
+			this.documentRetry();
+			if (!this.active() || untracked(() => this.documentRequest()?.key === key)) return;
+			const reportIds = untracked(() => this.workspace().documentImports.map(report => report.id));
+			if (!reportIds.length) { this.documentRequest.set({ key, documents: [] }); return; }
+			let current = true;
+			onCleanup(() => { current = false; });
+			const update = (documents: ReviewDocument[] | null) => {
+				if (current && this.active() && this.documentKey() === key) this.documentRequest.set({ key, documents });
+			};
+			void window.receiptmatch.documentImports().then(records => {
+				if (records.length !== reportIds.length || records.some((record, index) => record.id !== reportIds[index])) return update(null);
+				const documents = records.flatMap(record => record.files.flatMap(file => file.status === 'imported' ? [{
+					id: file.record.id, name: this.basename(file.record.filePath), path: file.record.filePath, total: formatDocumentTotal(file.record.result),
+				}] : []));
+				update(documents.sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path)));
+			}).catch(() => update(null));
+		});
 	}
 
 	setFilter(filter: Filter) {
@@ -114,6 +173,42 @@ export class MatchSuggestions {
 		});
 	}
 	focusSelectedTransaction(transactionId: string) { document.getElementById('match-transaction-' + transactionId)?.focus(); }
+	documentLabel(item: ReviewDocument, owner?: MatchSummary) {
+		const parts = [this.duplicateDocumentNames().has(item.name) ? item.path : item.name];
+		if (item.total) parts.push(item.total);
+		if (owner) parts.push('Assigned to ' + this.transactionName(owner.description));
+		return parts.join(' · ');
+	}
+	chooseDocument(event: Event) {
+		const row = this.selectedRow();
+		if (row) this.documentDraft.set({ loadRevision: this.workspace().loadRevision, transactionId: row.transactionId, id: (event.target as HTMLSelectElement).value });
+	}
+	async applyReview(review: MatchReview) {
+		const row = this.selectedRow();
+		if (this.reviewDisabled() || !row) return;
+		const { transactionId } = row;
+		const { loadRevision, matchRevision } = this.workspace();
+		const trigger = document.activeElement;
+		this.pending.set(true);
+		this.reviewFeedback.set(null);
+		try {
+			const result = await window.receiptmatch.command({ type: 'review-match', transactionId, revision: matchRevision, review });
+			// The session publishes validation errors. It returns busy rejections only to this caller.
+			if (result.busy && result.error) this.reviewFeedback.set({ loadRevision, transactionId, message: result.error });
+			if (!result.error && this.workspace().loadRevision === loadRevision && this.selectedRow()?.transactionId === transactionId) this.documentDraft.set(null);
+		} catch {
+			this.reviewFeedback.set({ loadRevision, transactionId, message: 'The review decision could not be recorded. Please try again.' });
+		} finally {
+			this.pending.set(false);
+			requestAnimationFrame(() => {
+				if (this.active() && this.workspace().loadRevision === loadRevision && this.selectedRow()?.transactionId === transactionId &&
+					(document.activeElement === trigger || document.activeElement === document.body)) {
+					document.getElementById('match-review-heading')?.focus();
+				}
+			});
+		}
+	}
+	retryDocuments() { this.documentRequest.set(null); this.documentRetry.update(value => value + 1); }
 	retrySummaries() { this.summaryRequest.set(null); this.summaryRetry.update(value => value + 1); }
 	retryDetails() { this.detailRequest.set(null); this.detailRetry.update(value => value + 1); }
 }

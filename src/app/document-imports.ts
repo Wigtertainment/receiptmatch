@@ -1,7 +1,7 @@
 import { NgTemplateOutlet } from '@angular/common';
 import { Component, computed, effect, input, output, signal, untracked } from '@angular/core';
 import type { ImportIssue, ImportPage, PositionedSpan, SourceEvidence } from '../shared/bank-import.js';
-import { formatCalendarDate, formatMoney } from '../shared/display.js';
+import { formatCalendarDate, formatDocumentTotal, formatMoney } from '../shared/display.js';
 import type { DocumentImportSummary, WorkspaceCommand, WorkspaceState } from '../shared/protocol.js';
 import type { DocumentIssue, DocumentSection, SupportingDocument } from '../shared/supporting-document.js';
 import type { DocumentFileResult, DocumentFormat, StoredDocumentImport } from '../shared/workspace-documents.js';
@@ -256,13 +256,7 @@ export class DocumentImports {
         });
     }
     private billedTotal(file: DocumentFileResult) {
-        if (file.status !== 'imported') return null;
-        const { sections, issues } = file.record.result;
-        if (sections.length !== 1) return null;
-        const totals = sections[0].amounts.filter(field => field.role === 'billed-total');
-        const total = totals[0];
-        if (totals.length !== 1 || total.candidates.length !== 1 || !total.candidates[0].currency || issues.some(issue => issue.fieldId === total.id)) return null;
-        return formatMoney(total.candidates[0]);
+        return file.status === 'imported' ? formatDocumentTotal(file.record.result) : null;
     }
     retryDetails() { this.retryVersion.update(value => value + 1); }
     reportCounts(report: DocumentImportSummary) {

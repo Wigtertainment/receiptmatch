@@ -2,6 +2,10 @@
 	<h1 class="view-heading" id="matches-heading" tabindex="-1">Match suggestions</h1>
 	@if (rows(); as results) {
 		@if (results.length) {
+			@let reviewCounts = workspace().matchReviewCounts;
+			<p class="match-review-counts" role="status">
+				{{ reviewCounts.open }} open · {{ reviewCounts.assigned }} with a document · {{ reviewCounts['completed-without-document'] }} completed without a document
+			</p>
 			<div class="match-filters" role="group" aria-label="Filter match results">
 				@for (option of filters; track option) {
 					<button type="button" [attr.aria-pressed]="filter() === option" (click)="setFilter(option)">
@@ -27,7 +31,7 @@
 										<th scope="col" class="match-date-column">Booking date</th>
 										<th scope="col">Transaction</th>
 										<th scope="col" class="match-amount-column">Account amount</th>
-										<th scope="col" class="match-result-column">Result</th>
+										<th scope="col" class="match-result-column">Review / suggestion</th>
 									</tr>
 								</thead>
 								<tbody>
@@ -49,6 +53,7 @@
 											</th>
 											<td class="match-account-amount">{{ money(row.accountAmount) }}</td>
 											<td>
+												<span class="match-row-review">{{ reviewLabels[row.review.status] }}</span>
 												<span class="match-status" [class.match-reliable]="row.status === 'reliable'" [class.match-uncertain]="row.status === 'uncertain'">
 													{{ statusLabels[row.status] }}
 												</span>
@@ -79,6 +84,72 @@
 							}
 							<button type="button" class="match-back" (click)="focusSelectedTransaction(selected.transactionId)">Back to transactions</button>
 						</header>
+						<section class="match-review" aria-labelledby="match-review-heading">
+							<div class="match-review-title">
+								<h3 id="match-review-heading" tabindex="-1">Manual review</h3>
+								<p>
+									{{ reviewLabels[selected.review.status] }}
+									@if (assignedDocument(); as assigned) {
+										· {{ assigned.name }}
+									}
+								</p>
+							</div>
+							@if (documents(); as available) {
+								@if (available.length) {
+									<label for="match-review-document">Supporting document</label>
+									<select id="match-review-document" [disabled]="reviewDisabled()" (change)="chooseDocument($event)">
+										<option value="" [selected]="!selectedDocumentId()">Choose an imported document</option>
+										@for (item of available; track item.id) {
+											@let owner = owners().get(item.id);
+											@let inUse = owner && owner.transactionId !== selected.transactionId;
+											<option [value]="item.id" [selected]="selectedDocumentId() === item.id" [disabled]="inUse">
+												{{ documentLabel(item, inUse ? owner : undefined) }}
+											</option>
+										}
+									</select>
+									@if (selectedDocument(); as document) {
+										<p class="file-location">{{ document.path }}</p>
+										<p>Document total {{ document.total ?? 'unavailable' }}</p>
+									}
+								} @else {
+									<p>Import supporting documents in Sources to assign them here.</p>
+								}
+							} @else if (documentsFailed()) {
+								<p role="alert">Imported documents could not be loaded.</p>
+								<button type="button" class="button-secondary compact" (click)="retryDocuments()">Retry loading documents</button>
+							} @else {
+								<p role="status">Loading imported documents…</p>
+							}
+							<div class="match-review-actions">
+								@if (documents()?.length) {
+									<button
+										type="button"
+										class="button-primary compact"
+										[disabled]="reviewDisabled() || !selectedDocument() || assignedDocument()?.id === selectedDocumentId()"
+										(click)="applyReview({ status: 'assigned', documentId: selectedDocumentId() })"
+									>
+										{{ selected.review.status === 'assigned' ? 'Replace document' : 'Assign document' }}
+									</button>
+								}
+								@if (selected.review.status === 'open') {
+									<button
+										type="button"
+										class="button-secondary compact"
+										[disabled]="reviewDisabled()"
+										(click)="applyReview({ status: 'completed-without-document' })"
+									>
+										Complete without document
+									</button>
+								} @else {
+									<button type="button" class="button-secondary compact" [disabled]="reviewDisabled()" (click)="applyReview({ status: 'open' })">
+										{{ selected.review.status === 'assigned' ? 'Remove assignment' : 'Reopen transaction' }}
+									</button>
+								}
+							</div>
+							@if (reviewError(); as error) {
+								<p role="alert">{{ error }}</p>
+							}
+						</section>
 						@if (!selected.candidateCount) {
 							<p class="match-panel-message">No supporting document met the matching rules for this transaction.</p>
 						} @else if (details(); as result) {

@@ -2,23 +2,25 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { test, expect, type ElectronApplication } from '@playwright/test';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
-import { statement } from '../unit/bank-fixtures.js';
+import { row, statement } from '../unit/bank-fixtures.js';
 
 async function statementPdf(file: string) {
 	const pdf = await PDFDocument.create();
 	const font = await pdf.embedFont(StandardFonts.Helvetica);
 	for (const input of statement().pages) {
 		const page = pdf.addPage([input.width, input.height]);
-		for (const span of input.spans) page.drawText(span.text, { x: span.region.x, y: input.height - span.region.y - 10, size: 10, font });
+		const spans = [...input.spans.filter(span => span.region.y !== 285), ...row(285, '27 Feb 2032', 'To: River Studio', '256.20', null)];
+		for (const span of spans) page.drawText(span.text, { x: span.region.x, y: input.height - span.region.y - 10, size: 10, font });
 	}
 	await writeFile(file, await pdf.save());
 }
 
-async function invoicePdf(file: string, total: string) {
+async function invoicePdf(file: string, total: string, receipt = false) {
 	const pdf = await PDFDocument.create();
 	const font = await pdf.embedFont(StandardFonts.Helvetica);
 	const page = pdf.addPage([600, 800]);
-	const lines = ['Invoice', 'Merchant: Orchard Workshop', 'Invoice Number: SYNTHETIC-A', 'Invoice Date: 2032-03-06', `Invoice Total: ${total}`];
+	const lines = receipt ? ['Receipt', 'Merchant: River Studio', 'Receipt Date: 2032-02-27', `Total: ${total}`] :
+		['Invoice', 'Merchant: Orchard Workshop', 'Invoice Number: SYNTHETIC-A', 'Invoice Date: 2032-03-06', `Invoice Total: ${total}`];
 	for (const [index, text] of lines.entries()) page.drawText(text, { x: 40, y: 740 - index * 30, size: 14, font });
 	await writeFile(file, await pdf.save());
 }
@@ -44,7 +46,7 @@ test('packaged match suggestions from import through keyboard review and reopeni
 	const workspaceFile = path.join(root, 'reconciliation.receiptmatch');
 	await Promise.all([mkdir(first, { recursive: true }), mkdir(second, { recursive: true })]);
 	await Promise.all([statementPdf(bankFile), invoicePdf(path.join(first, 'account-invoice.pdf'), 'EUR 1,234.56'),
-		invoicePdf(path.join(second, 'original-invoice.pdf'), 'USD 1,500.01')]);
+		invoicePdf(path.join(second, 'original-invoice.pdf'), 'USD 1,500.01'), invoicePdf(path.join(first, 'restaurant-receipt.pdf'), 'EUR 142.00', true)]);
 	async function launch(profile: string) {
 		return playwright._electron.launch({
 			executablePath: path.resolve(process.platform === 'win32' ? 'release/win-unpacked/ReceiptMatch.exe' : 'release/linux-unpacked/receiptmatch'),
@@ -133,22 +135,36 @@ test('packaged match suggestions from import through keyboard review and reopeni
 		await expect(matches.getByRole('heading', { name: 'original-invoice.pdf' })).toBeVisible();
 		await expect(matches.getByText('Reported original payment amount', { exact: true })).toBeVisible();
 		await expect(matches.getByText('Another possible match is supported by a reference.')).toHaveCount(2);
-		await test.step('persist manual decisions through the workspace bridge independently of suggestions', async () => {
-			const state = await page.evaluate(async () => {
-				const bridge = window.receiptmatch;
-				const { workspace } = await bridge.command({ type: 'get-state' });
-				const rows = (await bridge.matchSummaries(workspace!.matchRevision))!;
-				const matched = rows.find(row => row.status === 'uncertain')!;
-				const unmatched = rows.find(row => row.status === 'unmatched')!;
-				const { candidates } = (await bridge.matchDetails(workspace!.matchRevision, matched.transactionId))!;
-				const assigned = await bridge.command({ type: 'review-match', revision: workspace!.matchRevision, transactionId: unmatched.transactionId,
-					review: { status: 'assigned', documentId: candidates[0].documentId } });
-				if (assigned.error) throw new Error(assigned.error);
-				return bridge.command({ type: 'review-match', revision: assigned.workspace!.matchRevision, transactionId: matched.transactionId,
-					review: { status: 'completed-without-document' } });
-			});
-			expect(state.error).toBeNull();
-			expect(state.workspace?.matchReviewCounts).toEqual({ open: 0, assigned: 1, 'completed-without-document': 1 });
+		await test.step('review, replace and remove assignments through the interface', async () => {
+			const manual = detail.getByRole('region', { name: 'Manual review' });
+			const picker = manual.getByLabel('Supporting document');
+			async function choose(filename: string) {
+				const option = picker.getByRole('option', { name: new RegExp('^' + filename) });
+				await expect(option).toBeAttached();
+				await picker.selectOption({ value: (await option.getAttribute('value'))! });
+			}
+			await filters.getByRole('button', { name: 'Unmatched 1' }).click();
+			await choose('restaurant-receipt');
+			await expect(detail.getByText(/256[.,]20/)).toBeVisible();
+			await expect(manual.getByText(/Document total.*142[.,]00/)).toBeVisible();
+			await manual.getByRole('button', { name: 'Assign document', exact: true }).press('Enter');
+			await expect(manual.getByRole('heading')).toBeFocused();
+			await expect(manual.getByText('Document assigned · restaurant-receipt.pdf')).toBeVisible();
+			await filters.getByRole('button', { name: 'Uncertain 1' }).click();
+			await expect(picker.getByRole('option', { name: /restaurant-receipt.*Assigned to.*River Studio/ })).toBeDisabled();
+			await manual.getByRole('button', { name: 'Complete without document' }).click();
+			await expect(manual.getByRole('button', { name: 'Reopen transaction' })).toBeVisible();
+			await manual.getByRole('button', { name: 'Reopen transaction' }).click();
+			await manual.getByRole('button', { name: 'Complete without document' }).click();
+			await filters.getByRole('button', { name: 'Unmatched 1' }).click();
+			await choose('account-invoice');
+			await manual.getByRole('button', { name: 'Replace document' }).click();
+			await expect(manual.getByText('Document assigned · account-invoice.pdf')).toBeVisible();
+			await manual.getByRole('button', { name: 'Remove assignment' }).click();
+			await expect(manual.getByText('Open', { exact: true })).toBeVisible();
+			await choose('restaurant-receipt');
+			await manual.getByRole('button', { name: 'Assign document', exact: true }).click();
+			await expect(matches.getByText('0 open · 1 with a document · 1 completed without a document')).toBeVisible();
 		});
 		await page.getByRole('button', { name: 'Save', exact: true }).click();
 		await expect(page.getByText('All changes saved', { exact: true })).toBeVisible();
@@ -165,6 +181,9 @@ test('packaged match suggestions from import through keyboard review and reopeni
 		await restored.getByRole('group', { name: 'Filter match results' }).getByRole('button', { name: 'Uncertain 1' }).click();
 		await expect(restored.getByRole('heading', { name: 'original-invoice.pdf' })).toBeVisible();
 		await expect(restored.getByText('Matching reference', { exact: true })).toHaveCount(2);
+		await expect(restored.getByRole('region', { name: 'Manual review' }).getByText('Completed without document', { exact: true })).toBeVisible();
+		await restored.getByRole('group', { name: 'Filter match results' }).getByRole('button', { name: 'Unmatched 1' }).click();
+		await expect(restored.getByRole('region', { name: 'Manual review' }).getByText('Document assigned · restaurant-receipt.pdf')).toBeVisible();
 		const decisions = await reopened.evaluate(async () => {
 			const bridge = window.receiptmatch;
 			const { workspace } = await bridge.command({ type: 'get-state' });
