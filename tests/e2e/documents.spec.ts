@@ -3,20 +3,29 @@ import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PDFDocument, StandardFonts } from "pdf-lib";
-import { _electron as electron } from "playwright";
+import { test as base, type ElectronApplication, type Locator, type Page } from "@playwright/test";
+import type { BrowserWindow, OpenDialogOptions } from "electron";
+import type { WorkspaceCommand, WorkspaceState } from "../../src/shared/protocol.js";
+import type { StoredDocumentImport } from "../../src/shared/workspace-documents.js";
 
-await mkdir("artifacts", { recursive: true });
-const root = await mkdtemp(path.resolve("artifacts/document-import-"));
-let application;
-const checks = [];
-const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
-const rawNote = '<img src=x onerror="window.documentTestInjection=1">';
-async function check(name, action) {
-	await action();
-	checks.push(name);
-	console.log(`PASS ${name}`);
+declare global {
+	interface Window {
+		documentTestInjection?: number;
+		documentTestState?: WorkspaceState | null;
+		unsubscribeDocumentTest?: () => void;
+	}
 }
-async function pdfFixture(reference) {
+
+type DocumentTestMainGlobals = typeof globalThis & { documentTestDialogProperties?: OpenDialogOptions["properties"] };
+
+interface DocumentImportFixture {
+	root: string;
+	launch(): Promise<{ application: ElectronApplication; page: Page }>;
+}
+
+const rawNote = '<img src=x onerror="window.documentTestInjection=1">';
+
+async function pdfFixture(reference: string) {
 	const pdf = await PDFDocument.create(),
 		font = await pdf.embedFont(StandardFonts.Helvetica),
 		page = pdf.addPage([600, 800]);
@@ -35,36 +44,26 @@ async function pdfFixture(reference) {
 	}
 	return pdf.save();
 }
-async function launch() {
-	application = await electron.launch({
-		executablePath: path.resolve(process.platform === "win32" ? "release/win-unpacked/ReceiptMatch.exe" : "release/linux-unpacked/receiptmatch"),
-		args: ["--hidden", "--disable-gpu", `--user-data-dir=${path.join(root, `profile-${randomUUID()}`)}`],
-		timeout: 30000,
-	});
-	const page = await application.firstWindow();
-	page.setDefaultTimeout(20000);
-	await page.getByRole("heading", { name: "Your records. Your workspace." }).waitFor();
-	await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false));
-	return page;
-}
-async function dialogs(opens = [], saves = [], choices = []) {
+
+async function mockDialogs(application: ElectronApplication, opens: (string | null)[] = [], saves: string[] = [], choices: number[] = []) {
 	await application.evaluate(
 		({ dialog }, plan) => {
-			dialog.showOpenDialog = async (_window, options) => {
-				globalThis.documentTestDialogProperties = options.properties;
+			dialog.showOpenDialog = async (_window: BrowserWindow | OpenDialogOptions, options?: OpenDialogOptions) => {
+				(globalThis as DocumentTestMainGlobals).documentTestDialogProperties = options?.properties;
 				const selected = plan.opens.shift();
 				return { canceled: !selected, filePaths: selected ? [selected] : [] };
 			};
 			dialog.showSaveDialog = async () => {
 				const selected = plan.saves.shift();
-				return { canceled: !selected, filePath: selected };
+				return { canceled: !selected, filePath: selected ?? "" };
 			};
 			dialog.showMessageBox = async () => ({ response: plan.choices.shift() ?? 2, checkboxChecked: false });
 		},
 		{ opens, saves, choices },
 	);
 }
-async function imageFixture(page, format, long = false) {
+
+async function imageFixture(page: Page, format: "png" | "jpeg", long = false) {
 	return Buffer.from(
 		await page.evaluate(
 			({ format, long }) => {
@@ -72,6 +71,7 @@ async function imageFixture(page, format, long = false) {
 				canvas.width = 1200;
 				canvas.height = long ? 1800 : 450;
 				const context = canvas.getContext("2d");
+				if (!context) throw new Error("Unable to create the synthetic document image");
 				context.fillStyle = "white";
 				context.fillRect(0, 0, canvas.width, canvas.height);
 				context.fillStyle = "black";
@@ -92,8 +92,59 @@ async function imageFixture(page, format, long = false) {
 		"base64",
 	);
 }
-try {
-	let page = await launch();
+
+const test = base.extend<{ documentImport: DocumentImportFixture }>({
+	documentImport: async ({ playwright }, use) => {
+		await mkdir("artifacts", { recursive: true });
+		const root = await mkdtemp(path.resolve("artifacts/document-import-"));
+		let activeApplication: ElectronApplication | undefined;
+
+		async function launch() {
+			const application = await playwright._electron.launch({
+				executablePath: path.resolve(process.platform === "win32" ? "release/win-unpacked/ReceiptMatch.exe" : "release/linux-unpacked/receiptmatch"),
+				args: ["--hidden", "--disable-gpu", `--user-data-dir=${path.join(root, `profile-${randomUUID()}`)}`],
+				timeout: 30_000
+			});
+			activeApplication = application;
+			application.on("close", () => {
+				if (activeApplication === application) activeApplication = undefined;
+			});
+			const page = await application.firstWindow({ timeout: 30_000 });
+			page.setDefaultTimeout(20_000);
+			await page.getByRole("heading", { name: "Your records. Your workspace." }).waitFor();
+			await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false));
+			return { application, page };
+		}
+
+		await use({ root, launch });
+
+		const application = activeApplication;
+		if (application) {
+			try {
+				await mockDialogs(application, [], [], [1]);
+			} finally {
+				await application.close();
+			}
+		}
+	}
+});
+
+test.describe.configure({ timeout: 240_000 });
+
+test("packaged supporting document import", async ({ documentImport: { root, launch } }) => {
+	let { application, page } = await launch();
+	let completedChecks = 0;
+	const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+
+	async function check(name: string, action: () => Promise<void>) {
+		await test.step(name, action);
+		completedChecks++;
+	}
+
+	function dialogs(opens: (string | null)[] = [], saves: string[] = [], choices: number[] = []) {
+		return mockDialogs(application, opens, saves, choices);
+	}
+
 	const folder = path.join(root, "mixed"),
 		nested = path.join(folder, "nested");
 	await mkdir(nested, { recursive: true });
@@ -112,11 +163,11 @@ try {
 	await writeFile(files[4], "Synthetic unreadable PDF");
 	await writeFile(files[5], "Unsupported synthetic note");
 	const originalHashes = await Promise.all(files.map(async (file) => sha(await readFile(file))));
-	const command = (value) => page.evaluate((value) => window.receiptmatch.command(value), value);
+	const command = (value: WorkspaceCommand) => page.evaluate((value) => window.receiptmatch.command(value), value);
 	const records = () => page.evaluate(() => window.receiptmatch.documentImports());
 	const documents = () => page.getByRole("region", { name: "Supporting documents" });
 	const chooseFolder = () => documents().getByRole("button", { name: "Choose folder" });
-	async function openDetails(scope, label) {
+	async function openDetails(scope: Locator, label: string | RegExp) {
 		const summary = scope.locator("summary").filter({ hasText: label });
 		const details = summary.locator("..");
 		if ((await details.getAttribute("open")) === null) await summary.press("Enter");
@@ -124,10 +175,10 @@ try {
 		return details;
 	}
 	await check("document-command-is-path-free-and-readonly-data-is-restricted-to-the-active-frame", async () => {
-		assert.equal((await command({ type: "import-documents", path: folder })).workspace, null);
+		assert.equal((await command({ type: "import-documents", path: folder } as unknown as WorkspaceCommand)).workspace, null);
 		const probes = await application.evaluate(async ({ app, BrowserWindow }) => {
-			const { join } = process.getBuiltinModule("path"),
-				active = BrowserWindow.getAllWindows()[0];
+			const { join } = process.getBuiltinModule("path")!;
+			const active = BrowserWindow.getAllWindows()[0];
 			const extra = new BrowserWindow({
 				show: false,
 				webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, preload: join(app.getAppPath(), ".build/preload.cjs") },
@@ -143,30 +194,30 @@ try {
 		});
 		assert.deepEqual(probes, ["denied", "denied"]);
 	});
-	let expected;
+	let expected: StoredDocumentImport[];
 	const workspaceFile = path.join(root, "documents.receiptmatch");
 	await check("native-folder-analysis-retains-real-PDF-PNG-JPEG-results-duplicates-and-file-failures", async () => {
 		await page.getByRole("button", { name: "Create workspace" }).click();
 		await dialogs([folder]);
 		await chooseFolder().press("Enter");
 		await documents().locator("summary").filter({ hasText: "mixed" }).first().waitFor();
-		assert.deepEqual(await application.evaluate(() => globalThis.documentTestDialogProperties), ["openDirectory"]);
+		assert.deepEqual(await application.evaluate(() => (globalThis as DocumentTestMainGlobals).documentTestDialogProperties), ["openDirectory"]);
 		const state = await command({ type: "get-state" });
-		assert.equal(state.documentOutcome.status, "finished");
-		assert.equal(state.workspace.dirty, true);
-		assert.equal(state.workspace.documentImports[0].imported, 3);
-		assert.equal(state.workspace.documentImports[0].skipped, 1);
-		assert.equal(state.workspace.documentImports[0].failed, 1);
-		assert.equal(state.workspace.documentImports[0].unsupported, 1);
+		assert.equal(state.documentOutcome?.status, "finished");
+		assert.equal(state.workspace?.dirty, true);
+		const summary = state.workspace?.documentImports[0];
+		assert.equal(summary?.imported, 3);
+		assert.equal(summary?.skipped, 1);
+		assert.equal(summary?.failed, 1);
+		assert.equal(summary?.unsupported, 1);
 		expected = await records();
 		assert.equal(expected[0].files.length, 6);
 		const imported = expected[0].files.filter((file) => file.status === "imported").map((file) => file.record);
 		assert.deepEqual(new Set(imported.map((record) => record.format)), new Set(["pdf", "png", "jpeg"]));
-		assert.ok(imported.every((record) => record.result.input.pages.flatMap((page) => page.spans).length));
-		assert.equal(
-			imported.find((record) => record.format === "pdf").result.sections[0].amounts.find((field) => field.role === "billed-total").candidates[0].coefficient,
-			"7325",
-		);
+		assert.ok(imported.every((record) => record.result.input?.pages.flatMap((page) => page.spans).length));
+		const pdf = imported.find((record) => record.format === "pdf");
+		const billedTotal = pdf?.result.sections[0]?.amounts.find((field) => field.role === "billed-total");
+		assert.equal(billedTotal?.candidates[0]?.coefficient, "7325");
 		assert.deepEqual(await Promise.all(files.map(async (file) => sha(await readFile(file)))), originalHashes);
 	});
 	await check("document-results-show-file-statuses-candidates-and-literal-source-text-with-keyboard-access", async () => {
@@ -225,8 +276,7 @@ try {
 		await page.getByRole("button", { name: "Save", exact: true }).press("Enter");
 		await page.getByText("Your workspace is saved on this computer.", { exact: true }).waitFor();
 		await application.close();
-		application = undefined;
-		page = await launch();
+		({ application, page } = await launch());
 		await dialogs([workspaceFile]);
 		await page.getByRole("navigation", { name: "Workspace actions" }).getByRole("button", { name: "Open", exact: true }).press("Enter");
 		const report = await openDetails(documents(), /^\s*mixed/i);
@@ -238,26 +288,26 @@ try {
 			.filter({ hasText: /Invoice reference.*SYNTHETIC-PDF/ })
 			.waitFor();
 		const state = await command({ type: "get-state" });
-		assert.equal(state.workspace.dirty, false);
+		assert.equal(state.workspace?.dirty, false);
 		assert.deepEqual(await records(), expected);
 	});
 	await check("repeated-folder-skips-successful-bytes-retries-failures-and-can-save-its-new-report", async () => {
 		await dialogs([folder]);
 		const state = await command({ type: "import-documents" });
-		const summary = state.workspace.documentImports.at(-1);
-		assert.equal(summary.imported, 0);
-		assert.equal(summary.skipped, 4);
-		assert.equal(summary.failed, 1);
+		const summary = state.workspace?.documentImports.at(-1);
+		assert.equal(summary?.imported, 0);
+		assert.equal(summary?.skipped, 4);
+		assert.equal(summary?.failed, 1);
 		await command({ type: "save" });
 		const clean = await command({ type: "get-state" });
-		assert.equal(clean.workspace.dirty, false);
+		assert.equal(clean.workspace?.dirty, false);
 		await dialogs([files[0]]);
 		const bankSkip = await command({ type: "import-statement" });
-		assert.equal(bankSkip.importOutcome.status, "skipped");
-		assert.equal(bankSkip.importOutcome.importId, null);
-		assert.equal(bankSkip.workspace.dirty, false);
+		assert.equal(bankSkip.importOutcome?.status, "skipped");
+		assert.equal(bankSkip.importOutcome?.importId, null);
+		assert.equal(bankSkip.workspace?.dirty, false);
 		await dialogs([null]);
-		assert.equal((await command({ type: "import-documents" })).workspace.dirty, false);
+		assert.equal((await command({ type: "import-documents" })).workspace?.dirty, false);
 	});
 	await check("cancelling-real-image-OCR-keeps-prior-completed-documents-and-can-be-saved", async () => {
 		const cancellationFolder = path.join(root, "cancel");
@@ -280,19 +330,15 @@ try {
 		await page.waitForFunction(() => window.documentTestState?.documentOutcome?.status === "cancelled", undefined, { polling: 50 });
 		const state = await command({ type: "get-state" });
 		await page.evaluate(() => {
+			if (!window.unsubscribeDocumentTest) throw new Error("Document test subscription is missing");
 			window.unsubscribeDocumentTest();
 			delete window.unsubscribeDocumentTest;
 			delete window.documentTestState;
 		});
-		assert.equal(state.documentOutcome.status, "cancelled");
-		assert.equal(state.workspace.documentImports.at(-1).imported, 1, JSON.stringify((await records()).at(-1)));
+		assert.equal(state.documentOutcome?.status, "cancelled");
+		assert.equal(state.workspace?.documentImports.at(-1)?.imported, 1, JSON.stringify((await records()).at(-1)));
 		await command({ type: "save" });
-		assert.equal((await command({ type: "get-state" })).workspace.dirty, false);
+		assert.equal((await command({ type: "get-state" })).workspace?.dirty, false);
 	});
-	console.log(JSON.stringify({ status: "passed", checks: checks.length, platform: process.platform }));
-} finally {
-	if (application) {
-		await dialogs([], [], [1]);
-		await application.close();
-	}
-}
+	console.log(JSON.stringify({ status: "passed", checks: completedChecks, platform: process.platform }));
+});

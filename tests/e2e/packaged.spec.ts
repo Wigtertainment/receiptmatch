@@ -6,13 +6,7 @@ import { performance } from 'node:perf_hooks';
 import { test as base, type ElectronApplication, type Page } from '@playwright/test';
 import Database from 'better-sqlite3';
 import { createWorkspace, fingerprint, newMetadata } from '../../electron/store.js';
-import type { WorkspaceBridge, WorkspaceCommand, WorkspaceView } from '../../src/shared/protocol.js';
-
-declare global {
-	interface Window {
-		receiptmatch: WorkspaceBridge;
-	}
-}
+import type { WorkspaceCommand, WorkspaceView } from '../../src/shared/protocol.js';
 
 interface DialogPlan {
 	saves?: (string | null)[];

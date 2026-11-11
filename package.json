@@ -22,12 +22,13 @@
     "start:dist": "npm run build && cross-env ELECTRON_START_URL= electron .",
     "test:unit": "npm run build:tests && node --test .build/node/tests/unit/*.test.js",
     "test:development": "npm run build && node tests/development.mjs",
-    "test:packaged": "tsc -p tsconfig.playwright.json && playwright test packaged.spec.ts",
-    "test:extraction": "node tests/extraction.mjs",
-    "test:import": "node tests/import.mjs",
-    "test:documents": "node tests/documents.mjs",
-    "test:ui-import": "node tests/ui-import.mjs",
-    "test": "npm run test:unit && npm run test:packaged && npm run test:extraction && npm run test:import && npm run test:documents && npm run test:ui-import"
+    "test:electron": "tsc -p tsconfig.playwright.json && playwright test",
+    "test:packaged": "npm run test:electron -- packaged.spec.ts",
+    "test:extraction": "npm run test:electron -- extraction.spec.ts",
+    "test:import": "npm run test:electron -- bank-import.spec.ts",
+    "test:documents": "npm run test:electron -- documents.spec.ts",
+    "test:ui-import": "npm run test:electron -- ui-import.spec.ts",
+    "test": "npm run test:unit && npm run test:electron"
   },
   "dependencies": {
     "better-sqlite3": "13.0.3",
