@@ -45,7 +45,7 @@ declare global { interface Window { receiptmatch: WorkspaceBridge; } }
   `
 })
 class ReceiptMatchApp {
-  readonly state = signal<WorkspaceState>({ workspace: null, busy: true, error: null, statementImport: null, importOutcome: null });
+  readonly state = signal<WorkspaceState>({ workspace: null, busy: true, error: null, statementImport: null, importOutcome: null, documentImport: null, documentOutcome: null });
   readonly commandError = signal<string | null>(null);
   private stateRevision = 0;
   private commandGeneration = 0;

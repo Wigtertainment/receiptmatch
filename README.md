@@ -47,6 +47,7 @@ npm run test:development
 npm run test:packaged
 npm run test:extraction
 npm run test:import
+npm run test:documents
 npm run test:ui-import
 ```
 
@@ -59,6 +60,8 @@ npm run test:ui-import
 Extraction checks exercise isolated PDF text and local English OCR using synthetic PDF, PNG and JPEG inputs and bundled resources, including image limits, orientation and failures.
 
 Import checks exercise native file selection, duplicate skipping and explicit workspace persistence through the validated desktop API. UI import checks use the actual controls, inspect financial fields and evidence, and capture synthetic-data screenshots. Native dialog selections are supplied by automation.
+
+Document import checks cover recursive mixed folders, PDF/PNG/JPEG analysis, duplicate skipping, per-file failures, cancellation and saved results across process restart.
 
 For the Ubuntu 24.04 x64 container check:
 

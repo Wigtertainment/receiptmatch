@@ -25,8 +25,9 @@
     "test:packaged": "node tests/packaged.mjs",
     "test:extraction": "node tests/extraction.mjs",
     "test:import": "node tests/import.mjs",
+    "test:documents": "node tests/documents.mjs",
     "test:ui-import": "node tests/ui-import.mjs",
-    "test": "npm run test:unit && npm run test:packaged && npm run test:extraction && npm run test:import && npm run test:ui-import"
+    "test": "npm run test:unit && npm run test:packaged && npm run test:extraction && npm run test:import && npm run test:documents && npm run test:ui-import"
   },
   "dependencies": {
     "better-sqlite3": "13.0.3",

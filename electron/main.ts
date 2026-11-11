@@ -5,10 +5,11 @@ import { createRequire } from 'node:module';
 import { commandSchema, type WorkspaceState } from '../src/shared/protocol.js';
 import { WorkspaceSession } from './workspace-session.js';
 import { StatementImportService } from './import/service.js';
+import { FolderDocumentImportService } from './documents/service.js';
 import { isRendererRequestAllowed, resolveRendererUrl } from './runtime-policy.js';
 
 // Load the same module instance as other main-process consumers of the extraction API.
-const { extractPdfBytes } = createRequire(__filename)('./extraction-host.cjs') as Pick<typeof import('./extraction/host.js'), 'extractPdfBytes'>;
+const { extractPdfBytes, extractDocumentBytes } = createRequire(__filename)('./extraction-host.cjs') as Pick<typeof import('./extraction/host.js'), 'extractPdfBytes' | 'extractDocumentBytes'>;
 
 app.setName('ReceiptMatch');
 protocol.registerSchemesAsPrivileged([
@@ -65,6 +66,12 @@ async function launch() {
       return selected.canceled ? null : selected.filePaths[0] ?? null;
     },
     extract: extractPdfBytes
+  }), new FolderDocumentImportService({
+    choose: async () => {
+      const selected = await dialog.showOpenDialog(window, { title: 'Analyze supporting document folder', properties: ['openDirectory'] });
+      return selected.canceled ? null : selected.filePaths[0] ?? null;
+    },
+    extract: extractDocumentBytes
   }));
   const authorized = (event: Electron.IpcMainInvokeEvent) => event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && event.senderFrame.url === appUrl;
   ipcMain.handle('workspace:command', (event, payload: unknown) => {
@@ -75,6 +82,10 @@ async function launch() {
   ipcMain.handle('workspace:bank-imports', (event, ...payload: unknown[]) => {
     if (!authorized(event) || payload.length) throw new Error('Workspace request denied.');
     return workspace.bankImports();
+  });
+  ipcMain.handle('workspace:document-imports', (event, ...payload: unknown[]) => {
+    if (!authorized(event) || payload.length) throw new Error('Workspace request denied.');
+    return workspace.documentImports();
   });
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));

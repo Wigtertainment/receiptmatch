@@ -105,7 +105,7 @@ async function security(url) {
         return { sandbox: value.sandbox, contextIsolation: value.contextIsolation, nodeIntegration: value.nodeIntegration };
     });
     assert.deepEqual(preferences, { sandbox: true, contextIsolation: true, nodeIntegration: false });
-    assert.deepEqual(await page.evaluate(() => Object.keys(window.receiptmatch)), ['command', 'bankImports', 'subscribe']);
+    assert.deepEqual(await page.evaluate(() => Object.keys(window.receiptmatch)), ['command', 'bankImports', 'documentImports', 'subscribe']);
     assert.equal(await page.evaluate(() => typeof window.require), 'undefined');
     const denied = await application.evaluate(async ({ session }, urls) => Promise.all(urls.map(async url => {
         try { await session.defaultSession.fetch(url); return { url, error: null }; }

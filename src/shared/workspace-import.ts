@@ -31,7 +31,8 @@ export const storedBankImportSchema = z.strictObject({
 export type StoredBankImport = z.infer<typeof storedBankImportSchema>;
 export type BankImportRunResult =
     | { status: 'imported'; record: StoredBankImport }
-    | { status: 'skipped'; importId: string }
+    | { status: 'skipped'; importId: string; existingSourceId?: never }
+    | { status: 'skipped'; importId: null; existingSourceId: string }
     | { status: 'cancelled' }
     | { status: 'failed' | 'unsupported'; issues: z.infer<typeof importIssueSchema>[] };
 export interface BankImportSummary {
