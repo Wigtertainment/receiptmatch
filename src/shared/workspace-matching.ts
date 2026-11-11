@@ -47,6 +47,14 @@ export const transactionMatchSchema = z.strictObject({
 export type MatchCandidate = z.infer<typeof matchCandidate>;
 export type TransactionMatch = z.infer<typeof transactionMatchSchema>;
 
+export const matchReviewSchema = z.discriminatedUnion('status', [
+	z.strictObject({ status: z.literal('open') }),
+	z.strictObject({ status: z.literal('assigned'), documentId: z.uuid() }),
+	z.strictObject({ status: z.literal('completed-without-document') }),
+]);
+export type MatchReview = z.infer<typeof matchReviewSchema>;
+export type MatchReviewCounts = Record<MatchReview['status'], number>;
+
 export interface MatchSummary {
 	transactionId: string;
 	bookingDate: string;
@@ -54,6 +62,7 @@ export interface MatchSummary {
 	accountAmount: z.infer<typeof moneySchema>;
 	status: TransactionMatch['status'];
 	candidateCount: number;
+	review: MatchReview;
 }
 
 export interface MatchSourceExcerpt {

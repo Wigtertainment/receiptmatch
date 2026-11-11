@@ -133,6 +133,23 @@ test('packaged match suggestions from import through keyboard review and reopeni
 		await expect(matches.getByRole('heading', { name: 'original-invoice.pdf' })).toBeVisible();
 		await expect(matches.getByText('Reported original payment amount', { exact: true })).toBeVisible();
 		await expect(matches.getByText('Another possible match is supported by a reference.')).toHaveCount(2);
+		await test.step('persist manual decisions through the workspace bridge independently of suggestions', async () => {
+			const state = await page.evaluate(async () => {
+				const bridge = window.receiptmatch;
+				const { workspace } = await bridge.command({ type: 'get-state' });
+				const rows = (await bridge.matchSummaries(workspace!.matchRevision))!;
+				const matched = rows.find(row => row.status === 'uncertain')!;
+				const unmatched = rows.find(row => row.status === 'unmatched')!;
+				const { candidates } = (await bridge.matchDetails(workspace!.matchRevision, matched.transactionId))!;
+				const assigned = await bridge.command({ type: 'review-match', revision: workspace!.matchRevision, transactionId: unmatched.transactionId,
+					review: { status: 'assigned', documentId: candidates[0].documentId } });
+				if (assigned.error) throw new Error(assigned.error);
+				return bridge.command({ type: 'review-match', revision: assigned.workspace!.matchRevision, transactionId: matched.transactionId,
+					review: { status: 'completed-without-document' } });
+			});
+			expect(state.error).toBeNull();
+			expect(state.workspace?.matchReviewCounts).toEqual({ open: 0, assigned: 1, 'completed-without-document': 1 });
+		});
 		await page.getByRole('button', { name: 'Save', exact: true }).click();
 		await expect(page.getByText('All changes saved', { exact: true })).toBeVisible();
 		await app.close();
@@ -148,5 +165,12 @@ test('packaged match suggestions from import through keyboard review and reopeni
 		await restored.getByRole('group', { name: 'Filter match results' }).getByRole('button', { name: 'Uncertain 1' }).click();
 		await expect(restored.getByRole('heading', { name: 'original-invoice.pdf' })).toBeVisible();
 		await expect(restored.getByText('Matching reference', { exact: true })).toHaveCount(2);
+		const decisions = await reopened.evaluate(async () => {
+			const bridge = window.receiptmatch;
+			const { workspace } = await bridge.command({ type: 'get-state' });
+			const rows = await bridge.matchSummaries(workspace!.matchRevision);
+			return rows?.map(row => [row.status, row.review.status]).sort();
+		});
+		expect(decisions).toEqual([['uncertain', 'completed-without-document'], ['unmatched', 'assigned']]);
 	} finally { await app.close(); }
 });

@@ -8,7 +8,9 @@ import { test, vi, type TestContext } from 'vitest';
 import { interpretSupportingDocument } from '../../electron/documents/interpret.js';
 import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERSION } from '../../electron/store.js';
 import { WorkspaceSession } from '../../electron/workspace-session.js';
+import { commandSchema } from '../../src/shared/protocol.js';
 import type { StoredDocumentImport, StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
+import type { MatchReview } from '../../src/shared/workspace-matching.js';
 import { documentRun, extractedDocument, retainedBank } from './document-fixtures.js';
 
 async function directory(context: TestContext) {
@@ -99,7 +101,7 @@ test('opens version 3 without writing, suppresses coalesced legacy sections and 
 	const oldRun = documentRun(root, [legacyOnOnePage, legacyAcrossPages, valid]);
 	await createWorkspace(file, newMetadata(), [bank], [oldRun]);
 	const db = new Database(file);
-	try { db.exec('DROP TABLE match_results; PRAGMA user_version=3;'); } finally { db.close(); }
+	try { db.exec('DROP TABLE match_reviews; DROP TABLE match_results; PRAGMA user_version=3;'); } finally { db.close(); }
 	const oldBytes = await readFile(file);
 	const opened = await loadWorkspace(file);
 	assert.equal(opened.schemaVersion, 3);
@@ -161,4 +163,101 @@ test('rolls back a match write failure together with the appended import and rej
 	const corrupted = await readFile(file);
 	await assert.rejects(() => loadWorkspace(file), /suggestions do not agree/);
 	assert.deepEqual(await readFile(file), corrupted);
+});
+
+test('reviews transactions independently of confidence and keeps exclusive decisions and counts after reopening', async (context) => {
+	const root = await directory(context);
+	const file = path.join(root, 'review.receiptmatch');
+	const bank = retainedBank(root);
+	const [{ transactionId: first }, { transactionId: second }] = bank.transactions;
+	const suggested = invoice(root, 'invoice.pdf');
+	const other = document(root, 'restaurant.pdf', 'Receipt', 'Total: EUR 142.00');
+	const imports = documentRun(root, [suggested, other]);
+	const session = new WorkspaceSession(
+		{ open: async () => file, save: async () => file, unsaved: async () => 'discard' },
+		undefined,
+		{ run: async () => ({ status: 'imported', record: bank }) },
+		{ run: async () => imports },
+	);
+	const revision = () => session.state().workspace!.matchRevision;
+	const review = (transactionId: string, decision: MatchReview, at = revision()) =>
+		session.dispatch(commandSchema.parse({ type: 'review-match', revision: at, transactionId, review: decision }));
+	const row = (transactionId: string) => session.matchSummaries(revision())?.find(item => item.transactionId === transactionId);
+	const counts = () => session.state().workspace!.matchReviewCounts;
+	await session.dispatch({ type: 'new' });
+	await session.dispatch({ type: 'import-statement' });
+	await session.dispatch({ type: 'import-documents' });
+	const suggestions = session.matchResults();
+	assert.equal(row(first)?.status, 'reliable');
+	assert.deepEqual(counts(), { open: 2, assigned: 0, 'completed-without-document': 0 });
+	assert.equal(row(first)?.review.status, 'open');
+	const initialRevision = revision();
+	assert.equal(commandSchema.safeParse({ type: 'review-match', revision: initialRevision, transactionId: first,
+		review: { status: 'assigned', documentId: other.id, filePath: other.filePath } }).success, false);
+	assert.match((await review(first, { status: 'assigned', documentId: randomUUID() })).error!, /not available/);
+	assert.match((await review(randomUUID(), { status: 'open' })).error!, /no longer available/);
+	assert.equal((await review(first, { status: 'assigned', documentId: other.id })).error, null);
+	assert.match((await review(first, { status: 'open' }, initialRevision)).error!, /Refresh/);
+	assert.match((await review(second, { status: 'assigned', documentId: other.id })).error!, /already assigned/);
+	assert.deepEqual(row(first)?.review, { status: 'assigned', documentId: other.id });
+	assert.equal(row(second)?.review.status, 'open');
+	assert.deepEqual(session.matchResults(), suggestions);
+	await review(first, { status: 'assigned', documentId: suggested.id });
+	await review(second, { status: 'assigned', documentId: other.id });
+	await review(second, { status: 'open' });
+	assert.equal(row(second)?.review.status, 'open');
+	await review(second, { status: 'completed-without-document' });
+	assert.deepEqual(counts(), { open: 0, assigned: 1, 'completed-without-document': 1 });
+	await session.dispatch({ type: 'save' });
+	assert.equal(session.state().workspace?.dirty, false);
+	const savedRevision = revision();
+	await review(second, { status: 'completed-without-document' });
+	assert.equal(revision(), savedRevision);
+	assert.equal(session.state().workspace?.dirty, false);
+	await review(first, { status: 'open' });
+	assert.equal(session.state().workspace?.dirty, true);
+	assert.equal((await loadWorkspace(file)).matchDecisions.get(first), suggested.id);
+	await session.dispatch({ type: 'open' });
+	assert.deepEqual(row(first)?.review, { status: 'assigned', documentId: suggested.id });
+	assert.equal(row(second)?.review.status, 'completed-without-document');
+	assert.deepEqual(counts(), { open: 0, assigned: 1, 'completed-without-document': 1 });
+	await review(first, { status: 'open' });
+	assert.equal((await review(second, { status: 'assigned', documentId: suggested.id })).error, null);
+	await session.dispatch({ type: 'save' });
+	await session.dispatch({ type: 'open' });
+	assert.equal(row(first)?.review.status, 'open');
+	assert.deepEqual(row(second)?.review, { status: 'assigned', documentId: suggested.id });
+	assert.deepEqual(counts(), { open: 1, assigned: 1, 'completed-without-document': 0 });
+});
+
+test('opens version 4 without writing and saves review decisions and migration atomically', async (context) => {
+	const root = await directory(context);
+	const file = path.join(root, 'v4-review.receiptmatch');
+	const bank = retainedBank(root);
+	const [{ transactionId: first }, { transactionId: second }] = bank.transactions;
+	const document = invoice(root, 'invoice.pdf');
+	await createWorkspace(file, newMetadata(), [bank], [documentRun(root, [document])]);
+	const db = new Database(file);
+	try { db.exec('DROP TABLE match_reviews; PRAGMA user_version=4;'); } finally { db.close(); }
+	const bytes = await readFile(file);
+	const opened = await loadWorkspace(file);
+	assert.equal(opened.schemaVersion, 4);
+	assert.equal(opened.matchDecisions.size, 0);
+	assert.deepEqual(await readFile(file), bytes);
+	const save = (decisions: Map<string, string | null>) => saveWorkspace(opened, opened.metadata, opened.imports, opened.documentImports, decisions);
+	await assert.rejects(() => save(new Map([[first, document.id], [second, document.id]])), /already assigned/);
+	const decisions = new Map([[first, document.id], [second, null]]);
+	const originalPrepare = Database.prototype.prepare;
+	const prepare = vi.spyOn(Database.prototype, 'prepare').mockImplementation(function (this: Database.Database, sql: string) {
+		if (sql.startsWith('INSERT INTO match_reviews')) throw new Error('Controlled review write failure');
+		return originalPrepare.call(this, sql);
+	});
+	try { await assert.rejects(() => save(decisions), /Controlled review write failure/); }
+	finally { prepare.mockRestore(); }
+	assert.deepEqual(await readFile(file), bytes);
+	await save(decisions);
+	const migrated = await loadWorkspace(file);
+	assert.equal(migrated.schemaVersion, SCHEMA_VERSION);
+	assert.deepEqual(migrated.matchDecisions, decisions);
+	assert.deepEqual(migrated.matches, opened.matches);
 });

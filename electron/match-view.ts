@@ -3,15 +3,17 @@ import type { StoredBankImport } from '../src/shared/workspace-import.js';
 import type { StoredDocumentImport } from '../src/shared/workspace-documents.js';
 import type { MatchDetails, MatchSourceExcerpt, MatchSummary, TransactionMatch } from '../src/shared/workspace-matching.js';
 
-export function summarizeMatches(matches: TransactionMatch[], imports: StoredBankImport[]): MatchSummary[] {
+export function summarizeMatches(matches: TransactionMatch[], imports: StoredBankImport[], decisions: ReadonlyMap<string, string | null>): MatchSummary[] {
 	const byTransaction = new Map(matches.map(match => [match.transactionId, match]));
 	return imports.flatMap(record => {
 		const ids = new Map(record.transactions.map(({ rowId, transactionId }) => [rowId, transactionId]));
 		return record.result.transactions.map(row => {
 			const transactionId = ids.get(row.rowId)!;
 			const match = byTransaction.get(transactionId)!;
+			const documentId = decisions.get(transactionId);
 			return { transactionId, bookingDate: row.bookingDate.value, description: row.description.value,
-				accountAmount: row.accountAmount.value, status: match.status, candidateCount: match.candidates.length };
+				accountAmount: row.accountAmount.value, status: match.status, candidateCount: match.candidates.length,
+				review: documentId === undefined ? { status: 'open' } : documentId === null ? { status: 'completed-without-document' } : { status: 'assigned', documentId } };
 		});
 	});
 }

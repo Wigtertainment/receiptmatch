@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { ZodError } from 'zod';
 import type { WorkspaceCommand, WorkspaceState } from '../src/shared/protocol.js';
 import { importIssue } from '../src/shared/bank-import.js';
@@ -6,7 +7,7 @@ import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, type SavedW
 import type { BankImportService } from './import/service.js';
 import type { DocumentImportService } from './documents/service.js';
 import { storedDocumentImportSchema, type StoredDocumentImport, type WorkspaceSource } from '../src/shared/workspace-documents.js';
-import type { MatchDetails, MatchSummary, TransactionMatch } from '../src/shared/workspace-matching.js';
+import type { MatchDetails, MatchReviewCounts, MatchSummary, TransactionMatch } from '../src/shared/workspace-matching.js';
 import { suggestWorkspaceMatches } from './matching.js';
 import { describeMatch, summarizeMatches } from './match-view.js';
 
@@ -38,6 +39,7 @@ export class WorkspaceSession {
   private importRecords: StoredBankImport[] = [];
   private documentRecords: StoredDocumentImport[] = [];
   private matches: TransactionMatch[] = [];
+  private matchDecisions = new Map<string, string | null>();
   private importController: AbortController | null = null;
   private statementImport: WorkspaceState['statementImport'] = null;
   private importOutcome: WorkspaceState['importOutcome'] = null;
@@ -56,6 +58,8 @@ export class WorkspaceSession {
     }));
     const sameImports = this.saved?.imports.length === this.importRecords.length && this.importRecords.every((record, index) => record.id === this.saved!.imports[index].id);
     const sameDocuments = this.saved?.documentImports.length === this.documentRecords.length && this.documentRecords.every((record, index) => record.id === this.saved!.documentImports[index].id);
+    const matchReviewCounts: MatchReviewCounts = { open: this.matches.length - this.matchDecisions.size, assigned: 0, 'completed-without-document': 0 };
+    for (const documentId of this.matchDecisions.values()) matchReviewCounts[documentId === null ? 'completed-without-document' : 'assigned']++;
     const documentImports = this.documentRecords.map(record => ({
       id: record.id, folderPath: record.folderPath, status: record.status,
       imported: record.files.filter(file => file.status === 'imported').length, skipped: record.files.filter(file => file.status === 'skipped').length,
@@ -65,8 +69,8 @@ export class WorkspaceSession {
     return {
       workspace: this.metadata ? {
         id: this.metadata.id, loadRevision: this.loadRevision, matchRevision: this.matchRevision, name: this.metadata.name,
-        dirty: !this.saved || this.metadata.name !== this.saved.metadata.name || !sameImports || !sameDocuments,
-        filePath: this.saved?.filePath ?? null, savedAt: this.saved?.metadata.savedAt ?? null, imports, documentImports
+        dirty: !this.saved || this.metadata.name !== this.saved.metadata.name || !sameImports || !sameDocuments || !isDeepStrictEqual(this.matchDecisions, this.saved.matchDecisions),
+        filePath: this.saved?.filePath ?? null, savedAt: this.saved?.metadata.savedAt ?? null, imports, documentImports, matchReviewCounts
       } : null,
       busy: this.busy, error: this.error, statementImport: structuredClone(this.statementImport), importOutcome: structuredClone(this.importOutcome),
       documentImport: structuredClone(this.documentImport), documentOutcome: structuredClone(this.documentOutcome)
@@ -76,7 +80,7 @@ export class WorkspaceSession {
   documentImports(): StoredDocumentImport[] { return structuredClone(this.documentRecords); }
   matchResults(): TransactionMatch[] { return structuredClone(this.matches); }
   matchSummaries(revision: number): MatchSummary[] | null {
-    return this.metadata && revision === this.matchRevision ? summarizeMatches(this.matches, this.importRecords) : null;
+    return this.metadata && revision === this.matchRevision ? summarizeMatches(this.matches, this.importRecords, this.matchDecisions) : null;
   }
   matchDetails(revision: number, transactionId: string): MatchDetails | null {
     if (!this.metadata || revision !== this.matchRevision) return null;
@@ -100,11 +104,11 @@ export class WorkspaceSession {
   private async save(): Promise<boolean> {
     if (!this.metadata) return false;
     if (!this.metadata.name.trim()) throw new Error('Enter a workspace name before saving.');
-    if (this.saved) this.saved = await saveWorkspace(this.saved, this.metadata, this.importRecords, this.documentRecords);
+    if (this.saved) this.saved = await saveWorkspace(this.saved, this.metadata, this.importRecords, this.documentRecords, this.matchDecisions);
     else {
       const destination = await this.dialogs.save(this.metadata.name);
       if (!destination) return false;
-      this.saved = await createWorkspace(destination, this.metadata, this.importRecords, this.documentRecords);
+      this.saved = await createWorkspace(destination, this.metadata, this.importRecords, this.documentRecords, this.matchDecisions);
     }
     this.metadata = { ...this.saved.metadata };
     this.importRecords = structuredClone(this.saved.imports);
@@ -210,6 +214,23 @@ export class WorkspaceSession {
     if (hasNewDocuments) this.matchRevision++;
     this.documentOutcome = { status: record.status, importId: record.id, issues: [] };
   }
+  private reviewMatch({ revision, transactionId, review }: Extract<WorkspaceCommand, { type: 'review-match' }>) {
+    if (!this.metadata || revision !== this.matchRevision) throw new Error('The match review has changed. Refresh it before making a decision.');
+    if (!this.matches.some(match => match.transactionId === transactionId)) throw new Error('This transaction is no longer available for review.');
+    if (review.status === 'assigned') {
+      if (!this.documentRecords.some(record => record.files.some(file => file.status === 'imported' && file.record.id === review.documentId))) {
+        throw new Error('This supporting document is not available in the workspace.');
+      }
+      for (const [owner, documentId] of this.matchDecisions) {
+        if (owner !== transactionId && documentId === review.documentId) throw new Error('This document is already assigned. Remove its existing assignment first.');
+      }
+    }
+    const documentId = review.status === 'assigned' ? review.documentId : review.status === 'completed-without-document' ? null : undefined;
+    if (this.matchDecisions.get(transactionId) === documentId) return;
+    if (documentId === undefined) this.matchDecisions.delete(transactionId);
+    else this.matchDecisions.set(transactionId, documentId);
+    this.matchRevision++;
+  }
   async dispatch(command: WorkspaceCommand): Promise<WorkspaceState> {
     if (command.type === 'get-state') return this.state();
     if (command.type === 'cancel-import') {
@@ -237,11 +258,12 @@ export class WorkspaceSession {
     try {
       switch (command.type) {
         case 'save': await this.save(); break;
+        case 'review-match': this.reviewMatch(command); break;
         case 'import-statement': await this.importStatement(); break;
         case 'import-documents': await this.importDocuments(); break;
         case 'new':
           if (await this.canLeave()) {
-            this.metadata = newMetadata(); this.saved = null; this.importRecords = []; this.documentRecords = []; this.matches = [];
+            this.metadata = newMetadata(); this.saved = null; this.importRecords = []; this.documentRecords = []; this.matches = []; this.matchDecisions.clear();
             this.importOutcome = null; this.documentOutcome = null; this.loadRevision++; this.matchRevision++;
           }
           break;
@@ -252,6 +274,7 @@ export class WorkspaceSession {
           const loaded = await loadWorkspace(selected);
           this.metadata = { ...loaded.metadata }; this.saved = loaded; this.importRecords = structuredClone(loaded.imports); this.documentRecords = structuredClone(loaded.documentImports);
           this.matches = structuredClone(loaded.matches);
+          this.matchDecisions = new Map(loaded.matchDecisions);
           this.importOutcome = null; this.documentOutcome = null; this.loadRevision++; this.matchRevision++;
           break;
         }
