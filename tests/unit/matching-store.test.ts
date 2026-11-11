@@ -11,6 +11,7 @@ import { WorkspaceSession } from '../../electron/workspace-session.js';
 import { commandSchema } from '../../src/shared/protocol.js';
 import type { StoredDocumentImport, StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
 import type { MatchReview } from '../../src/shared/workspace-matching.js';
+import { applyDocumentCorrections, documentCorrectionKey, type DocumentCorrection, type DocumentCorrectionValue } from '../../src/shared/document-corrections.js';
 import { row as bankRow, statement } from './bank-fixtures.js';
 import { documentRun, extractedDocument, retainedBank } from './document-fixtures.js';
 
@@ -102,7 +103,7 @@ test('opens version 3 without writing, suppresses coalesced legacy sections and 
 	const oldRun = documentRun(root, [legacyOnOnePage, legacyAcrossPages, valid]);
 	await createWorkspace(file, newMetadata(), [bank], [oldRun]);
 	const db = new Database(file);
-	try { db.exec('DROP TABLE bank_corrections; DROP TABLE match_reviews; DROP TABLE match_results; PRAGMA user_version=3;'); } finally { db.close(); }
+	try { db.exec('DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews; DROP TABLE match_results; PRAGMA user_version=3;'); } finally { db.close(); }
 	const oldBytes = await readFile(file);
 	const opened = await loadWorkspace(file);
 	assert.equal(opened.schemaVersion, 3);
@@ -239,7 +240,7 @@ test('opens version 4 without writing and saves review decisions and migration a
 	const document = invoice(root, 'invoice.pdf');
 	await createWorkspace(file, newMetadata(), [bank], [documentRun(root, [document])]);
 	const db = new Database(file);
-	try { db.exec('DROP TABLE bank_corrections; DROP TABLE match_reviews; PRAGMA user_version=4;'); } finally { db.close(); }
+	try { db.exec('DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews; PRAGMA user_version=4;'); } finally { db.close(); }
 	const bytes = await readFile(file);
 	const opened = await loadWorkspace(file);
 	assert.equal(opened.schemaVersion, 4);
@@ -276,7 +277,7 @@ test('corrects booking values with exact money, retains original evidence and pr
 	const documents = documentRun(root, [invoice(root, 'invoice.pdf')]);
 	const created = await createWorkspace(file, newMetadata(), [bank], [documents]);
 	const db = new Database(file);
-	try { db.exec('DROP TABLE bank_corrections; PRAGMA user_version=5;'); } finally { db.close(); }
+	try { db.exec('DROP TABLE document_corrections; DROP TABLE bank_corrections; PRAGMA user_version=5;'); } finally { db.close(); }
 	const before = await readFile(file);
 	const session = new WorkspaceSession({ open: async () => file, save: async () => file, unsaved: async () => 'discard' });
 	await session.dispatch({ type: 'open' });
@@ -329,4 +330,102 @@ test('corrects booking values with exact money, retains original evidence and pr
 	try {
 		assert.deepEqual(check.prepare('SELECT coefficient, revision FROM transactions WHERE id=?').get(draft.draftId), { coefficient: exact.coefficient, revision: 2 });
 	} finally { check.close(); }
+});
+
+test('recalculates matches from corrected document fields and saves originals, revisions and review decisions atomically', async (context) => {
+	const root = await directory(context);
+	const file = path.join(root, 'document-corrections.receiptmatch');
+	const bank = retainedBank(root);
+	const transactionId = bank.transactions[0].transactionId;
+	const receipt = document(root, 'original.pdf', 'Invoice', 'Merchant: Cedar Workshop', 'Invoice Number: SYNTHETIC-A', 'Invoice Date: 2032-02-31', 'Invoice Total: EUR 98.00');
+	const missing = document(root, 'missing.pdf', 'Receipt', 'Merchant: River Studio');
+	const source = documentRun(root, [receipt, missing]);
+	await createWorkspace(file, newMetadata(), [bank], [source]);
+	const db = new Database(file);
+	try { db.exec('DROP TABLE document_corrections; PRAGMA user_version=6;'); } finally { db.close(); }
+	const before = await readFile(file);
+	const session = new WorkspaceSession({ open: async () => file, save: async () => file, unsaved: async () => 'discard' });
+	assert.equal((await session.dispatch({ type: 'open' })).error, null);
+	assert.equal((await loadWorkspace(file)).schemaVersion, 6);
+	assert.deepEqual(await readFile(file), before);
+	const state = () => session.state().workspace!;
+	const { sectionId, amounts, dates } = receipt.result.sections[0];
+	assert.deepEqual(dates[0].candidates, []);
+	const revision = state().matchRevision;
+	const correct = (fieldId: string | null, change: DocumentCorrectionValue, at = state().matchRevision) =>
+		session.dispatch(commandSchema.parse({ type: 'correct-document-field', revision: at, documentId: receipt.id, sectionId, fieldId, change }));
+	assert.equal(session.matchResults().find(match => match.transactionId === transactionId)?.status, 'unmatched');
+	assert.equal((await correct(amounts[0].id, { kind: 'amount', value: { coefficient: '123456', scale: 2, currency: 'EUR' } })).error, null);
+	assert.match((await correct(dates[0].id, { kind: 'date', value: '2032-02-28' }, revision)).error!, /Refresh/);
+	assert.match((await correct(amounts[0].id, { kind: 'date', value: '2032-02-28' })).error!, /field.*not available/);
+	assert.equal((await correct(dates[0].id, { kind: 'date', value: '2032-02-28' })).error, null);
+	const dateRevision = state().matchRevision;
+	await correct(amounts[0].id, { kind: 'amount', value: { coefficient: '1234560', scale: 3, currency: 'EUR' } });
+	assert.equal(state().matchRevision, dateRevision);
+	const candidate = session.matchDetails(dateRevision, transactionId)?.candidates[0];
+	assert.equal(candidate?.documentValuesCorrected, true);
+	assert.equal(candidate?.date?.documentDate, '2032-02-28');
+	assert.ok(candidate?.documentEvidence.some(item => item.text.includes('EUR 98.00')));
+	assert.equal(session.matchResults().find(match => match.transactionId === transactionId)?.status, 'reliable');
+	const added = await session.dispatch({ type: 'correct-document-field', revision: dateRevision, documentId: missing.id, sectionId: missing.result.sections[0].sectionId,
+		fieldId: null, change: { kind: 'amount', value: { coefficient: '900719925474099327', scale: 2, currency: 'EUR' } } });
+	assert.equal(added.error, null);
+	const overlays = new Map(state().documentCorrections.map(item => [documentCorrectionKey(item, item.change.kind), item]));
+	const supplied = applyDocumentCorrections([source], overlays)[0].files[1];
+	assert.equal(supplied.status, 'imported');
+	if (supplied.status !== 'imported') throw new Error('Expected imported receipt');
+	const suppliedField = supplied.record.result.sections[0].amounts[0];
+	assert.match((await session.dispatch({ type: 'correct-document-field', revision: state().matchRevision, documentId: missing.id,
+		sectionId: missing.result.sections[0].sectionId, fieldId: suppliedField.id, change: { kind: 'amount', value: { coefficient: '1234', scale: 2, currency: 'EUR' } }
+	})).error!, /field.*not available/);
+	assert.deepEqual(session.documentImports(), [source]);
+	assert.equal((await session.dispatch({ type: 'review-match', revision: state().matchRevision, transactionId,
+		review: { status: 'assigned', documentId: receipt.id } })).error, null);
+	const originalPrepare = Database.prototype.prepare;
+	const prepare = vi.spyOn(Database.prototype, 'prepare').mockImplementation(function (this: Database.Database, sql: string) {
+		if (sql.startsWith('INSERT INTO match_results')) throw new Error('Controlled match write failure');
+		return originalPrepare.call(this, sql);
+	});
+	try { assert.match((await session.dispatch({ type: 'save' })).error!, /Controlled match write failure/); }
+	finally { prepare.mockRestore(); }
+	assert.deepEqual(await readFile(file), before);
+	assert.equal((await session.dispatch({ type: 'save' })).error, null);
+	assert.equal((await session.dispatch({ type: 'open' })).error, null);
+	const saved = await loadWorkspace(file);
+	assert.equal(saved.schemaVersion, SCHEMA_VERSION);
+	assert.deepEqual(saved.documentImports, [source]);
+	assert.deepEqual(saved.matchDecisions.get(transactionId), receipt.id);
+	assert.deepEqual([...saved.documentCorrections.values()].map(item => item.revision).sort(), [2, 2, 3]);
+	const effective = applyDocumentCorrections(saved.documentImports, saved.documentCorrections)[0].files[1];
+	assert.equal(effective.status, 'imported');
+	if (effective.status !== 'imported') throw new Error('Expected imported receipt');
+	assert.deepEqual(effective.record.result.sections[0].amounts[0].evidence, []);
+	assert.equal(effective.record.result.sections[0].amounts[0].candidates[0].coefficient, '900719925474099327');
+	assert.ok(effective.record.result.issues.some(issue => issue.field === 'issue'));
+	const check = new Database(file, { readonly: true });
+	try { assert.deepEqual(check.prepare('SELECT revision FROM documents WHERE id=?').get(receipt.id), { revision: 3 }); }
+	finally { check.close(); }
+});
+
+test('keeps both fields in review when a correction makes agreeing document totals conflict', async (context) => {
+	const root = await directory(context);
+	const original = invoice(root, 'duplicate-total.pdf');
+	const section = original.result.sections[0];
+	const first = section.amounts[0];
+	const second = { ...first, id: 'duplicate-total' };
+	section.amounts.push(second);
+	const sources = [documentRun(root, [original])];
+	const firstCorrection: DocumentCorrection = { documentId: original.id, sectionId: section.sectionId, fieldId: first.id, revision: 2,
+		change: { kind: 'amount', value: { coefficient: '123457', scale: 2, currency: 'EUR' } } };
+	const corrections = new Map([[documentCorrectionKey(firstCorrection, 'amount'), firstCorrection]]);
+	const corrected = () => applyDocumentCorrections(sources, corrections)[0].files[0];
+	let file = corrected();
+	assert.equal(file.status, 'imported');
+	assert.deepEqual(file.record.result.issues.filter(issue => issue.code === 'conflicting-field').map(issue => issue.fieldId), [first.id, second.id]);
+	const secondCorrection = { ...firstCorrection, fieldId: second.id, revision: 3 };
+	corrections.set(documentCorrectionKey(secondCorrection, 'amount'), secondCorrection);
+	file = corrected();
+	assert.equal(file.status, 'imported');
+	assert.equal(file.record.result.issues.some(issue => issue.code === 'conflicting-field'), false);
+	assert.equal(original.result.issues.some(issue => issue.code === 'conflicting-field'), false);
 });

@@ -3,6 +3,7 @@ import { ZodError } from 'zod';
 import type { WorkspaceCommand, WorkspaceState } from '../src/shared/protocol.js';
 import { importIssue } from '../src/shared/bank-import.js';
 import { applyBankCorrections, bankCorrectionSchema, type BankCorrection } from '../src/shared/bank-corrections.js';
+import { applyDocumentCorrections, documentCorrectionKey, documentCorrectionSchema, type DocumentCorrection } from '../src/shared/document-corrections.js';
 import { sameMoneyValue } from '../src/shared/money.js';
 import { storedBankImportSchema, type StoredBankImport } from '../src/shared/workspace-import.js';
 import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, type SavedWorkspace, type WorkspaceMetadata } from './store.js';
@@ -42,6 +43,8 @@ export class WorkspaceSession {
   private effectiveImports: StoredBankImport[] = [];
   private bankCorrections = new Map<string, BankCorrection>();
   private documentRecords: StoredDocumentImport[] = [];
+  private effectiveDocuments: StoredDocumentImport[] = [];
+  private documentCorrections = new Map<string, DocumentCorrection>();
   private matches: TransactionMatch[] = [];
   private matchDecisions = new Map<string, string | null>();
   private importController: AbortController | null = null;
@@ -74,9 +77,10 @@ export class WorkspaceSession {
       workspace: this.metadata ? {
         id: this.metadata.id, loadRevision: this.loadRevision, matchRevision: this.matchRevision, name: this.metadata.name,
         dirty: !this.saved || this.metadata.name !== this.saved.metadata.name || !sameImports || !sameDocuments ||
-          !isDeepStrictEqual(this.matchDecisions, this.saved.matchDecisions) || !isDeepStrictEqual(this.bankCorrections, this.saved.bankCorrections),
+          !isDeepStrictEqual(this.matchDecisions, this.saved.matchDecisions) || !isDeepStrictEqual(this.bankCorrections, this.saved.bankCorrections) ||
+          !isDeepStrictEqual(this.documentCorrections, this.saved.documentCorrections),
         filePath: this.saved?.filePath ?? null, savedAt: this.saved?.metadata.savedAt ?? null, imports, documentImports, matchReviewCounts,
-        bankCorrections: structuredClone([...this.bankCorrections.values()])
+        bankCorrections: structuredClone([...this.bankCorrections.values()]), documentCorrections: structuredClone([...this.documentCorrections.values()])
       } : null,
       busy: this.busy, error: this.error, statementImport: structuredClone(this.statementImport), importOutcome: structuredClone(this.importOutcome),
       documentImport: structuredClone(this.documentImport), documentOutcome: structuredClone(this.documentOutcome)
@@ -91,7 +95,7 @@ export class WorkspaceSession {
   matchDetails(revision: number, transactionId: string): MatchDetails | null {
     if (!this.metadata || revision !== this.matchRevision) return null;
     const match = this.matches.find(row => row.transactionId === transactionId);
-    return match ? describeMatch(match, this.effectiveImports, this.documentRecords) : null;
+    return match ? describeMatch(match, this.effectiveImports, this.effectiveDocuments, this.documentCorrections) : null;
   }
   private sources(): WorkspaceSource[] {
     const sources = new Map((this.saved?.sources ?? []).map(source => [source.id, source]));
@@ -110,17 +114,21 @@ export class WorkspaceSession {
   private async save(): Promise<boolean> {
     if (!this.metadata) return false;
     if (!this.metadata.name.trim()) throw new Error('Enter a workspace name before saving.');
-    if (this.saved) this.saved = await saveWorkspace(this.saved, this.metadata, this.importRecords, this.documentRecords, this.matchDecisions, this.bankCorrections);
+    if (this.saved) this.saved = await saveWorkspace(
+      this.saved, this.metadata, this.importRecords, this.documentRecords, this.matchDecisions, this.bankCorrections, this.documentCorrections
+    );
     else {
       const destination = await this.dialogs.save(this.metadata.name);
       if (!destination) return false;
-      this.saved = await createWorkspace(destination, this.metadata, this.importRecords, this.documentRecords, this.matchDecisions, this.bankCorrections);
+      this.saved = await createWorkspace(destination, this.metadata, this.importRecords, this.documentRecords, this.matchDecisions, this.bankCorrections, this.documentCorrections);
     }
     this.metadata = { ...this.saved.metadata };
     this.importRecords = structuredClone(this.saved.imports);
     this.bankCorrections = new Map(this.saved.bankCorrections);
     this.effectiveImports = applyBankCorrections(this.importRecords, this.bankCorrections);
     this.documentRecords = structuredClone(this.saved.documentImports);
+    this.documentCorrections = new Map(this.saved.documentCorrections);
+    this.effectiveDocuments = applyDocumentCorrections(this.documentRecords, this.documentCorrections);
     this.matches = structuredClone(this.saved.matches);
     return true;
   }
@@ -163,7 +171,7 @@ export class WorkspaceSession {
       if (identities(record).some(id => existingIds.has(id.toLowerCase()))) { this.failedImport('invalid-import', 'The statement import contains reused workspace identities.'); return; }
       const imports = [...this.importRecords, record];
       const effective = [...this.effectiveImports, record];
-      const matches = suggestWorkspaceMatches(effective, this.documentRecords);
+      const matches = suggestWorkspaceMatches(effective, this.effectiveDocuments);
       this.importRecords = imports;
       this.effectiveImports = effective;
       this.matches = matches;
@@ -217,9 +225,11 @@ export class WorkspaceSession {
       } else if (file.status === 'failed' && file.analysis?.input) reserve(file.analysis.input.source.sourceId);
     }
     const imports = [...this.documentRecords, record];
+    const effective = [...this.effectiveDocuments, record];
     const hasNewDocuments = record.files.some(file => file.status === 'imported');
-    const matches = hasNewDocuments ? suggestWorkspaceMatches(this.effectiveImports, imports) : this.matches;
+    const matches = hasNewDocuments ? suggestWorkspaceMatches(this.effectiveImports, effective) : this.matches;
     this.documentRecords = imports;
+    this.effectiveDocuments = effective;
     this.matches = matches;
     if (hasNewDocuments) this.matchRevision++;
     this.documentOutcome = { status: record.status, importId: record.id, issues: [] };
@@ -262,11 +272,43 @@ export class WorkspaceSession {
       ...(bookingDate === undefined ? {} : { bookingDate }), ...(accountAmount === undefined ? {} : { accountAmount }) });
     const corrections = new Map(this.bankCorrections).set(rowId, correction);
     const effective = applyBankCorrections(this.importRecords, corrections);
-    const matches = suggestWorkspaceMatches(effective, this.documentRecords);
+    const matches = suggestWorkspaceMatches(effective, this.effectiveDocuments);
     const before = this.matches.find(match => match.transactionId === rowId);
     if (before && !matches.some(match => match.transactionId === rowId)) throw new Error('A correction cannot return an existing transaction to an unresolved draft.');
     this.bankCorrections = corrections;
     this.effectiveImports = effective;
+    this.matches = matches;
+    this.matchRevision++;
+  }
+  private correctDocumentField({ revision, documentId, sectionId, fieldId, change }: Extract<WorkspaceCommand, { type: 'correct-document-field' }>) {
+    if (!this.metadata || revision !== this.matchRevision) throw new Error('The document has changed. Refresh it before correcting a field.');
+    const target = { documentId, sectionId, fieldId };
+    const key = documentCorrectionKey(target, change.kind);
+    const previous = this.documentCorrections.get(key);
+    if (previous?.change.kind === 'amount' && change.kind === 'amount' && sameMoneyValue(previous.change.value, change.value)) return;
+    if (previous?.change.kind === 'date' && change.kind === 'date' && previous.change.value === change.value) return;
+    if (!previous && fieldId !== null) {
+      const file = this.documentRecords.flatMap(record => record.files).find(file => file.status === 'imported' && file.record.id === documentId);
+      if (file?.status === 'imported' && !file.record.result.issues.some(issue => issue.fieldId === fieldId)) {
+        const section = file.record.result.sections.find(section => section.sectionId === sectionId);
+        if (change.kind === 'date') {
+          const candidates = section?.dates.find(field => field.id === fieldId)?.candidates;
+          if (candidates?.length === 1 && candidates[0] === change.value) return;
+        } else {
+          const candidates = section?.amounts.find(field => field.id === fieldId)?.candidates;
+          const amount = candidates?.[0];
+          if (candidates?.length === 1 && amount?.currency && sameMoneyValue({ ...amount, currency: amount.currency }, change.value)) return;
+        }
+      }
+    }
+    let latest = 1;
+    for (const correction of this.documentCorrections.values()) if (correction.documentId === documentId) latest = Math.max(latest, correction.revision);
+    const correction = documentCorrectionSchema.parse({ ...target, revision: latest + 1, change });
+    const corrections = new Map(this.documentCorrections).set(key, correction);
+    const effective = applyDocumentCorrections(this.documentRecords, corrections);
+    const matches = suggestWorkspaceMatches(this.effectiveImports, effective);
+    this.documentCorrections = corrections;
+    this.effectiveDocuments = effective;
     this.matches = matches;
     this.matchRevision++;
   }
@@ -299,12 +341,14 @@ export class WorkspaceSession {
         case 'save': await this.save(); break;
         case 'review-match': this.reviewMatch(command); break;
         case 'correct-bank-row': this.correctBankRow(command); break;
+        case 'correct-document-field': this.correctDocumentField(command); break;
         case 'import-statement': await this.importStatement(); break;
         case 'import-documents': await this.importDocuments(); break;
         case 'new':
           if (await this.canLeave()) {
             this.metadata = newMetadata(); this.saved = null; this.importRecords = []; this.documentRecords = []; this.matches = []; this.matchDecisions.clear();
             this.bankCorrections.clear(); this.effectiveImports = [];
+            this.documentCorrections.clear(); this.effectiveDocuments = [];
             this.importOutcome = null; this.documentOutcome = null; this.loadRevision++; this.matchRevision++;
           }
           break;
@@ -318,6 +362,8 @@ export class WorkspaceSession {
           this.matchDecisions = new Map(loaded.matchDecisions);
           this.bankCorrections = new Map(loaded.bankCorrections);
           this.effectiveImports = applyBankCorrections(this.importRecords, this.bankCorrections);
+          this.documentCorrections = new Map(loaded.documentCorrections);
+          this.effectiveDocuments = applyDocumentCorrections(this.documentRecords, this.documentCorrections);
           this.importOutcome = null; this.documentOutcome = null; this.loadRevision++; this.matchRevision++;
           break;
         }

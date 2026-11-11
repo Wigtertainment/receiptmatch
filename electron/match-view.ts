@@ -1,5 +1,6 @@
 import type { SourceEvidence } from '../src/shared/bank-import.js';
 import type { BankCorrection } from '../src/shared/bank-corrections.js';
+import type { DocumentCorrection } from '../src/shared/document-corrections.js';
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
 import type { StoredDocumentImport } from '../src/shared/workspace-documents.js';
 import type { MatchDetails, MatchSourceExcerpt, MatchSummary, TransactionMatch } from '../src/shared/workspace-matching.js';
@@ -32,12 +33,15 @@ function excerpts(evidence: SourceEvidence[], pages: ReadonlyMap<string, number>
 	return [...result.values()].sort((left, right) => left.page - right.page || left.y - right.y || left.x - right.x);
 }
 
-export function describeMatch(match: TransactionMatch, imports: StoredBankImport[], documentImports: StoredDocumentImport[]): MatchDetails {
+export function describeMatch(
+	match: TransactionMatch, imports: StoredBankImport[], documentImports: StoredDocumentImport[], corrections: ReadonlyMap<string, DocumentCorrection>,
+): MatchDetails {
 	const bank = imports.find(record => record.transactions.some(row => row.transactionId === match.transactionId))!;
 	const rowId = bank.transactions.find(row => row.transactionId === match.transactionId)!.rowId;
 	const transaction = bank.result.transactions.find(row => row.rowId === rowId)!;
 	const bankPages = new Map(bank.result.sourceProvenance!.pages.map(page => [page.pageId, page.pageNumber]));
 	const documents = new Map(documentImports.flatMap(record => record.files.flatMap(file => file.status === 'imported' ? [[file.record.id, file.record] as const] : [])));
+	const correctedSections = new Set([...corrections.values()].map(({ documentId, sectionId }) => JSON.stringify([documentId, sectionId])));
 	return { statementPath: bank.filePath, candidates: match.candidates.map(candidate => {
 		const document = documents.get(candidate.documentId)!;
 		const sectionIndex = document.result.sections.findIndex(section => section.sectionId === candidate.sectionId);
@@ -62,6 +66,7 @@ export function describeMatch(match: TransactionMatch, imports: StoredBankImport
 			for (const issue of document.result.issues) if (issue.fieldId && relatedIds.has(issue.fieldId)) documentEvidence.push(...issue.evidence);
 		}
 		return { ...candidate, filePath: document.filePath, sectionKind: section.kind, sectionNumber: document.result.sections.length > 1 ? sectionIndex + 1 : null,
+			documentValuesCorrected: correctedSections.has(JSON.stringify([candidate.documentId, candidate.sectionId])),
 			pages: section.pageIds.map(id => documentPages.get(id)!), bankEvidence: excerpts(bankEvidence, bankPages), documentEvidence: excerpts(documentEvidence, documentPages) };
 	}) };
 }

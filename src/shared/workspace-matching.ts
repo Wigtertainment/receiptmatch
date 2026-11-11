@@ -78,6 +78,7 @@ export interface MatchCandidateView extends MatchCandidate {
 	filePath: string;
 	sectionKind: DocumentSection['kind'];
 	sectionNumber: number | null;
+	documentValuesCorrected: boolean;
 	pages: number[];
 	bankEvidence: MatchSourceExcerpt[];
 	documentEvidence: MatchSourceExcerpt[];

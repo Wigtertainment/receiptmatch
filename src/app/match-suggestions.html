@@ -152,18 +152,49 @@
 							@if (reviewError(); as error) {
 								<p role="alert">{{ error }}</p>
 							}
+							@if (selectedDocument(); as document) {
+								<details
+									class="source-details match-document-preview"
+									[open]="previewDocumentId() === document.id"
+									(toggle)="toggleDocumentPreview(document.id, $event)"
+								>
+									<summary>
+										Document details <span class="sr-only">for {{ document.name }}</span>
+									</summary>
+									@if (previewDocumentId() === document.id) {
+										<app-document-analysis [analysis]="document.record.result" [format]="document.record.format" fieldHeading="Document fields" />
+									}
+								</details>
+							}
 						</section>
 						@if (!selected.candidateCount) {
 							<p class="match-panel-message">No supporting document met the matching rules for this transaction.</p>
 						} @else if (details(); as result) {
 							<p class="match-approval-note">Suggestions require separate approval.</p>
 							@for (candidate of result.candidates; track candidate.documentId + '/' + candidate.sectionId) {
+								@let owner = owners().get(candidate.documentId);
 								<article class="match-candidate">
 									<div class="match-candidate-heading">
 										<h3>{{ basename(candidate.filePath) }}</h3>
 										<span class="match-status" [class.match-uncertain]="candidate.issues.length" [class.match-reliable]="!candidate.issues.length">
 											{{ candidate.issues.length ? 'Uncertain' : 'Reliable' }}
 										</span>
+										@if (owner) {
+											<span
+												class="match-candidate-count"
+												>{{ owner.transactionId === selected.transactionId ? 'Assigned to this transaction' : 'Assigned to ' + transactionName(owner.description) }}</span
+											>
+										} @else {
+											<button
+												type="button"
+												class="button-primary compact"
+												[disabled]="reviewDisabled()"
+												(click)="applyReview({ status: 'assigned', documentId: candidate.documentId })"
+											>
+												{{ selected.review.status === 'assigned' ? 'Replace with this document' : 'Assign this document' }}
+												<span class="sr-only">{{ basename(candidate.filePath) }}</span>
+											</button>
+										}
 									</div>
 									<p class="match-location">
 										{{ sectionLabels[candidate.sectionKind] }}
@@ -172,6 +203,9 @@
 										}
 										· {{ candidate.pages.length === 1 ? 'Page' : 'Pages' }} {{ candidate.pages.join(', ') }}
 									</p>
+									@if (candidate.documentValuesCorrected) {
+										<p class="match-location">This section contains corrected values. Source evidence shows the original document.</p>
+									}
 									@if (candidate.issues.length) {
 										<ul class="match-issues">
 											@for (issue of candidate.issues; track issue) {

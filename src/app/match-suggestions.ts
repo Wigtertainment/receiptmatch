@@ -1,15 +1,18 @@
 import { Component, computed, effect, input, signal, untracked } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import { formatCalendarDate, formatDocumentTotal, formatMoney } from '../shared/display.js';
+import { applyDocumentCorrections, documentCorrectionKey } from '../shared/document-corrections.js';
 import type { WorkspaceView } from '../shared/protocol.js';
 import type { MatchCandidateView, MatchDetails, MatchReview, MatchSummary } from '../shared/workspace-matching.js';
+import type { StoredSupportingDocument } from '../shared/workspace-documents.js';
+import { DocumentAnalysis } from './document-imports.js';
 
 type MatchStatus = MatchSummary['status'];
 type Filter = 'all' | MatchStatus;
-interface ReviewDocument { id: string; name: string; path: string; total: string | null; }
+interface ReviewDocument { id: string; name: string; path: string; total: string | null; record: StoredSupportingDocument; }
 
 @Component({
-	selector: 'app-match-suggestions', standalone: true, imports: [NgTemplateOutlet], templateUrl: './match-suggestions.html',
+	selector: 'app-match-suggestions', standalone: true, imports: [NgTemplateOutlet, DocumentAnalysis], templateUrl: './match-suggestions.html',
 })
 export class MatchSuggestions {
 	readonly workspace = input.required<WorkspaceView>();
@@ -41,7 +44,10 @@ export class MatchSuggestions {
 	private readonly detailRequest = signal<{ revision: number; transactionId: string; value: MatchDetails | null } | null>(null);
 	private readonly documentRequest = signal<{ key: string; documents: ReviewDocument[] | null } | null>(null);
 	private readonly documentRetry = signal(0);
-	private readonly documentKey = computed(() => JSON.stringify([this.workspace().loadRevision, this.workspace().documentImports.map(report => report.id)]));
+	private readonly documentKey = computed(() => {
+		const workspace = this.workspace();
+		return JSON.stringify([workspace.loadRevision, workspace.documentImports.map(report => report.id), workspace.documentCorrections.map(correction => correction.revision)]);
+	});
 	private readonly documentDraft = signal<{ loadRevision: number; transactionId: string; id: string } | null>(null);
 	private readonly pending = signal(false);
 	private readonly reviewFeedback = signal<{ loadRevision: number; transactionId: string; message: string } | null>(null);
@@ -101,6 +107,7 @@ export class MatchSuggestions {
 		return this.assignedDocument()?.id ?? '';
 	});
 	readonly selectedDocument = computed(() => this.documents()?.find(item => item.id === this.selectedDocumentId()));
+	readonly previewDocumentId = signal<string | null>(null);
 	private readonly candidateTransactionId = computed(() => {
 		const row = this.selectedRow();
 		return row?.candidateCount ? row.transactionId : null;
@@ -143,7 +150,8 @@ export class MatchSuggestions {
 			const key = this.documentKey();
 			this.documentRetry();
 			if (!this.active() || untracked(() => this.documentRequest()?.key === key)) return;
-			const reportIds = untracked(() => this.workspace().documentImports.map(report => report.id));
+			const { documentImports, documentCorrections } = untracked(this.workspace);
+			const reportIds = documentImports.map(report => report.id);
 			if (!reportIds.length) { this.documentRequest.set({ key, documents: [] }); return; }
 			let current = true;
 			onCleanup(() => { current = false; });
@@ -152,8 +160,9 @@ export class MatchSuggestions {
 			};
 			void window.receiptmatch.documentImports().then(records => {
 				if (records.length !== reportIds.length || records.some((record, index) => record.id !== reportIds[index])) return update(null);
-				const documents = records.flatMap(record => record.files.flatMap(file => file.status === 'imported' ? [{
-					id: file.record.id, name: this.basename(file.record.filePath), path: file.record.filePath, total: formatDocumentTotal(file.record.result),
+				const corrections = new Map(documentCorrections.map(correction => [documentCorrectionKey(correction, correction.change.kind), correction]));
+				const documents = applyDocumentCorrections(records, corrections).flatMap(record => record.files.flatMap(file => file.status === 'imported' ? [{
+					id: file.record.id, name: this.basename(file.record.filePath), path: file.record.filePath, total: formatDocumentTotal(file.record.result), record: file.record,
 				}] : []));
 				update(documents.sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path)));
 			}).catch(() => update(null));
@@ -161,16 +170,25 @@ export class MatchSuggestions {
 	}
 
 	setFilter(filter: Filter) {
+		const previous = this.selectedRow()?.transactionId;
 		this.filterState.set({ filter, loadRevision: this.workspace().loadRevision });
+		if (previous !== this.selectedRow()?.transactionId) this.resetDetail();
 	}
 	selectTransaction(transactionId: string, event: MouseEvent) {
 		const { loadRevision } = this.workspace();
+		if (transactionId !== this.selectedRow()?.transactionId) this.resetDetail();
 		this.selected.set({ transactionId, loadRevision });
-		if (event.detail === 0 || window.matchMedia('(width < 1000px)').matches) requestAnimationFrame(() => {
+		const stacked = window.matchMedia('(width < 1000px)').matches;
+		if (event.detail === 0 || stacked) requestAnimationFrame(() => {
 			if (this.active() && this.workspace().loadRevision === loadRevision && this.selectedRow()?.transactionId === transactionId) {
-				document.getElementById('match-detail-heading')?.focus();
+				document.getElementById('match-detail-heading')?.focus({ preventScroll: !stacked });
 			}
 		});
+	}
+	private resetDetail() {
+		this.previewDocumentId.set(null);
+		const panel = document.getElementById('match-detail-panel');
+		if (panel) panel.scrollTop = 0;
 	}
 	focusSelectedTransaction(transactionId: string) { document.getElementById('match-transaction-' + transactionId)?.focus(); }
 	documentLabel(item: ReviewDocument, owner?: MatchSummary) {
@@ -181,7 +199,11 @@ export class MatchSuggestions {
 	}
 	chooseDocument(event: Event) {
 		const row = this.selectedRow();
+		this.previewDocumentId.set(null);
 		if (row) this.documentDraft.set({ loadRevision: this.workspace().loadRevision, transactionId: row.transactionId, id: (event.target as HTMLSelectElement).value });
+	}
+	toggleDocumentPreview(documentId: string, event: Event) {
+		if (this.selectedDocumentId() === documentId) this.previewDocumentId.set((event.target as HTMLDetailsElement).open ? documentId : null);
 	}
 	async applyReview(review: MatchReview) {
 		const row = this.selectedRow();

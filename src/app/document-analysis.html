@@ -10,9 +10,50 @@
 	</ul>
 </ng-template>
 
+<ng-template #correctionForm let-editor>
+	<section class="document-correction-editor" [id]="editorId()" [attr.aria-labelledby]="editorId() + '-heading'">
+		<h6 [id]="editorId() + '-heading'" tabindex="-1">Correct document field</h6>
+		<p>{{ editor.role }}</p>
+		<form (submit)="applyCorrection($event)" novalidate>
+			<div class="bank-correction-fields">
+				@if (editor.kind === 'amount') {
+					<label [for]="editorId() + '-amount'">Amount</label>
+					<input
+						[id]="editorId() + '-amount'"
+						name="value"
+						type="text"
+						inputmode="decimal"
+						maxlength="130"
+						[value]="editor.inputValue"
+						[disabled]="busy()"
+						[attr.aria-describedby]="editorId() + '-amount-hint'"
+						required
+					/>
+					<p class="muted" [id]="editorId() + '-amount-hint'">Use {{ amountExample }} without grouping separators.</p>
+					<label [for]="editorId() + '-currency'">Currency</label>
+					<input [id]="editorId() + '-currency'" name="currency" type="text" maxlength="3" [value]="editor.currency" [disabled]="busy()" required />
+				} @else {
+					<label [for]="editorId() + '-date'">Date</label>
+					<input [id]="editorId() + '-date'" name="value" type="date" [value]="editor.inputValue" [disabled]="busy()" required />
+				}
+			</div>
+			@if (correctionError(); as error) {
+				<p class="bank-correction-error" role="alert">{{ error }}</p>
+			}
+			<div class="bank-correction-actions">
+				<button type="submit" class="button-primary compact" [disabled]="busy()">Apply correction</button>
+				<button type="button" class="button-secondary compact" (click)="closeCorrection()" [disabled]="busy()">Close</button>
+			</div>
+		</form>
+		@if (editor.applied && !correctionError() && !workspaceError()) {
+			<p class="bank-correction-feedback" role="status">Correction applied to this workspace.</p>
+		}
+	</section>
+</ng-template>
+
 @if (generalIssues().length) {
 	<div class="statement-warnings">
-		<h4>Review needed</h4>
+		<h4>{{ corrections()?.size ? 'Original extraction notes' : 'Review needed' }}</h4>
 		<ul>
 			@for (issue of generalIssues(); track $index) {
 				<li>
@@ -35,7 +76,7 @@
 	</div>
 }
 
-<h4>Extracted fields</h4>
+<h4>{{ fieldHeading() }}</h4>
 @if (!hasFields()) {
 	<p class="muted">No recognized fields were retained.</p>
 }
@@ -55,10 +96,15 @@
 		@for (field of section.fields; track field.id) {
 			<details (toggle)="toggleDetail(field.id, $event)">
 				<summary class="field-summary">
-					<span class="field-role">{{ field.role }}</span> · {{ field.values.join(' / ') || 'No value found' }}
-					@if (field.values.length > 1) {
+					<span class="field-role">{{ field.role }}</span> ·
+					@if (field.correction?.corrected; as corrected) {
+						{{ correctedValue(corrected.change) }} <span class="source-status">Corrected</span>
+					} @else {
+						{{ field.values.join(' / ') || 'No value found' }}
+					}
+					@if (!field.correction?.corrected && field.values.length > 1) {
 						<span class="field-warning"> · Ambiguous</span>
-					} @else if (field.issues.length && field.values.length) {
+					} @else if (field.reviewNeeded && (field.values.length || field.correction?.corrected)) {
 						<span class="field-warning"> · Review needed</span>
 					}
 				</summary>
@@ -69,7 +115,33 @@
 								<dt>Printed label</dt>
 								<dd class="raw-text">{{ field.label }}</dd>
 							</div>
+							@if (field.correction?.corrected) {
+								<div>
+									<dt>Original values</dt>
+									<dd>{{ field.values.join(' / ') || 'No value found' }}</dd>
+								</div>
+							}
 						</dl>
+						@if (field.newConflict; as message) {
+							<p class="field-warning">{{ message }}</p>
+						}
+						@if (field.correction; as correction) {
+							<button
+								type="button"
+								class="button-secondary compact"
+								[disabled]="busy()"
+								[attr.aria-expanded]="editing()?.key === correction.key"
+								[attr.aria-controls]="editing()?.key === correction.key ? editorId() : null"
+								(click)="startCorrection(correction, $event)"
+							>
+								Correct value
+							</button>
+							@if (editing(); as editor) {
+								@if (editor.key === correction.key) {
+									<ng-container [ngTemplateOutlet]="correctionForm" [ngTemplateOutletContext]="{ $implicit: editor }" />
+								}
+							}
+						}
 						@if (field.issues.length) {
 							<ul>
 								@for (issue of field.issues; track $index) {
@@ -93,6 +165,28 @@
 					</div>
 				}
 			</details>
+		}
+		@for (missing of section.missingFields; track missing.key) {
+			<div class="document-missing-field">
+				@if (missing.corrected; as corrected) {
+					<p>{{ missing.role }} · {{ correctedValue(corrected.change) }} <span class="source-status">Corrected</span></p>
+				}
+				<button
+					type="button"
+					class="button-secondary compact"
+					[disabled]="busy()"
+					[attr.aria-expanded]="editing()?.key === missing.key"
+					[attr.aria-controls]="editing()?.key === missing.key ? editorId() : null"
+					(click)="startCorrection(missing, $event)"
+				>
+					{{ missing.corrected ? 'Edit ' : 'Add ' }}{{ missing.role.toLowerCase() }}
+				</button>
+				@if (editing(); as editor) {
+					@if (editor.key === missing.key) {
+						<ng-container [ngTemplateOutlet]="correctionForm" [ngTemplateOutletContext]="{ $implicit: editor }" />
+					}
+				}
+			</div>
 		}
 	</section>
 }

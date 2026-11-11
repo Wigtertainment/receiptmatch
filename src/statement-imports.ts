@@ -1,34 +1,15 @@
 import { Component, DestroyRef, computed, effect, inject, input, output, signal, untracked } from '@angular/core';
+import { amountEntryExample, formatAmountEntry, parseAmountEntry } from './shared/amount-entry.js';
 import { applyBankCorrections } from './shared/bank-corrections.js';
 import { calendarDateSchema, type ImportIssue, type SourceEvidence, type TransactionCandidate, type UnresolvedDraft } from './shared/bank-import.js';
 import { formatCalendarDate, formatMoney } from './shared/display.js';
-import { moneySchema, sameMoneyValue, type Money } from './shared/money.js';
+import { sameMoneyValue, type Money } from './shared/money.js';
 import type { WorkspaceCommand, WorkspaceState } from './shared/protocol.js';
 import type { StoredBankImport } from './shared/workspace-import.js';
 
 type ImportRow = TransactionCandidate | UnresolvedDraft;
 function filename(value: string) { return value.split(/[\\/]/).at(-1) || value; }
 function directionLabel(value: ImportRow['direction']) { return value === 'incoming' ? 'Incoming' : value === 'outgoing' ? 'Outgoing' : 'Unknown'; }
-const decimal = new Intl.NumberFormat().formatToParts(1.1).find(part => part.type === 'decimal')?.value ?? '.';
-
-function amountInput(value: Money | undefined) {
-    if (!value) return '';
-    const negative = value.coefficient.startsWith('-');
-    const digits = (negative ? value.coefficient.slice(1) : value.coefficient).padStart(value.scale + 1, '0');
-    const magnitude = value.scale ? digits.slice(0, -value.scale) + decimal + digits.slice(-value.scale) : digits;
-    return (negative ? '-' : '') + magnitude;
-}
-
-function parseAmount(value: string, currency: string): Money | null {
-    const signed = value.replace(/^−/, '-');
-    const normalized = decimal === '.' ? signed : signed.includes('.') ? '' : signed.replace(decimal, '.');
-    const parts = /^([+-]?)(\d+)(?:\.(\d+))?$/.exec(normalized);
-    if (!parts) return null;
-    const fraction = parts[3] ?? '';
-    const digits = (parts[2] + fraction).replace(/^0+(?=\d)/, '');
-    const amount = moneySchema.safeParse({ coefficient: parts[1] === '-' && digits !== '0' ? '-' + digits : digits, scale: fraction.length, currency });
-    return amount.success ? amount.data : null;
-}
 
 @Component({
     selector: 'app-row-source', standalone: true,
@@ -159,8 +140,8 @@ export class StatementImports {
         return editing !== null && (this.corrections().get(editing.id)?.revision ?? 0) !== editing.originalRevision;
     });
     readonly correctionError = signal<string | null>(null);
-    readonly decimalExample = '12' + decimal + '34';
-    readonly amountInput = amountInput;
+    readonly decimalExample = amountEntryExample;
+    readonly amountInput = formatAmountEntry;
     readonly generalIssues = computed(() => {
         const result = this.selected()?.result;
         const shownInDrafts = new Set(result?.unresolvedDrafts.flatMap(row => row.issues).map(issue => JSON.stringify(issue)) ?? []);
@@ -241,7 +222,7 @@ export class StatementImports {
         const amountText = String(fields.get('account-amount') ?? '').trim();
         const date = dateText ? calendarDateSchema.safeParse(dateText) : null;
         if (date && !date.success) { this.correctionError.set('Enter a valid booking date.'); return; }
-        const amount = amountText ? parseAmount(amountText, editing.currency) : null;
+        const amount = amountText ? parseAmountEntry(amountText, editing.currency) : null;
         if (amountText && !amount) {
             this.correctionError.set('Enter an amount without grouping separators, for example ' + this.decimalExample + '.');
             return;
