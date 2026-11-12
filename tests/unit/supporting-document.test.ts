@@ -185,6 +185,44 @@ test('multiple labelled dates on a single line keep their own roles', () => {
 	assert.deepEqual(dates(result.sections[0], 'due'), ['2032-06-20']);
 });
 
+test('uses a generic Date when there is no specific issue date', () => {
+	const result = interpretSupportingDocument(document(['Receipt', 'Date: 16/10/2032 Original Due Date: 2032-10-18', 'Payment Date: 2032-10-17']));
+	assert.deepEqual(dates(result.sections[0], 'issue'), ['2032-10-16']);
+	assert.deepEqual(dates(result.sections[0], 'payment'), ['2032-10-17']);
+	assert.deepEqual(dates(result.sections[0], 'due'), ['2032-10-18']);
+});
+
+test('prefers an explicit issue date and leaves ambiguous generic dates unresolved', () => {
+	const section = (...lines: string[]) => interpretSupportingDocument(document(['Receipt', ...lines])).sections[0];
+	for (const label of ['Invoice Date', 'Issue Date', 'Belegdatum']) {
+		assert.deepEqual(dates(section('Date: 16/10/2032', `${label}: 2032-10-17`), 'issue'), ['2032-10-17']);
+	}
+	assert.deepEqual(dates(section('Date: 04/05/2032'), 'issue'), []);
+	assert.deepEqual(dates(section('Date: 16/10/2032', 'Date: 17/10/2032'), 'issue'), []);
+	assert.deepEqual(dates(section('Date: 16/10/2032 17/10/2032'), 'issue'), []);
+	assert.deepEqual(dates(section('16/10/2032 Original'), 'issue'), []);
+});
+
+test('associates a Date label with an OCR date on the same visual row', () => {
+	const input = document([]);
+	input.pages[0].spans = [
+		{ text: 'Date', region: { x: 22, y: 397, width: 30, height: 10.5 }, method: 'local-ocr' },
+		{ text: '16/10/2032', region: { x: 78, y: 392.5, width: 75, height: 13 }, method: 'local-ocr' },
+		{ text: 'Original', region: { x: 289.5, y: 392.5, width: 51.5, height: 15 }, method: 'local-ocr' },
+	];
+	const result = interpretSupportingDocument(input);
+	const date = result.sections[0].dates.find(field => field.role === 'issue');
+	assert.ok(date);
+	assert.deepEqual(date.candidates, ['2032-10-16']);
+	assert.deepEqual(date.evidence.map(item => item.rawText), ['Date', '16/10/2032 Original']);
+
+	input.pages[0].spans.push({ text: 'Due', region: { x: 1, y: 397, width: 18, height: 10.5 }, method: 'local-ocr' });
+	assert.deepEqual(dates(interpretSupportingDocument(input).sections[0], 'issue'), []);
+	input.pages[0].spans.pop();
+	input.pages[0].spans[0].region.y = 370;
+	assert.deepEqual(dates(interpretSupportingDocument(input).sections[0], 'issue'), []);
+});
+
 test('multiple labelled amounts on one line keep billed total and balance due distinct', () => {
 	const result = interpretSupportingDocument(document(['Invoice', 'Invoice Total EUR 88.00 Balance Due EUR 0.00']));
 	assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '8800', scale: 2, currency: 'EUR' }]);

@@ -4,7 +4,7 @@ import type { DocumentSection } from '../src/shared/supporting-document.js';
 import type { StoredDocumentImport } from '../src/shared/workspace-documents.js';
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
 import type { MatchCandidate, MatchNameEvidence, ReviewMatch, ReviewMatchCandidate, TransactionMatch } from '../src/shared/workspace-matching.js';
-import { hasFullDocumentReference, mergedLegacySections, recordedDocumentPayments } from './documents/interpret.js';
+import { hasFullDocumentReference, mergedLegacySections, recordedDocumentPayments, withGenericIssueDate } from './documents/interpret.js';
 import { bankReferenceFields, dateEvidence, documentReferenceFields, moneyKey, normalizeReference, outgoingAmounts, referenceEvidence } from './matching.js';
 
 type AmountEvidence = MatchCandidate['amounts'][number];
@@ -98,7 +98,8 @@ function indexSections(imports: readonly StoredDocumentImport[]) {
 		const merged = mergedLegacySections(result);
 		for (const section of result.sections) {
 			const paymentDates = section.dates.filter(field => field.role === 'payment');
-			const dates = paymentDates.some(field => field.candidates.length) ? paymentDates : section.dates.filter(field => field.role === 'issue');
+			const dates = paymentDates.some(field => field.candidates.length) ? paymentDates :
+				withGenericIssueDate(section, result.input?.pages ?? []).filter(field => field.role === 'issue');
 			const merchants = section.merchants.flatMap(field => field.candidates.map(value => namedText(value)));
 			const references = new Set(documentReferenceFields(section).flatMap(field => field.candidates
 				.filter(value => hasFullDocumentReference(field, value)).map(normalizeReference)).filter(Boolean));

@@ -5,6 +5,7 @@ import { approvalSelectionFor, matchApprovalStatus, type ReviewApprovalState } f
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
 import type { StoredDocumentImport } from '../src/shared/workspace-documents.js';
 import type { MatchDetails, MatchSourceExcerpt, MatchSummary, ReviewMatch } from '../src/shared/workspace-matching.js';
+import { withGenericIssueDate } from './documents/interpret.js';
 
 export function summarizeMatches(
 	matches: ReviewMatch[], imports: StoredBankImport[], decisions: ReadonlyMap<string, string | null>, corrections: ReadonlyMap<string, BankCorrection>,
@@ -54,7 +55,9 @@ export function describeMatch(
 		const document = documents.get(candidate.documentId)!;
 		const sectionIndex = document.result.sections.findIndex(section => section.sectionId === candidate.sectionId);
 		const section = document.result.sections[sectionIndex];
-		const documentPages = new Map(document.result.input!.pages.map(page => [page.pageId, page.pageNumber]));
+		const pages = document.result.input!.pages;
+		const documentPages = new Map(pages.map(page => [page.pageId, page.pageNumber]));
+		const dates = candidate.date?.role === 'issue' ? withGenericIssueDate(section, pages) : section.dates;
 		const bankEvidence = [
 			...candidate.amounts.flatMap(amount => (amount.basis === 'account-settlement' ? transaction.accountAmount : transaction.reportedOriginalAmount)!.evidence),
 			...candidate.references.flatMap(reference => transaction.references.filter(field => field.label === reference.bankLabel && field.value === reference.bankValue)
@@ -65,13 +68,13 @@ export function describeMatch(
 		];
 		const fields = new Set([...candidate.amounts.map(amount => amount.documentFieldId), ...candidate.references.map(reference => reference.documentFieldId)]);
 		if (candidate.date) fields.add(candidate.date.documentFieldId);
-		const documentEvidence = [...section.amounts, ...section.references, ...section.dates].filter(field => fields.has(field.id)).flatMap(field => field.evidence);
+		const documentEvidence = [...section.amounts, ...section.references, ...dates].filter(field => fields.has(field.id)).flatMap(field => field.evidence);
 		documentEvidence.push(...section.merchants.filter(field => field.candidates.includes(candidate.signals.merchant.documentText ?? '')).flatMap(field => field.evidence));
 		if (candidate.issues.includes('conflicting-evidence')) {
 			const roles = new Set(section.amounts.filter(field => fields.has(field.id)).map(field => field.role));
 			const referenceRoles = new Set(section.references.filter(field => fields.has(field.id)).map(field => field.role));
 			const relatedFields = [...section.amounts.filter(field => roles.has(field.role)), ...section.references.filter(field => referenceRoles.has(field.role)),
-				...section.dates.filter(field => field.role === 'issue' || field.role === 'payment'), ...section.currencies.filter(field => field.role === 'settlement'), ...section.merchants];
+				...dates.filter(field => field.role === 'issue' || field.role === 'payment'), ...section.currencies.filter(field => field.role === 'settlement'), ...section.merchants];
 			const relatedIds = new Set(relatedFields.map(field => field.id));
 			documentEvidence.push(...relatedFields.flatMap(field => field.evidence));
 			for (const issue of document.result.issues) if (issue.fieldId && relatedIds.has(issue.fieldId)) documentEvidence.push(...issue.evidence);
