@@ -159,6 +159,44 @@ function dateRole(raw: string): DateRole {
 	const matches = labels.flatMap(([role, pattern]) => [...raw.matchAll(pattern)].map(match => ({ role, index: match.index! })));
 	return matches.sort((a, b) => b.index - a.index)[0]?.role ?? 'unknown';
 }
+const genericDateLabel = /^date\s*:?$/i;
+
+export function withGenericIssueDate(section: DocumentSection, pages: readonly ImportPage[]): DocumentSection['dates'] {
+	if (section.kind === 'payment-information' || section.dates.some(field => field.role === 'issue' && field.candidates.length)) return section.dates;
+	const labelled = new Map<string, SourceEvidence | null>();
+	for (const field of section.dates) {
+		if (field.role !== 'unknown' || !field.candidates.length) continue;
+		for (const evidence of field.evidence) {
+			const prefixes = [...evidence.rawText.matchAll(datePattern)].filter(match => dateCandidates(match[0]).length)
+				.map(match => evidence.rawText.slice(0, match.index).trim()).filter(prefix => dateRole(prefix) === 'unknown');
+			if (prefixes.length !== 1) continue;
+			const [prefix] = prefixes;
+			if (genericDateLabel.test(prefix)) { labelled.set(field.id, null); break; }
+			if (prefix) continue;
+			const page = pages.find(page => page.pageId === evidence.pageId);
+			const value = evidence.region;
+			// OCR can put words from the same printed row on separate lines because their top edges differ.
+			const before = page?.spans.filter(({ method, text, region }) => {
+				const overlap = Math.min(region.y + region.height, value.y + value.height) - Math.max(region.y, value.y);
+				return method === evidence.method && text.trim() && region.x + region.width <= value.x &&
+					overlap > 0 && overlap >= Math.min(region.height, value.height) / 2;
+			});
+			if (before?.length === 1 && genericDateLabel.test(before[0].text.trim())) {
+				const { text, region, method } = before[0];
+				labelled.set(field.id, { pageId: evidence.pageId, rawText: text.trim(), region, method });
+				break;
+			}
+		}
+	}
+	const dates = section.dates.filter(field => labelled.has(field.id));
+	if (new Set(dates.flatMap(field => field.candidates)).size !== 1) return section.dates;
+	return section.dates.map(field => {
+		if (!labelled.has(field.id)) return field;
+		const label = labelled.get(field.id);
+		return { ...field, role: 'issue', label: label ? label.rawText : field.label, evidence: label ? [label, ...field.evidence] : field.evidence };
+	});
+}
+
 const referencePattern = /\b(tax invoice number|credit note number|invoice (?:number|no\.?|#)|invoice\s*#|receipt (?:number|no\.?|#)|document no\.?|billing number|bill no\.?|order (?:number|no\.?|#)|customer (?:number|no\.?|#)|account (?:number|no\.?|#)|table (?:number|no\.?|#)|payment (?:reference|id)|reference|rechnungsnummer|rechnungsnr\.?|kundennummer|mandantennummer|auftragsnr\.?|bestellnummer|transaktions-id)\s*[:#]?\s*/ig;
 const referenceValue = /^[\p{L}\d][\p{L}\d_\-/.]*(?:[ \t]+[\p{L}\d][\p{L}\d_\-/.]*)*$/u;
 function referencesOnLine(line: string) {
@@ -339,6 +377,7 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 		}
 	}
 	for (const section of sections) {
+		section.dates = withGenericIssueDate(section, input.pages);
 		if (!section.merchants.length && section.kind !== 'payment-information') {
 			const lines = sectionLines.get(section.sectionId) ?? [], candidates: { text: string; evidence: SourceEvidence[] }[] = [];
 			for (const line of lines) {
