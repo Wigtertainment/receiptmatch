@@ -72,6 +72,26 @@ label { font-size: 12px; font-weight: 600; display: block; margin-bottom: 10px; 
 .section-heading h2 { margin: 0; font-size: 19px; line-height: 1.25; font-weight: 720; letter-spacing: -.025em; }
 .muted { color: #5f6d63; }
 .source-panel { min-width: 0; border: 1px solid var(--divider); border-radius: 10px; background: var(--surface); }
+.export-documents-panel { margin-bottom: 16px; padding: 18px; }
+.export-documents-panel p { margin: 8px 0 0; font-size: 13px; }
+.export-documents-panel .error { margin-top: 12px; }
+.export-outcomes { margin-top: 12px; }
+.export-outcomes table { min-width: 500px; table-layout: fixed; }
+.export-outcomes tbody th { border-top: 1px solid var(--divider); background: transparent; }
+.export-outcomes :is(th, td) { overflow-wrap: anywhere; vertical-align: top; }
+.export-outcomes td p { margin-top: 3px; }
+.export-settings-panel { display: grid; gap: 12px; width: min(100%, 680px); padding: 18px; }
+.export-settings-panel h2 { margin: 0; font-size: 19px; }
+.export-settings-panel label, .export-settings-panel p { margin: 0; }
+.export-settings-panel input { width: 100%; padding: 9px 11px; border: 1px solid var(--outline); border-radius: 6px; color: var(--ink); }
+.export-settings-panel input[aria-invalid="true"] { border-color: #986042; }
+.export-settings-panel > p, .export-pattern-tokens { font-size: 13px; }
+.export-pattern-tokens { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin: 0; }
+.export-pattern-tokens dd { margin: 3px 0 0; color: var(--muted); }
+.export-pattern-preview { display: grid; gap: 6px; padding: 11px 14px; border: 1px solid var(--divider); border-radius: 6px; background: #f3f7f5; font-size: 13px; }
+.export-pattern-preview output { overflow-wrap: anywhere; }
+.export-pattern-error { color: #774734; }
+.export-pattern-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 13px; }
 .source-panel-heading { gap: 10px 12px; padding: 14px; border-bottom: 1px solid var(--divider); }
 .source-panel-count { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
 .source-status { display: inline-block; padding: 2px 6px; border-radius: 5px; background: #e3efe8; color: #215d4b; font-size: 11px; font-weight: 700; line-height: 1.4; }

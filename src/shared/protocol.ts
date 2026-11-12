@@ -8,6 +8,8 @@ import { bankCorrectionChangesSchema, type BankCorrection } from './bank-correct
 import { documentCorrectionTarget, documentCorrectionValueSchema, type DocumentCorrection } from './document-corrections.js';
 import { matchApprovalSelectionSchema } from './match-approvals.js';
 import type { OriginalPreviewRequest, OriginalPreviewResult } from './original-preview.js';
+import { exportFilenamePatternLimit } from './export-filename.js';
+import type { DocumentExportResponse } from './document-export.js';
 
 export const workspaceName = z.string().max(120);
 export const commandSchema = z.discriminatedUnion('type', [
@@ -26,12 +28,18 @@ export const commandSchema = z.discriminatedUnion('type', [
     .refine(rows => new Set(rows.map(row => row.transactionId.toLowerCase())).size === rows.length) })
 ]);
 export type WorkspaceCommand = z.infer<typeof commandSchema>;
+export const exportSettingsRequestSchema = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('read') }),
+  z.strictObject({ type: z.literal('save'), pattern: z.string().max(exportFilenamePatternLimit) }),
+]);
+export type ExportSettingsRequest = z.infer<typeof exportSettingsRequestSchema>;
 export const matchRequestSchema = z.strictObject({ revision: z.number().int().nonnegative(), transactionId: z.uuid().optional() });
+export const documentExportRequestSchema = z.strictObject({ loadRevision: z.number().int().nonnegative() });
 export interface DocumentImportSummary { id: string; folderPath: string; status: 'finished' | 'cancelled'; imported: number; skipped: number; failed: number; unsupported: number; directoryIssues: number; }
 export interface WorkspaceView {
   id: string; loadRevision: number; matchRevision: number; name: string; filePath: string | null; dirty: boolean; savedAt: string | null;
   imports: BankImportSummary[]; documentImports: DocumentImportSummary[]; matchReviewCounts: MatchReviewCounts; bankCorrections: BankCorrection[];
-  documentCorrections: DocumentCorrection[];
+  documentCorrections: DocumentCorrection[]; approvedDocumentCount: number;
 }
 export interface ImportOutcome { status: 'imported' | 'skipped' | 'cancelled' | 'failed' | 'unsupported'; importId: string | null; issues: ImportIssue[]; }
 export interface WorkspaceState {
@@ -51,5 +59,7 @@ export interface WorkspaceBridge {
   matchSummaries(revision: number): Promise<MatchSummary[] | null>;
   matchDetails(revision: number, transactionId: string): Promise<MatchDetails | null>;
   openOriginal(request: OriginalPreviewRequest): Promise<OriginalPreviewResult>;
+  exportSettings(request: ExportSettingsRequest): Promise<string>;
+  exportDocuments(loadRevision: number): Promise<DocumentExportResponse>;
   subscribe(listener: (state: WorkspaceState) => void): () => void;
 }

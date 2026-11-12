@@ -1,7 +1,7 @@
 import type { SourceEvidence } from '../src/shared/bank-import.js';
 import type { BankCorrection } from '../src/shared/bank-corrections.js';
 import type { DocumentCorrection } from '../src/shared/document-corrections.js';
-import { matchApprovalStatus, type ReviewApprovalState } from '../src/shared/match-approvals.js';
+import { approvalSelectionFor, matchApprovalStatus, type ReviewApprovalState } from '../src/shared/match-approvals.js';
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
 import type { StoredDocumentImport } from '../src/shared/workspace-documents.js';
 import type { MatchDetails, MatchSourceExcerpt, MatchSummary, ReviewMatch } from '../src/shared/workspace-matching.js';
@@ -18,8 +18,8 @@ export function summarizeMatches(
 			const match = byTransaction.get(transactionId)!;
 			const documentId = decisions.get(transactionId);
 			const reviewApproval = reviewApprovals.get(transactionId);
-			const approvalSelection = documentId ? { transactionId, documentId, transactionRevision: corrections.get(transactionId)?.revision ?? 1,
-				documentRevision: documentRevisions.get(documentId) ?? 1, associationRevision: reviewApproval?.associationRevision ?? 1 } : null;
+			const approvalSelection = documentId ?
+				approvalSelectionFor(transactionId, documentId, corrections.get(transactionId)?.revision, documentRevisions.get(documentId), reviewApproval?.associationRevision) : null;
 			const approval = reviewApproval?.approval ?? null;
 			const approvalStatus = matchApprovalStatus(approval, approvalSelection);
 			return { transactionId, bookingDate: row.bookingDate.value, description: row.description.value,

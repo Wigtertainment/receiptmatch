@@ -5,6 +5,7 @@
 			<nav class="workspace-nav" aria-label="Workspace views">
 				<button type="button" [attr.aria-current]="section() === 'sources' ? 'page' : null" (click)="showSection('sources')">Sources</button>
 				<button type="button" [attr.aria-current]="section() === 'matches' ? 'page' : null" (click)="showSection('matches')">Match suggestions</button>
+				<button type="button" [attr.aria-current]="section() === 'export-settings' ? 'page' : null" (click)="showSection('export-settings')">Export</button>
 			</nav>
 		</aside>
 		<div class="workspace-body">
@@ -56,6 +57,7 @@
 					</div>
 				</section>
 				<app-match-suggestions [workspace]="workspace" [busy]="state().busy" [active]="section() === 'matches'" [hidden]="section() !== 'matches'" />
+				<app-export-settings [workspace]="workspace" [workspaceBusy]="state().busy" [hidden]="section() !== 'export-settings'" />
 			</main>
 		</div>
 	</div>

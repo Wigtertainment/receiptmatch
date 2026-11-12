@@ -29,6 +29,12 @@ export function sameApprovalSelection(left: MatchApprovalSelection, right: Match
         left.documentRevision === right.documentRevision && left.associationRevision === right.associationRevision;
 }
 
+export function approvalSelectionFor(
+    transactionId: string, documentId: string, transactionRevision = 1, documentRevision = 1, associationRevision = 1,
+): MatchApprovalSelection {
+    return { transactionId, documentId, transactionRevision, documentRevision, associationRevision };
+}
+
 export function matchApprovalStatus(approval: MatchApproval | null | undefined, current: MatchApprovalSelection | null): MatchApprovalStatus {
     if (!approval) return { status: 'none' };
     if (!current || approval.transactionId !== current.transactionId || approval.documentId !== current.documentId ||

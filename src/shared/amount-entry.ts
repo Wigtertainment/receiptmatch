@@ -3,11 +3,11 @@ import { moneySchema, type Money } from './money.js';
 const decimal = new Intl.NumberFormat().formatToParts(1.1).find(part => part.type === 'decimal')?.value ?? '.';
 export const amountEntryExample = '12' + decimal + '34';
 
-export function formatAmountEntry(value: Pick<Money, 'coefficient' | 'scale'> | undefined): string {
+export function formatAmountEntry(value: Pick<Money, 'coefficient' | 'scale'> | undefined, separator = decimal): string {
     if (!value) return '';
     const negative = value.coefficient.startsWith('-');
     const digits = (negative ? value.coefficient.slice(1) : value.coefficient).padStart(value.scale + 1, '0');
-    const magnitude = value.scale ? digits.slice(0, -value.scale) + decimal + digits.slice(-value.scale) : digits;
+    const magnitude = value.scale ? digits.slice(0, -value.scale) + separator + digits.slice(-value.scale) : digits;
     return (negative ? '-' : '') + magnitude;
 }
 

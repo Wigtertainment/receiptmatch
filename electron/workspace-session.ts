@@ -6,7 +6,8 @@ import { importIssue } from '../src/shared/bank-import.js';
 import { applyBankCorrections, bankCorrectionSchema, type BankCorrection } from '../src/shared/bank-corrections.js';
 import { applyDocumentCorrections, documentCorrectionKey, documentCorrectionSchema, type DocumentCorrection } from '../src/shared/document-corrections.js';
 import { sameMoneyValue } from '../src/shared/money.js';
-import { advanceReviewRevision, documentRevisionIndex, sameApprovalSelection, type MatchApprovalSelection, type ReviewApprovalState } from '../src/shared/match-approvals.js';
+import { advanceReviewRevision, approvalSelectionFor, documentRevisionIndex, matchApprovalStatus, sameApprovalSelection,
+  type MatchApproval, type MatchApprovalSelection, type ReviewApprovalState } from '../src/shared/match-approvals.js';
 import type { OriginalPreviewRequest } from '../src/shared/original-preview.js';
 import type { OriginalSource } from './original-preview.js';
 import { storedBankImportSchema, type StoredBankImport } from '../src/shared/workspace-import.js';
@@ -18,6 +19,8 @@ import type { MatchDetails, MatchReviewCounts, MatchSummary, ReviewMatch, Transa
 import { suggestWorkspaceMatches } from './matching.js';
 import { describeMatch, summarizeMatches } from './match-view.js';
 import { evaluateReviewMatches } from './review-matching.js';
+import { copyApprovedDocuments, type ApprovedExportDocument } from './document-export.js';
+import type { DocumentExportReport } from '../src/shared/document-export.js';
 
 export interface WorkspaceDialogs {
   open(): Promise<string | null>;
@@ -88,6 +91,7 @@ export class WorkspaceSession {
           !isDeepStrictEqual(this.matchDecisions, this.saved.matchDecisions) || !isDeepStrictEqual(this.bankCorrections, this.saved.bankCorrections) ||
           !isDeepStrictEqual(this.documentCorrections, this.saved.documentCorrections) || !isDeepStrictEqual(this.reviewApprovals, this.saved.reviewApprovals),
         filePath: this.saved?.filePath ?? null, savedAt: this.saved?.metadata.savedAt ?? null, imports, documentImports, matchReviewCounts,
+        approvedDocumentCount: this.currentApprovals().size,
         bankCorrections: structuredClone([...this.bankCorrections.values()]), documentCorrections: structuredClone([...this.documentCorrections.values()])
       } : null,
       busy: this.busy, error: this.error, ...(this.approvalIssue ? { approvalIssue: { ...this.approvalIssue } } : {}),
@@ -126,6 +130,45 @@ export class WorkspaceSession {
     if (!this.metadata || revision !== this.matchRevision) return null;
     const match = this.matchesForReview().find(row => row.transactionId === transactionId);
     return match ? describeMatch(match, this.effectiveImports, this.effectiveDocuments, this.documentCorrections) : null;
+  }
+  private currentApprovals(): Map<string, MatchApproval> {
+    const approvals = new Map<string, MatchApproval>();
+    const documentRevisions = documentRevisionIndex(this.documentCorrections.values());
+    for (const [transactionId, { approval, associationRevision }] of this.reviewApprovals) {
+      const documentId = this.matchDecisions.get(transactionId);
+      if (!documentId || !approval) continue;
+      const selection = approvalSelectionFor(transactionId, documentId, this.bankCorrections.get(transactionId)?.revision, documentRevisions.get(documentId), associationRevision);
+      if (matchApprovalStatus(approval, selection).status === 'approved') approvals.set(transactionId, approval);
+    }
+    return approvals;
+  }
+  async exportApprovedDocuments(loadRevision: number, destination: string, pattern: string): Promise<DocumentExportReport> {
+    if (this.busy) throw new Error('Finish the current workspace action before exporting.');
+    if (!this.metadata || loadRevision !== this.loadRevision) throw new Error('The workspace changed before the export started.');
+    this.busy = true;
+    try {
+      this.publish();
+      const approvals = this.currentApprovals();
+      const originals = new Map(this.documentRecords.flatMap(record => record.files.flatMap(file => file.status === 'imported' ? [[file.record.id, {
+        filePath: file.record.filePath, format: file.record.format, sha256: file.record.result.input!.source.sha256,
+      }] as const] : [])));
+      const documents: ApprovedExportDocument[] = [];
+      for (const record of this.effectiveImports) {
+        const rows = new Map(record.result.transactions.map(row => [row.rowId, row]));
+        for (const { rowId, transactionId } of record.transactions) {
+          const approval = approvals.get(transactionId);
+          if (!approval) continue;
+          const row = rows.get(rowId)!;
+          documents.push({ transactionId, documentId: approval.documentId, date: row.bookingDate.value,
+            counterparty: row.counterpartyCandidate?.value.trim() || row.description.value.trim() || null,
+            amount: row.accountAmount.value, source: originals.get(approval.documentId) ?? null });
+        }
+      }
+      return await copyApprovedDocuments(destination, pattern, documents, this.sources().map(source => source.filePath));
+    } finally {
+      this.busy = false;
+      this.publish();
+    }
   }
   private sources(): WorkspaceSource[] {
     const sources = new Map((this.saved?.sources ?? []).map(source => [source.id, source]));

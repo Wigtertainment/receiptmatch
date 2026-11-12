@@ -2,13 +2,16 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, session } from 'el
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { commandSchema, matchRequestSchema, type WorkspaceState } from '../src/shared/protocol.js';
+import { commandSchema, documentExportRequestSchema, exportSettingsRequestSchema, matchRequestSchema, type WorkspaceState } from '../src/shared/protocol.js';
+import type { DocumentExportResponse } from '../src/shared/document-export.js';
 import { originalPreviewRequestSchema } from '../src/shared/original-preview.js';
 import { WorkspaceSession } from './workspace-session.js';
 import { StatementImportService } from './import/service.js';
 import { FolderDocumentImportService } from './documents/service.js';
 import { isRendererRequestAllowed, resolveRendererUrl } from './runtime-policy.js';
 import { OriginalPreviewWindows } from './original-preview.js';
+import { readExportFilenamePattern, saveExportFilenamePattern } from './export-settings.js';
+import { ExportDestinationError } from './document-export.js';
 
 // Load the same module instance as other main-process consumers of the extraction API.
 const { extractPdfBytes, extractDocumentBytes } = createRequire(__filename)('./extraction-host.cjs') as Pick<typeof import('./extraction/host.js'), 'extractPdfBytes' | 'extractDocumentBytes'>;
@@ -82,6 +85,26 @@ async function launch() {
     extract: extractDocumentBytes
   }));
   const authorized = (event: Electron.IpcMainInvokeEvent) => event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && event.senderFrame.url === appUrl;
+  const exportSettingsFile = path.join(app.getPath('userData'), 'export-settings.json');
+  let exportSettingsWrite: Promise<string> | null = null;
+  ipcMain.handle('app:export-settings', async (event, ...payload: unknown[]) => {
+    if (!authorized(event) || payload.length !== 1) throw new Error('Export settings request denied.');
+    const request = exportSettingsRequestSchema.safeParse(payload[0]);
+    if (!request.success) throw new Error('Export settings request denied.');
+    try {
+      if (request.data.type === 'read') {
+        await exportSettingsWrite?.catch(() => null);
+        return await readExportFilenamePattern(exportSettingsFile);
+      }
+      const { pattern } = request.data;
+      const write = Promise.resolve(exportSettingsWrite).catch(() => null).then(() => saveExportFilenamePattern(exportSettingsFile, pattern));
+      exportSettingsWrite = write;
+      try { return await write; }
+      finally { if (exportSettingsWrite === write) exportSettingsWrite = null; }
+    } catch {
+      throw new Error('Export settings could not be accessed.');
+    }
+  });
   ipcMain.handle('workspace:command', (event, payload: unknown) => {
     if (!authorized(event)) throw new Error('Workspace request denied.');
     const command = commandSchema.safeParse(payload);
@@ -109,6 +132,36 @@ async function launch() {
     const source = workspace.originalSource(request.data);
     return source ? previews.open(`${request.data.kind}:${request.data.id}`, source) : { error: 'The original is not available in this workspace.' };
   });
+  let exportRequested = false;
+  let closeRequested = false;
+  ipcMain.handle('workspace:export-documents', async (event, ...payload: unknown[]): Promise<DocumentExportResponse> => {
+    if (!authorized(event) || payload.length !== 1) throw new Error('Document export request denied.');
+    const request = documentExportRequestSchema.safeParse(payload[0]);
+    if (!request.success) throw new Error('Document export request denied.');
+    if (closeRequested) return { status: 'cancelled' };
+    const { loadRevision } = request.data;
+    const initial = workspace.state();
+    if (initial.workspace?.loadRevision !== loadRevision) return { status: 'failed', message: 'The workspace has changed. Open Export and try again.' };
+    if (exportRequested || initial.busy) return { status: 'failed', message: 'Finish the current workspace action before exporting.' };
+    if (!initial.workspace.approvedDocumentCount) return { status: 'completed', report: { directory: null, outcomes: [] } };
+    exportRequested = true;
+    try {
+      const selected = await dialog.showOpenDialog(window, { title: 'Choose export folder', properties: ['openDirectory'] });
+      const destination = selected.filePaths[0];
+      if (selected.canceled || !destination || closeRequested || window.isDestroyed()) return { status: 'cancelled' };
+      await exportSettingsWrite?.catch(() => null);
+      const pattern = await readExportFilenamePattern(exportSettingsFile);
+      const current = workspace.state();
+      if (closeRequested || window.isDestroyed()) return { status: 'cancelled' };
+      if (current.workspace?.loadRevision !== loadRevision || current.workspace.matchRevision !== initial.workspace.matchRevision) {
+        return { status: 'failed', message: 'The workspace or its approvals changed. Review the approvals and try again.' };
+      }
+      if (current.busy) return { status: 'failed', message: 'Finish the current workspace action before exporting.' };
+      return { status: 'completed', report: await workspace.exportApprovedDocuments(loadRevision, destination, pattern) };
+    } catch (error) {
+      return { status: 'failed', message: error instanceof ExportDestinationError ? error.message : 'The export could not be started. Try again.' };
+    } finally { exportRequested = false; }
+  });
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   let closing = false;
@@ -116,7 +169,13 @@ async function launch() {
   window.on('close', event => {
     if (closing) return;
     event.preventDefault();
-    void workspace.requestClose().then(allowed => { if (allowed && !window.isDestroyed()) { closing = true; window.close(); } });
+    if (closeRequested) return;
+    closeRequested = true;
+    void workspace.requestClose().then(async allowed => {
+      if (!allowed) { closeRequested = false; return; }
+      while (exportSettingsWrite) await exportSettingsWrite.catch(() => null);
+      if (!window.isDestroyed()) { closing = true; window.close(); }
+    });
   });
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: 'File', submenu: [
