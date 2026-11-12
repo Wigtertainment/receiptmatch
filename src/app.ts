@@ -1,16 +1,17 @@
 import { Component, computed, DestroyRef, inject, signal } from '@angular/core';
 import { bootstrapApplication } from '@angular/platform-browser';
 import { DocumentImports } from './app/document-imports.js';
+import { ExportSettings } from './app/export-settings.js';
 import { MatchSuggestions } from './app/match-suggestions.js';
 import type { WorkspaceBridge, WorkspaceCommand, WorkspaceState } from './shared/protocol.js';
 import { StatementImports } from './statement-imports.js';
 
 declare global { interface Window { receiptmatch: WorkspaceBridge; } }
 
-type WorkspaceSection = 'sources' | 'matches';
+type WorkspaceSection = 'sources' | 'matches' | 'export-settings';
 
 @Component({
-  selector: 'app-root', standalone: true, imports: [StatementImports, DocumentImports, MatchSuggestions],
+  selector: 'app-root', standalone: true, imports: [StatementImports, DocumentImports, MatchSuggestions, ExportSettings],
   templateUrl: './app/workspace-shell.html'
 })
 class ReceiptMatchApp {
@@ -55,7 +56,7 @@ class ReceiptMatchApp {
     this.navigation.set({ loadRevision: workspace.loadRevision, section });
     requestAnimationFrame(() => {
       if (!this.disposed && this.state().workspace?.loadRevision === workspace.loadRevision && this.section() === section) {
-        document.getElementById(section === 'sources' ? 'sources-heading' : 'matches-heading')?.focus();
+        document.getElementById(section + '-heading')?.focus();
       }
     });
   }

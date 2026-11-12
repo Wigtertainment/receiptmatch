@@ -1,0 +1,118 @@
+<section aria-labelledby="export-settings-heading">
+	<h1 class="view-heading" id="export-settings-heading" tabindex="-1">Export</h1>
+	<section class="source-panel export-documents-panel" aria-labelledby="export-documents-heading">
+		<div class="section-heading">
+			<div>
+				<h2 id="export-documents-heading">Approved documents</h2>
+				<p class="muted">{{ workspace().approvedDocumentCount }} approved {{ workspace().approvedDocumentCount === 1 ? 'document' : 'documents' }}</p>
+			</div>
+			<button type="button" class="button-primary" [disabled]="busy() || exporting() || workspaceBusy() || !workspace().approvedDocumentCount" (click)="exportDocuments()">
+				Choose folder and export
+			</button>
+		</div>
+		@if (exporting()) {
+			<p role="status">Export in progress…</p>
+		} @else if (exportResult(); as result) {
+			@if (result.status === 'failed') {
+				<p class="error" role="alert">{{ result.message }}</p>
+			} @else if (result.status === 'cancelled') {
+				<p role="status">Export cancelled.</p>
+			} @else if (result.status === 'completed' && result.report.directory) {
+				@let counts = exportCounts();
+				<p role="status">{{ counts.copied }} copied · {{ counts.skipped }} skipped · {{ counts.failed }} failed</p>
+				<p class="file-location muted">{{ result.report.directory }}</p>
+				<div class="table-scroll export-outcomes" role="region" aria-label="Export results" tabindex="0">
+					<table>
+						<thead>
+							<tr>
+								<th scope="col">Original</th>
+								<th scope="col">Export filename</th>
+								<th scope="col">Result</th>
+							</tr>
+						</thead>
+						<tbody>
+							@for (outcome of result.report.outcomes; track outcome.transactionId) {
+								<tr>
+									<th scope="row">
+										{{ outcome.sourceName || 'Unavailable document' }}
+										@if (outcome.sourceName && repeatedSourceNames().has(outcome.sourceName)) {
+											<p class="file-location muted">{{ outcome.sourcePath }}</p>
+										}
+									</th>
+									<td>{{ outcome.filename || 'Unavailable' }}</td>
+									<td>
+										@if (outcome.status === 'copied') {
+											<strong>Copied</strong>
+											@if (outcome.warning) {
+												<p>A temporary file could not be removed.</p>
+											}
+										} @else if (outcome.status === 'skipped') {
+											<strong>Skipped</strong>
+											<p>A file with this name already exists.</p>
+										} @else {
+											<strong>Failed</strong>
+											<p>{{ failureLabels[outcome.reason] }}</p>
+										}
+									</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+			} @else {
+				<p role="status">No approved documents to export.</p>
+			}
+		} @else if (!workspace().approvedDocumentCount) {
+			<p class="muted">Approve documents in Match Suggestions to enable export.</p>
+		}
+	</section>
+	<form class="source-panel export-settings-panel" aria-labelledby="export-pattern-heading" (submit)="save($event)">
+		<h2 id="export-pattern-heading">Export settings</h2>
+		@let example = preview();
+		<label for="export-filename-pattern">Filename pattern</label>
+		<input
+			#patternInput
+			id="export-filename-pattern"
+			type="text"
+			autocomplete="off"
+			spellcheck="false"
+			[maxLength]="patternLimit"
+			[disabled]="busy() || exporting()"
+			[value]="pattern()"
+			[attr.aria-invalid]="example.error ? 'true' : null"
+			aria-describedby="export-pattern-help export-pattern-preview"
+			(input)="update(patternInput.value)"
+		/>
+		<p id="export-pattern-help" class="muted">Exports use the saved pattern. The original file extension is added automatically.</p>
+		<dl class="export-pattern-tokens">
+			@for (placeholder of placeholders; track placeholder.token) {
+				<div>
+					<dt>
+						<code>{{ placeholder.token }}</code>
+					</dt>
+					<dd>{{ placeholder.label }}</dd>
+				</div>
+			}
+		</dl>
+		<div class="export-pattern-preview">
+			<strong>Example filename</strong>
+			<output for="export-filename-pattern" id="export-pattern-preview">
+				@if (example.error; as error) {
+					<span class="export-pattern-error">{{ error }}</span>
+				} @else {
+					<code>{{ example.filename }}</code>
+				}
+			</output>
+		</div>
+		@if (error(); as message) {
+			<p class="error" role="alert">{{ message }}</p>
+		}
+		<div class="export-pattern-actions">
+			<button type="submit" class="button-primary" [disabled]="busy() || exporting() || !!example.error || savedPattern() === pattern().trim()">Save pattern</button>
+			<button type="button" class="button-secondary" [disabled]="busy() || exporting() || pattern() === defaultPattern" (click)="update(defaultPattern)">Use default</button>
+			@if (saved()) {
+				<span role="status">Pattern saved.</span>
+			}
+		</div>
+	</form>
+</section>
