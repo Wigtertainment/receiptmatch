@@ -90,13 +90,13 @@ export class ExportSettings {
 		}
 	}
 
-	async exportDocuments() {
-		const { loadRevision, approvedDocumentCount } = this.workspace();
-		if (!approvedDocumentCount || this.exporting() || this.busy() || this.workspaceBusy()) return;
+	async exportDocuments(includeCsv = false) {
+		const { loadRevision, approvedDocumentCount, filePath } = this.workspace();
+		if ((includeCsv ? !filePath : !approvedDocumentCount) || this.exporting() || this.busy() || this.workspaceBusy()) return;
 		this.exporting.set(true);
 		this.exportFeedback.set(null);
 		try {
-			const result = await window.receiptmatch.exportDocuments(loadRevision);
+			const result = includeCsv ? await window.receiptmatch.exportReconciliation(loadRevision) : await window.receiptmatch.exportDocuments(loadRevision);
 			this.exportFeedback.set({ loadRevision, result });
 		} catch {
 			this.exportFeedback.set({ loadRevision, result: { status: 'failed', message: 'The export could not be started. Try again.' } });

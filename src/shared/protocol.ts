@@ -34,7 +34,7 @@ export const exportSettingsRequestSchema = z.discriminatedUnion('type', [
 ]);
 export type ExportSettingsRequest = z.infer<typeof exportSettingsRequestSchema>;
 export const matchRequestSchema = z.strictObject({ revision: z.number().int().nonnegative(), transactionId: z.uuid().optional() });
-export const documentExportRequestSchema = z.strictObject({ loadRevision: z.number().int().nonnegative() });
+export const documentExportRequestSchema = z.strictObject({ loadRevision: z.number().int().nonnegative(), includeCsv: z.boolean().default(false) });
 export interface DocumentImportSummary { id: string; folderPath: string; status: 'finished' | 'cancelled'; imported: number; skipped: number; failed: number; unsupported: number; directoryIssues: number; }
 export interface WorkspaceView {
   id: string; loadRevision: number; matchRevision: number; name: string; filePath: string | null; dirty: boolean; savedAt: string | null;
@@ -61,5 +61,6 @@ export interface WorkspaceBridge {
   openOriginal(request: OriginalPreviewRequest): Promise<OriginalPreviewResult>;
   exportSettings(request: ExportSettingsRequest): Promise<string>;
   exportDocuments(loadRevision: number): Promise<DocumentExportResponse>;
+  exportReconciliation(loadRevision: number): Promise<DocumentExportResponse>;
   subscribe(listener: (state: WorkspaceState) => void): () => void;
 }

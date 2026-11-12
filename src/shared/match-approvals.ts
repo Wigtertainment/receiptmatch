@@ -35,6 +35,20 @@ export function approvalSelectionFor(
     return { transactionId, documentId, transactionRevision, documentRevision, associationRevision };
 }
 
+export function currentMatchApprovals(
+    reviews: ReadonlyMap<string, ReviewApprovalState>, decisions: ReadonlyMap<string, string | null>,
+    bookingRevisions: ReadonlyMap<string, { revision: number }>, documentRevisions: ReadonlyMap<string, number>,
+): Map<string, MatchApproval> {
+    const approvals = new Map<string, MatchApproval>();
+    for (const [transactionId, { approval, associationRevision }] of reviews) {
+        const documentId = decisions.get(transactionId);
+        if (!documentId || !approval) continue;
+        const selection = approvalSelectionFor(transactionId, documentId, bookingRevisions.get(transactionId)?.revision, documentRevisions.get(documentId), associationRevision);
+        if (matchApprovalStatus(approval, selection).status === 'approved') approvals.set(transactionId, approval);
+    }
+    return approvals;
+}
+
 export function matchApprovalStatus(approval: MatchApproval | null | undefined, current: MatchApprovalSelection | null): MatchApprovalStatus {
     if (!approval) return { status: 'none' };
     if (!current || approval.transactionId !== current.transactionId || approval.documentId !== current.documentId ||

@@ -18,7 +18,15 @@ export interface DocumentExportReport {
 	outcomes: DocumentExportOutcome[];
 }
 
+export interface ReconciliationExportReport {
+	documentCopies: DocumentExportReport;
+	csv: { filePath: string; warning?: 'temporary-cleanup-failed' } & (
+		| { status: 'written' }
+		| { status: 'failed'; reason: 'collision' | 'write-failed' }
+	);
+}
+
 export type DocumentExportResponse =
-	| { status: 'completed'; report: DocumentExportReport }
+	| { status: 'completed'; report: DocumentExportReport; csv?: ReconciliationExportReport['csv'] }
 	| { status: 'cancelled' }
 	| { status: 'failed'; message: string };

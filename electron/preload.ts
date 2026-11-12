@@ -15,6 +15,7 @@ const bridge: WorkspaceBridge = Object.freeze({
   openOriginal: (request: OriginalPreviewRequest) => ipcRenderer.invoke('workspace:open-original', request) as Promise<OriginalPreviewResult>,
   exportSettings: (request: ExportSettingsRequest) => ipcRenderer.invoke('app:export-settings', request) as Promise<string>,
   exportDocuments: (loadRevision: number) => ipcRenderer.invoke('workspace:export-documents', { loadRevision }) as Promise<DocumentExportResponse>,
+  exportReconciliation: (loadRevision: number) => ipcRenderer.invoke('workspace:export-documents', { loadRevision, includeCsv: true }) as Promise<DocumentExportResponse>,
   subscribe: (listener: (state: WorkspaceState) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: WorkspaceState) => listener(state);
     ipcRenderer.on('workspace:state', handler);
