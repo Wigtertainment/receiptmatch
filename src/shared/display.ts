@@ -1,5 +1,4 @@
 import type { Money } from './money.js';
-import type { SupportingDocument } from './supporting-document.js';
 
 // Inputs are canonical values already validated by the import/workspace schemas.
 export function formatMoney(value: (Omit<Money, 'currency'> & { currency: string | null }) | null, locale?: string | string[]): string {
@@ -18,12 +17,4 @@ export function formatCalendarDate(value: string | null, locale?: string | strin
     if (value === null) return 'Unknown';
     // A booking day has no local time zone, including in years 0001–0099.
     return new Intl.DateTimeFormat(locale, { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'UTC' }).format(new Date(`${value}T00:00:00.000Z`));
-}
-
-export function formatDocumentTotal({ sections, issues }: SupportingDocument): string | null {
-    if (sections.length !== 1) return null;
-    const totals = sections[0].amounts.filter(field => field.role === 'billed-total');
-    const total = totals[0];
-    if (totals.length !== 1 || total.candidates.length !== 1 || !total.candidates[0].currency || issues.some(issue => issue.fieldId === total.id)) return null;
-    return formatMoney(total.candidates[0]);
 }

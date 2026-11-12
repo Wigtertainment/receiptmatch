@@ -147,7 +147,8 @@ test('keeps conflicting financial fields uncertain and rejects unknown currency 
 	const match = matchFor(bank, 0, invoice('Invoice Number: SYNTHETIC-A', 'Invoice Total: EUR 1,234.56', 'Invoice Total: EUR 12.00'));
 	assert.equal(match.status, 'uncertain');
 	assert.deepEqual(match.candidates[0].issues, ['conflicting-evidence']);
-	assert.equal(matchFor(bank, 0, invoice('Invoice Total: 1,234.56')).status, 'unmatched');
+	assert.equal(matchFor(bank, 0, invoice('Invoice Total: 1,234.56')).status, 'uncertain');
+	assert.equal(matchFor(bank, 0, invoice('Invoice Total: $1,234.56')).status, 'unmatched');
 	const row = bank.result.transactions[0];
 	row.accountAmount.value = { currency: 'EUR', coefficient: '-900719925474099301', scale: 2 };
 	assert.equal(matchFor(bank, 0, invoice('Invoice Total: EUR 9,007,199,254,740,993.02')).status, 'unmatched');

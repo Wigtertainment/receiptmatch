@@ -1,6 +1,7 @@
 import { Component, computed, effect, input, signal, untracked } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
-import { formatCalendarDate, formatDocumentTotal, formatMoney } from '../shared/display.js';
+import { formatCalendarDate, formatMoney } from '../shared/display.js';
+import { formatDocumentTotal } from '../shared/document-display.js';
 import { applyDocumentCorrections, documentCorrectionKey } from '../shared/document-corrections.js';
 import type { MatchApprovalSelection } from '../shared/match-approvals.js';
 import type { WorkspaceView } from '../shared/protocol.js';

@@ -3,7 +3,8 @@ import { Component, computed, effect, input, output, signal, untracked } from '@
 import { OriginalPreviewButton } from './original-preview-button.js';
 import { amountEntryExample, formatAmountEntry, parseAmountEntry } from '../shared/amount-entry.js';
 import { calendarDateSchema, type ImportIssue, type ImportPage, type PositionedSpan, type SourceEvidence } from '../shared/bank-import.js';
-import { formatCalendarDate, formatDocumentTotal, formatMoney } from '../shared/display.js';
+import { formatCalendarDate, formatMoney } from '../shared/display.js';
+import { formatDocumentTotal } from '../shared/document-display.js';
 import {
     applyDocumentCorrections, documentCorrectionKey, type DocumentCorrection, type DocumentCorrectionTarget, type DocumentCorrectionValue
 } from '../shared/document-corrections.js';

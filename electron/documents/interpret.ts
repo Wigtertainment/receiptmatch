@@ -129,6 +129,38 @@ function numberCandidates(raw: string): { coefficient: string; scale: number }[]
 	} else append(value);
 	return unique(result);
 }
+
+function invoiceSummaryTotal(lines: Line[], currency: string | null): Omit<DocumentSection['amounts'][number], 'id'> | null {
+	const headings = lines.flatMap((line, index) => line.spans.filter(span => /^invoicesummary:?$/i.test(span.text.replace(/\s/g, ''))).map(span => ({ index, span })));
+	if (headings.length !== 1) return null;
+	const { index, span } = headings[0];
+	const [title, headers, net, tax, total] = lines.slice(index, index + 5);
+	if (!total || [headers, net, tax, total].some((line, offset) => line.page !== title.page || line.spans[0].region.y - lines[index + offset].spans[0].region.y > 24)) return null;
+	const netHeader = headers.spans.at(-1)!;
+	if (!/^net amount$/i.test(netHeader.text.trim()) || netHeader.region.x < span.region.x || total.spans.length !== 1) return null;
+	const rightCell = (line: Line) => {
+		const cells = line.spans.filter(cell => cell.region.x >= netHeader.region.x);
+		return cells.length === 1 ? cells[0] : undefined;
+	};
+	const netValue = rightCell(net), taxValue = rightCell(tax), printedTotal = rightCell(total);
+	if (!netValue || !taxValue || !printedTotal || !/^(?:vat|tax) (?:amount|total)\s*:?$/i.test(tax.spans.filter(cell => cell !== taxValue).map(cell => cell.text.trim()).join(' '))) return null;
+	const values = [netValue, taxValue, printedTotal];
+	const rightEdges = values.map(({ region }) => region.x + region.width);
+	if (Math.max(...rightEdges) - Math.min(...rightEdges) > 3) return null;
+	const printedCurrencies = unique(values.flatMap(value => currencies(value.text)));
+	if (printedCurrencies.length > 1 || (currency && printedCurrencies.some(value => value !== currency))) return null;
+	const established = printedCurrencies[0] ?? currency;
+	if (!established) return null;
+	const amounts = values.map(value => numberCandidates(value.text.replace(currencyPattern, '')));
+	if (amounts.some(candidates => candidates.length !== 1)) return null;
+	const [netAmount, taxAmount, totalAmount] = amounts.map(candidates => candidates[0]);
+	const scale = Math.max(netAmount.scale, taxAmount.scale, totalAmount.scale);
+	const scaled = (value: typeof totalAmount) => BigInt(value.coefficient) * 10n ** BigInt(scale - value.scale);
+	if (scaled(netAmount) + scaled(taxAmount) !== scaled(totalAmount)) return null;
+	return { role: 'billed-total', label: 'Invoice summary total', candidates: [{ ...totalAmount, currency: established }],
+		evidence: [...source({ ...title, spans: [span] }), ...source({ ...headers, spans: [netHeader] }), ...source({ ...net, spans: [netValue] }), ...source(tax), ...source(total)] };
+}
+
 function dateCandidates(raw: string): string[] {
 	const values: string[] = [];
 	const append = (year: string, month: string | number, day: string | number) => {
@@ -376,10 +408,13 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 			}
 		}
 	}
+	const defaultCurrency = [...sectionLines.values()].some(lines => lines.some(({ text }) =>
+		currencies(text).length > 0 || /\p{Sc}|\b(?:currency|währung)\s*[:=]\s*\p{L}/iu.test(text))) ? null : 'EUR';
 	for (const section of sections) {
+		const lines = sectionLines.get(section.sectionId) ?? [];
 		section.dates = withGenericIssueDate(section, input.pages);
 		if (!section.merchants.length && section.kind !== 'payment-information') {
-			const lines = sectionLines.get(section.sectionId) ?? [], candidates: { text: string; evidence: SourceEvidence[] }[] = [];
+			const candidates: { text: string; evidence: SourceEvidence[] }[] = [];
 			for (const line of lines) {
 				if (/\bbill to\b|\bsold to\b|rechnungsempfänger/i.test(line.text)) break;
 				if (line.spans[0].region.y > line.page.height * 0.3) continue;
@@ -395,7 +430,12 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 			}
 		}
 		const declared = unique(section.currencies.filter(field => field.role === 'settlement').flatMap(field => field.candidates));
-		if (declared.length === 1) for (const amount of section.amounts) if (amount.role !== 'informational-fx') for (const value of amount.candidates) value.currency ??= declared[0];
+		const currency = declared.length === 1 ? declared[0] : defaultCurrency;
+		if (currency) for (const amount of section.amounts) if (amount.role !== 'informational-fx') for (const value of amount.candidates) value.currency ??= currency;
+		if (section.kind === 'invoice' && declared.length <= 1 && !section.amounts.some(field => field.role === 'billed-total')) {
+			const summary = invoiceSummaryTotal(lines, currency);
+			if (summary) section.amounts.push({ ...summary, id: nextId() });
+		}
 		for (const field of [...section.amounts, ...section.dates, ...section.merchants, ...section.references, ...section.currencies]) {
 			if (field.candidates.length !== 1) addIssue(field.candidates.length ? 'ambiguous-field' : 'unresolved-field', 'The printed field has no single established interpretation.', section, field.id, field.role, field.evidence);
 		}
