@@ -194,7 +194,10 @@ app-match-suggestions { display: block; min-width: 0; }
 .match-table :is(.match-account-amount, .match-amount-column) { text-align: right; }
 .match-account-amount, .match-booking-date { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .match-table .match-selected > :is(th, td) { background: #e6f2ec; }
-.match-transaction { display: inline-block; min-height: 30px; max-width: 100%; padding: 2px 4px; color: #145c51; font-weight: 700; text-align: left; overflow-wrap: anywhere; text-decoration: underline; text-underline-offset: 2px; }
+.match-transaction {
+  display: inline-block; min-height: 30px; max-width: 100%; padding: 2px 4px; color: #145c51; font-weight: 700; text-align: left;
+  white-space: pre-line; overflow-wrap: anywhere; text-decoration: underline; text-underline-offset: 2px;
+}
 .match-transaction:hover { background: #d9ece3; }
 .match-candidate-count { display: block; color: var(--muted); font-size: 11px; }
 .match-row-review { display: block; margin-bottom: 4px; font-size: 12px; font-weight: 650; overflow-wrap: anywhere; }

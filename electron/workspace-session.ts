@@ -14,9 +14,10 @@ import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, type SavedW
 import type { BankImportService } from './import/service.js';
 import type { DocumentImportService } from './documents/service.js';
 import { storedDocumentImportSchema, type StoredDocumentImport, type WorkspaceSource } from '../src/shared/workspace-documents.js';
-import type { MatchDetails, MatchReviewCounts, MatchSummary, TransactionMatch } from '../src/shared/workspace-matching.js';
+import type { MatchDetails, MatchReviewCounts, MatchSummary, ReviewMatch, TransactionMatch } from '../src/shared/workspace-matching.js';
 import { suggestWorkspaceMatches } from './matching.js';
 import { describeMatch, summarizeMatches } from './match-view.js';
+import { evaluateReviewMatches } from './review-matching.js';
 
 export interface WorkspaceDialogs {
   open(): Promise<string | null>;
@@ -51,6 +52,7 @@ export class WorkspaceSession {
   private effectiveDocuments: StoredDocumentImport[] = [];
   private documentCorrections = new Map<string, DocumentCorrection>();
   private matches: TransactionMatch[] = [];
+  private reviewMatches: { source: TransactionMatch[]; results: ReviewMatch[] } | null = null;
   private matchDecisions = new Map<string, string | null>();
   private reviewApprovals = new Map<string, ReviewApprovalState>();
   private importController: AbortController | null = null;
@@ -109,14 +111,20 @@ export class WorkspaceSession {
     return null;
   }
   matchResults(): TransactionMatch[] { return structuredClone(this.matches); }
+  private matchesForReview(): ReviewMatch[] {
+    if (this.reviewMatches?.source !== this.matches) this.reviewMatches = {
+      source: this.matches, results: evaluateReviewMatches(this.matches, this.effectiveImports, this.effectiveDocuments)
+    };
+    return this.reviewMatches.results;
+  }
   matchSummaries(revision: number): MatchSummary[] | null {
     return this.metadata && revision === this.matchRevision ? summarizeMatches(
-      this.matches, this.effectiveImports, this.matchDecisions, this.bankCorrections, this.reviewApprovals, documentRevisionIndex(this.documentCorrections.values())
+      this.matchesForReview(), this.effectiveImports, this.matchDecisions, this.bankCorrections, this.reviewApprovals, documentRevisionIndex(this.documentCorrections.values())
     ) : null;
   }
   matchDetails(revision: number, transactionId: string): MatchDetails | null {
     if (!this.metadata || revision !== this.matchRevision) return null;
-    const match = this.matches.find(row => row.transactionId === transactionId);
+    const match = this.matchesForReview().find(row => row.transactionId === transactionId);
     return match ? describeMatch(match, this.effectiveImports, this.effectiveDocuments, this.documentCorrections) : null;
   }
   private sources(): WorkspaceSource[] {
