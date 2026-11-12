@@ -157,7 +157,7 @@ test('packaged Electron workspace smoke test', async ({ smoke: { root, report, c
 		});
 		assert.deepEqual(preferences, { sandbox: true, contextIsolation: true, nodeIntegration: false });
 		assert.deepEqual(await page.evaluate(() => Object.keys(window.receiptmatch)), [
-			'command', 'bankImports', 'documentImports', 'matchSummaries', 'matchDetails', 'openOriginal', 'exportSettings', 'exportDocuments', 'subscribe',
+			'command', 'bankImports', 'documentImports', 'matchSummaries', 'matchDetails', 'openOriginal', 'exportSettings', 'exportDocuments', 'exportReconciliation', 'subscribe',
 		]);
 		assert.equal(await page.evaluate(() => typeof Reflect.get(window, 'require')), 'undefined');
 		assert.equal(

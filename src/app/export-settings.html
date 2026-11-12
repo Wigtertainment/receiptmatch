@@ -3,13 +3,38 @@
 	<section class="source-panel export-documents-panel" aria-labelledby="export-documents-heading">
 		<div class="section-heading">
 			<div>
-				<h2 id="export-documents-heading">Approved documents</h2>
-				<p class="muted">{{ workspace().approvedDocumentCount }} approved {{ workspace().approvedDocumentCount === 1 ? 'document' : 'documents' }}</p>
+				<h2 id="export-documents-heading">Export files</h2>
+				<p class="muted">{{ workspace().approvedDocumentCount }} approved {{ workspace().approvedDocumentCount === 1 ? 'document' : 'documents' }} in the open workspace</p>
 			</div>
-			<button type="button" class="button-primary" [disabled]="busy() || exporting() || workspaceBusy() || !workspace().approvedDocumentCount" (click)="exportDocuments()">
-				Choose folder and export
-			</button>
+			<div class="export-pattern-actions">
+				<button
+					type="button"
+					class="button-secondary"
+					[disabled]="busy() || exporting() || workspaceBusy() || !workspace().approvedDocumentCount"
+					(click)="exportDocuments()"
+				>
+					Export copies only
+				</button>
+				<button
+					type="button"
+					class="button-primary"
+					[disabled]="busy() || exporting() || workspaceBusy() || !workspace().filePath"
+					aria-describedby="csv-snapshot-help"
+					(click)="exportDocuments(true)"
+				>
+					Export CSV and copies
+				</button>
+			</div>
 		</div>
+		<p id="csv-snapshot-help" class="muted">
+			@if (!workspace().filePath) {
+				Save the workspace to export a reconciliation report.
+			} @else if (workspace().dirty) {
+				The CSV export uses the last saved workspace. Save your changes to include them.
+			} @else {
+				The CSV export uses the saved workspace.
+			}
+		</p>
 		@if (exporting()) {
 			<p role="status">Export in progress…</p>
 		} @else if (exportResult(); as result) {
@@ -17,53 +42,68 @@
 				<p class="error" role="alert">{{ result.message }}</p>
 			} @else if (result.status === 'cancelled') {
 				<p role="status">Export cancelled.</p>
-			} @else if (result.status === 'completed' && result.report.directory) {
-				@let counts = exportCounts();
-				<p role="status">{{ counts.copied }} copied · {{ counts.skipped }} skipped · {{ counts.failed }} failed</p>
-				<p class="file-location muted">{{ result.report.directory }}</p>
-				<div class="table-scroll export-outcomes" role="region" aria-label="Export results" tabindex="0">
-					<table>
-						<thead>
-							<tr>
-								<th scope="col">Original</th>
-								<th scope="col">Export filename</th>
-								<th scope="col">Result</th>
-							</tr>
-						</thead>
-						<tbody>
-							@for (outcome of result.report.outcomes; track outcome.transactionId) {
+			} @else if (result.status === 'completed') {
+				@if (result.csv; as csv) {
+					@if (csv.status === 'written') {
+						<p role="status">CSV report written.</p>
+						<p class="file-location muted">{{ csv.filePath }}</p>
+					} @else {
+						<p class="error" role="alert">
+							{{ csv.reason === 'collision' ? 'The CSV was not written because reconciliation.csv already exists.' : 'The CSV report could not be written.' }}
+						</p>
+					}
+					@if (csv.warning) {
+						<p role="status">A temporary CSV file could not be removed.</p>
+					}
+				}
+				@if (result.report.directory) {
+					@let counts = exportCounts();
+					<p role="status">{{ counts.copied }} copied · {{ counts.skipped }} skipped · {{ counts.failed }} failed</p>
+					<p class="file-location muted">{{ result.report.directory }}</p>
+					<div class="table-scroll export-outcomes" role="region" aria-label="Export results" tabindex="0">
+						<table>
+							<thead>
 								<tr>
-									<th scope="row">
-										{{ outcome.sourceName || 'Unavailable document' }}
-										@if (outcome.sourceName && repeatedSourceNames().has(outcome.sourceName)) {
-											<p class="file-location muted">{{ outcome.sourcePath }}</p>
-										}
-									</th>
-									<td>{{ outcome.filename || 'Unavailable' }}</td>
-									<td>
-										@if (outcome.status === 'copied') {
-											<strong>Copied</strong>
-											@if (outcome.warning) {
-												<p>A temporary file could not be removed.</p>
-											}
-										} @else if (outcome.status === 'skipped') {
-											<strong>Skipped</strong>
-											<p>A file with this name already exists.</p>
-										} @else {
-											<strong>Failed</strong>
-											<p>{{ failureLabels[outcome.reason] }}</p>
-										}
-									</td>
+									<th scope="col">Original</th>
+									<th scope="col">Export filename</th>
+									<th scope="col">Result</th>
 								</tr>
-							}
-						</tbody>
-					</table>
-				</div>
-			} @else {
-				<p role="status">No approved documents to export.</p>
+							</thead>
+							<tbody>
+								@for (outcome of result.report.outcomes; track outcome.transactionId) {
+									<tr>
+										<th scope="row">
+											{{ outcome.sourceName || 'Unavailable document' }}
+											@if (outcome.sourceName && repeatedSourceNames().has(outcome.sourceName)) {
+												<p class="file-location muted">{{ outcome.sourcePath }}</p>
+											}
+										</th>
+										<td>{{ outcome.filename || 'Unavailable' }}</td>
+										<td>
+											@if (outcome.status === 'copied') {
+												<strong>Copied</strong>
+												@if (outcome.warning) {
+													<p>A temporary file could not be removed.</p>
+												}
+											} @else if (outcome.status === 'skipped') {
+												<strong>Skipped</strong>
+												<p>A file with this name already exists.</p>
+											} @else {
+												<strong>Failed</strong>
+												<p>{{ failureLabels[outcome.reason] }}</p>
+											}
+										</td>
+									</tr>
+								}
+							</tbody>
+						</table>
+					</div>
+				} @else {
+					<p role="status">{{ result.csv ? 'No approved documents in the saved workspace.' : 'No approved documents to export.' }}</p>
+				}
 			}
 		} @else if (!workspace().approvedDocumentCount) {
-			<p class="muted">Approve documents in Match Suggestions to enable export.</p>
+			<p class="muted">Approve documents in Match Suggestions to export copies.</p>
 		}
 	</section>
 	<form class="source-panel export-settings-panel" aria-labelledby="export-pattern-heading" (submit)="save($event)">

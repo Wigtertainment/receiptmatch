@@ -1,6 +1,7 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
+import Database from 'better-sqlite3';
 import { createWorkspace, newMetadata } from '../../electron/store.js';
 import { documentRun, retainedBank, retainedDocument } from '../unit/document-fixtures.js';
 
@@ -56,16 +57,18 @@ test('previews, validates and saves an export filename pattern across Electron r
 	} finally { await second.app.close(); }
 });
 
-test('exports a reviewed batch with the saved pattern and shows mixed outcomes and collisions', async ({ playwright }, testInfo) => {
+test('exports copies and the saved reconciliation CSV and shows mixed outcomes and collisions', async ({ playwright }, testInfo) => {
 	test.setTimeout(90_000);
 	const root = testInfo.outputPath('document-export');
 	const originals = path.join(root, 'originals');
 	const destination = path.join(root, 'destination');
+	const reportOnly = path.join(root, 'report-only');
+	const combined = path.join(root, 'combined');
 	const workspacePath = path.join(root, 'workspace.receiptmatch');
 	const profile = path.join(root, 'profile');
 	const firstFolder = path.join(originals, 'first');
 	const secondFolder = path.join(originals, 'second');
-	await Promise.all([mkdir(firstFolder, { recursive: true }), mkdir(secondFolder, { recursive: true }), mkdir(destination, { recursive: true })]);
+	await Promise.all([firstFolder, secondFolder, destination, reportOnly, combined].map(folder => mkdir(folder, { recursive: true })));
 	const bank = retainedBank(root);
 	const [first, second] = bank.transactions;
 	const approved = retainedDocument(firstFolder, 'receipt.pdf', 'verified original');
@@ -73,26 +76,30 @@ test('exports a reviewed batch with the saved pattern and shows mixed outcomes a
 	await writeFile(approved.filePath, 'verified original');
 	await createWorkspace(workspacePath, newMetadata(), [bank], [documentRun(originals, [approved, missing])],
 		new Map([[first.transactionId, approved.id], [second.transactionId, missing.id]]));
+	const database = new Database(workspacePath);
+	try { database.exec('DROP TABLE match_approval_state; PRAGMA user_version = 7;'); }
+	finally { database.close(); }
 	const app = await playwright._electron.launch({ executablePath, args: ['--hidden', '--disable-gpu', '--user-data-dir=' + profile] });
 	try {
 		const page = await app.firstWindow();
 		expect(await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'))).toBe(profile);
-		await app.evaluate(({ BrowserWindow, dialog }, { workspacePath, destination }) => {
-			const paths = [workspacePath, null, destination, destination];
+		await app.evaluate(({ BrowserWindow, dialog }, { workspacePath, destination, reportOnly, combined }) => {
+			const paths = [workspacePath, null, destination, destination, reportOnly, combined, combined];
 			BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
 			dialog.showOpenDialog = async () => {
 				const file = paths.shift();
 				return { canceled: !file, filePaths: file ? [file] : [] };
 			};
 			dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
-		}, { workspacePath, destination });
+		}, { workspacePath, destination, reportOnly, combined });
 		await page.getByRole('button', { name: 'Open workspace' }).click();
 		const nav = page.getByRole('navigation', { name: 'Workspace views' });
 		const exportNav = nav.getByRole('button', { name: 'Export', exact: true });
-		const choose = page.getByRole('button', { name: 'Choose folder and export' });
+		const choose = page.getByRole('button', { name: 'Export copies only' });
+		const chooseCombined = page.getByRole('button', { name: 'Export CSV and copies' });
 		await exportNav.click();
 		await expect(choose).toBeDisabled();
-		await expect(page.getByText('0 approved documents', { exact: true })).toBeVisible();
+		await expect(page.getByText('0 approved documents in the open workspace', { exact: true })).toBeVisible();
 
 		await nav.getByRole('button', { name: 'Match suggestions' }).click();
 		await page.getByRole('checkbox', { name: /Orchard Workshop/ }).check();
@@ -100,7 +107,7 @@ test('exports a reviewed batch with the saved pattern and shows mixed outcomes a
 		await page.getByRole('button', { name: 'Approve selected' }).click();
 		await expect(page.getByText('Selected transactions approved.', { exact: true })).toBeVisible();
 		await exportNav.click();
-		await expect(page.getByText('2 approved documents', { exact: true })).toBeVisible();
+		await expect(page.getByText('2 approved documents in the open workspace', { exact: true })).toBeVisible();
 		await page.getByRole('textbox', { name: 'Filename pattern' }).fill('{counterparty}_{amount}');
 		await page.getByRole('button', { name: 'Save pattern' }).click();
 		await expect(page.getByText('Pattern saved.', { exact: true })).toBeVisible();
@@ -127,5 +134,32 @@ test('exports a reviewed batch with the saved pattern and shows mixed outcomes a
 		expect(await readdir(output)).toEqual([filename]);
 		expect(await readFile(path.join(output, filename), 'utf8')).toBe('verified original');
 		expect(await readFile(approved.filePath, 'utf8')).toBe('verified original');
+
+		await expect(page.getByText('The CSV export uses the last saved workspace. Save your changes to include them.')).toBeVisible();
+		await chooseCombined.click();
+		await expect(page.getByText('CSV report written.', { exact: true })).toBeVisible();
+		await expect(page.getByText('No approved documents in the saved workspace.', { exact: true })).toBeVisible();
+		expect(await readdir(reportOnly)).toEqual(['reconciliation.csv']);
+		expect(await readFile(path.join(reportOnly, 'reconciliation.csv'), 'utf8')).toContain(',not-eligible,');
+
+		await page.getByRole('button', { name: 'Save', exact: true }).click();
+		await expect(page.getByText('All changes saved', { exact: true })).toBeVisible();
+		await expect(page.getByText('The CSV export uses the saved workspace.', { exact: true })).toBeVisible();
+		await chooseCombined.click();
+		await expect(page.getByText('CSV report written.', { exact: true })).toBeVisible();
+		await expect(page.getByText('1 copied · 0 skipped · 1 failed', { exact: true })).toBeVisible();
+		await expect(failed.getByText('The original file is missing.')).toBeVisible();
+		const csvPath = path.join(combined, 'reconciliation.csv');
+		await expect(page.getByText(csvPath, { exact: true })).toBeVisible();
+		const csv = await readFile(csvPath, 'utf8');
+		expect(csv).toMatch(/^\uFEFFrow_type,transaction_id,/u);
+		expect(csv).toContain(',copied,documents/' + filename + ',');
+		expect(csv).toContain(',failed,,source-missing,');
+		expect(await readFile(path.join(combined, 'documents', filename), 'utf8')).toBe('verified original');
+
+		await chooseCombined.click();
+		await expect(page.getByRole('alert')).toHaveText('reconciliation.csv already exists. Choose another export folder.');
+		expect(await readFile(csvPath, 'utf8')).toBe(csv);
+		expect(await readdir(path.join(combined, 'documents'))).toEqual([filename]);
 	} finally { await app.close(); }
 });

@@ -139,24 +139,36 @@ async function launch() {
     const request = documentExportRequestSchema.safeParse(payload[0]);
     if (!request.success) throw new Error('Document export request denied.');
     if (closeRequested) return { status: 'cancelled' };
-    const { loadRevision } = request.data;
+    const { loadRevision, includeCsv } = request.data;
     const initial = workspace.state();
     if (initial.workspace?.loadRevision !== loadRevision) return { status: 'failed', message: 'The workspace has changed. Open Export and try again.' };
     if (exportRequested || initial.busy) return { status: 'failed', message: 'Finish the current workspace action before exporting.' };
-    if (!initial.workspace.approvedDocumentCount) return { status: 'completed', report: { directory: null, outcomes: [] } };
+    const savedFingerprint = includeCsv ? workspace.savedWorkspaceFingerprint() : null;
+    if (includeCsv && !savedFingerprint) return { status: 'failed', message: 'Save the workspace before exporting a reconciliation report.' };
+    if (!includeCsv && !initial.workspace.approvedDocumentCount) return { status: 'completed', report: { directory: null, outcomes: [] } };
     exportRequested = true;
     try {
-      const selected = await dialog.showOpenDialog(window, { title: 'Choose export folder', properties: ['openDirectory'] });
+      const selected = await dialog.showOpenDialog(window, { title: includeCsv ? 'Choose reconciliation export folder' : 'Choose export folder', properties: ['openDirectory'] });
       const destination = selected.filePaths[0];
       if (selected.canceled || !destination || closeRequested || window.isDestroyed()) return { status: 'cancelled' };
       await exportSettingsWrite?.catch(() => null);
       const pattern = await readExportFilenamePattern(exportSettingsFile);
       const current = workspace.state();
       if (closeRequested || window.isDestroyed()) return { status: 'cancelled' };
-      if (current.workspace?.loadRevision !== loadRevision || current.workspace.matchRevision !== initial.workspace.matchRevision) {
+      if (current.workspace?.loadRevision !== loadRevision) {
+        return { status: 'failed', message: 'The workspace has changed. Open Export and try again.' };
+      }
+      if (includeCsv && workspace.savedWorkspaceFingerprint() !== savedFingerprint) {
+        return { status: 'failed', message: 'The saved workspace changed while choosing a folder. Start the export again.' };
+      }
+      if (!includeCsv && current.workspace.matchRevision !== initial.workspace.matchRevision) {
         return { status: 'failed', message: 'The workspace or its approvals changed. Review the approvals and try again.' };
       }
       if (current.busy) return { status: 'failed', message: 'Finish the current workspace action before exporting.' };
+      if (includeCsv) {
+        const { csv, documentCopies } = await workspace.exportReconciliation(loadRevision, destination, pattern);
+        return { status: 'completed', report: documentCopies, csv };
+      }
       return { status: 'completed', report: await workspace.exportApprovedDocuments(loadRevision, destination, pattern) };
     } catch (error) {
       return { status: 'failed', message: error instanceof ExportDestinationError ? error.message : 'The export could not be started. Try again.' };
