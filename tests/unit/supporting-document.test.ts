@@ -332,6 +332,52 @@ test('a dollar symbol or source country does not establish USD, and missing curr
     assert.ok(result.issues.some(issue => /currency/i.test(`${issue.code} ${issue.field}`)));
 });
 
+test('uses EUR for amounts without currency evidence and preserves explicit foreign currencies', () => {
+	const receipt = (...lines: string[]) => interpretSupportingDocument(document(['Receipt', ...lines])).sections[0];
+	assert.deepEqual(amounts(receipt('Total: 27.50'), 'billed-total'), [{ coefficient: '2750', scale: 2, currency: 'EUR' }]);
+	assert.deepEqual(amounts(receipt('Currency: USD', 'Total: 27.50'), 'billed-total'), [{ coefficient: '2750', scale: 2, currency: 'USD' }]);
+	assert.deepEqual(amounts(receipt('Currency: XOF', 'Total: 27.50'), 'billed-total'), [{ coefficient: '2750', scale: 2, currency: null }]);
+});
+
+test('reads an unlabeled printed total from an arithmetically consistent invoice summary', () => {
+	const input = document(['Invoice', 'Currency: GBP']);
+	const page = input.pages[0];
+	const add = (text: string, x: number, y: number, width: number) => {
+		page.spans.push({ text, region: { x, y, width, height: 9 }, method: 'embedded-text' });
+	};
+	add('VAT ANALYSIS', 70, 225, 80);
+	add('I N V O I C E S U M M A R Y', 400, 226, 130);
+	add('Discount Value', 440, 242, 65);
+	add('Net Amount', 520, 242, 45);
+	add('0.00', 465, 257, 15);
+	add('70.00', 552, 257, 18);
+	add('Vat Amount:', 450, 272, 50);
+	add('14.00', 552, 272, 18);
+	add('84.00', 552, 287, 18);
+
+	const result = interpretSupportingDocument(input);
+	const [field] = result.sections[0].amounts.filter(field => field.role === 'billed-total');
+	assert.ok(field);
+	assert.deepEqual(field.candidates, [{ coefficient: '8400', scale: 2, currency: 'GBP' }]);
+	assert.ok(field.evidence.some(item => item.rawText === '84.00'));
+	assert.ok(!result.issues.some(issue => issue.code === 'missing-field' && issue.field === 'billed-total'));
+	page.spans[1].text = 'Invoice Number: SYNTHETIC-A';
+	assert.deepEqual(amounts(interpretSupportingDocument(input).sections[0], 'billed-total'), [{ coefficient: '8400', scale: 2, currency: 'EUR' }]);
+	add('Invoice Total: EUR 84.00', 550, 315, 95);
+	assert.equal(amounts(interpretSupportingDocument(input).sections[0], 'billed-total').length, 1);
+	page.spans.pop();
+
+	const printed = page.spans.at(-1)!;
+	printed.text = '85.00';
+	assert.deepEqual(amounts(interpretSupportingDocument(input).sections[0], 'billed-total'), []);
+	printed.text = '84.00';
+	printed.region.x = 350;
+	assert.deepEqual(amounts(interpretSupportingDocument(input).sections[0], 'billed-total'), []);
+	printed.region.x = 552;
+	add('84.00', 600, 287, 18);
+	assert.deepEqual(amounts(interpretSupportingDocument(input).sections[0], 'billed-total'), []);
+});
+
 test('currency declarations stay inside their own section', () => {
     const result = interpretSupportingDocument(document(['Invoice', 'Currency: USD', 'Invoice Number: SYNTHETIC-A', 'Total: 11.00'],
         ['Invoice', 'Invoice Number: SYNTHETIC-B', 'Total: $12.00']));
