@@ -31,6 +31,20 @@ export class MatchSuggestions {
 		'missing-reference': 'No matching payment or document reference.',
 		'conflicting-evidence': 'Some source details are ambiguous or conflict.',
 		'competing-reference': 'Another possible match is supported by a reference.',
+		'amount-needs-review': 'The reference matches. Check the amount before assigning this document.',
+	};
+	readonly amountLabels: Record<MatchCandidateView['signals']['amount'], string> = {
+		equal: 'Amounts match.',
+		close: 'Amounts are close, with a difference to review.',
+		different: 'Amounts differ.',
+		'currency-differs': 'Currencies differ.',
+		missing: 'No usable document amount.',
+	};
+	readonly nameLabels: Record<MatchCandidateView['signals']['filename']['state'], string> = {
+		match: 'Name matches.',
+		partial: 'Part of the name matches.',
+		different: 'Names differ.',
+		missing: 'No usable name comparison.',
 	};
 	readonly sectionLabels: Record<MatchCandidateView['sectionKind'], string> = {
 		invoice: 'Invoice', receipt: 'Receipt', 'credit-note': 'Credit note', 'billing-summary': 'Billing summary',

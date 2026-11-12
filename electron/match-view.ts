@@ -4,10 +4,10 @@ import type { DocumentCorrection } from '../src/shared/document-corrections.js';
 import { matchApprovalStatus, type ReviewApprovalState } from '../src/shared/match-approvals.js';
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
 import type { StoredDocumentImport } from '../src/shared/workspace-documents.js';
-import type { MatchDetails, MatchSourceExcerpt, MatchSummary, TransactionMatch } from '../src/shared/workspace-matching.js';
+import type { MatchDetails, MatchSourceExcerpt, MatchSummary, ReviewMatch } from '../src/shared/workspace-matching.js';
 
 export function summarizeMatches(
-	matches: TransactionMatch[], imports: StoredBankImport[], decisions: ReadonlyMap<string, string | null>, corrections: ReadonlyMap<string, BankCorrection>,
+	matches: ReviewMatch[], imports: StoredBankImport[], decisions: ReadonlyMap<string, string | null>, corrections: ReadonlyMap<string, BankCorrection>,
 	reviewApprovals: ReadonlyMap<string, ReviewApprovalState>, documentRevisions: ReadonlyMap<string, number>,
 ): MatchSummary[] {
 	const byTransaction = new Map(matches.map(match => [match.transactionId, match]));
@@ -42,7 +42,7 @@ function excerpts(evidence: SourceEvidence[], pages: ReadonlyMap<string, number>
 }
 
 export function describeMatch(
-	match: TransactionMatch, imports: StoredBankImport[], documentImports: StoredDocumentImport[], corrections: ReadonlyMap<string, DocumentCorrection>,
+	match: ReviewMatch, imports: StoredBankImport[], documentImports: StoredDocumentImport[], corrections: ReadonlyMap<string, DocumentCorrection>,
 ): MatchDetails {
 	const bank = imports.find(record => record.transactions.some(row => row.transactionId === match.transactionId))!;
 	const rowId = bank.transactions.find(row => row.transactionId === match.transactionId)!.rowId;
@@ -50,7 +50,7 @@ export function describeMatch(
 	const bankPages = new Map(bank.result.sourceProvenance!.pages.map(page => [page.pageId, page.pageNumber]));
 	const documents = new Map(documentImports.flatMap(record => record.files.flatMap(file => file.status === 'imported' ? [[file.record.id, file.record] as const] : [])));
 	const correctedSections = new Set([...corrections.values()].map(({ documentId, sectionId }) => JSON.stringify([documentId, sectionId])));
-	return { statementPath: bank.filePath, candidates: match.candidates.map(candidate => {
+	const candidates: MatchDetails['candidates'] = match.candidates.map(candidate => {
 		const document = documents.get(candidate.documentId)!;
 		const sectionIndex = document.result.sections.findIndex(section => section.sectionId === candidate.sectionId);
 		const section = document.result.sections[sectionIndex];
@@ -60,10 +60,13 @@ export function describeMatch(
 			...candidate.references.flatMap(reference => transaction.references.filter(field => field.label === reference.bankLabel && field.value === reference.bankValue)
 				.flatMap(field => field.evidence)),
 			...(candidate.date ? transaction.bookingDate.evidence : []),
+			...[transaction.counterpartyCandidate, transaction.description].flatMap(field => field &&
+				[candidate.signals.merchant.bankText, candidate.signals.filename.bankText].includes(field.value) ? field.evidence : []),
 		];
 		const fields = new Set([...candidate.amounts.map(amount => amount.documentFieldId), ...candidate.references.map(reference => reference.documentFieldId)]);
 		if (candidate.date) fields.add(candidate.date.documentFieldId);
 		const documentEvidence = [...section.amounts, ...section.references, ...section.dates].filter(field => fields.has(field.id)).flatMap(field => field.evidence);
+		documentEvidence.push(...section.merchants.filter(field => field.candidates.includes(candidate.signals.merchant.documentText ?? '')).flatMap(field => field.evidence));
 		if (candidate.issues.includes('conflicting-evidence')) {
 			const roles = new Set(section.amounts.filter(field => fields.has(field.id)).map(field => field.role));
 			const referenceRoles = new Set(section.references.filter(field => fields.has(field.id)).map(field => field.role));
@@ -73,8 +76,10 @@ export function describeMatch(
 			documentEvidence.push(...relatedFields.flatMap(field => field.evidence));
 			for (const issue of document.result.issues) if (issue.fieldId && relatedIds.has(issue.fieldId)) documentEvidence.push(...issue.evidence);
 		}
-		return { ...candidate, filePath: document.filePath, sectionKind: section.kind, sectionNumber: document.result.sections.length > 1 ? sectionIndex + 1 : null,
+		return { ...candidate, filePath: document.filePath,
+			sectionKind: section.kind, sectionNumber: document.result.sections.length > 1 ? sectionIndex + 1 : null,
 			documentValuesCorrected: correctedSections.has(JSON.stringify([candidate.documentId, candidate.sectionId])),
 			pages: section.pageIds.map(id => documentPages.get(id)!), bankEvidence: excerpts(bankEvidence, bankPages), documentEvidence: excerpts(documentEvidence, documentPages) };
-	}) };
+	});
+	return { statementPath: bank.filePath, candidates };
 }

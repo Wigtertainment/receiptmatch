@@ -31,6 +31,76 @@ function invoice(root: string, filename: string) {
 	return document(root, filename, 'Invoice', 'Merchant: Cedar Workshop', 'Invoice Number: SYNTHETIC-A', 'Invoice Date: 2032-02-28', 'Invoice Total: EUR 1,234.56');
 }
 
+test.for(['counterparty', 'booking description'])('ranks an existing uncertain match by filename and %s when reopening a workspace', async (source, context) => {
+	const root = await directory(context);
+	const file = path.join(root, 'filename.receiptmatch');
+	const bank = retainedBank(root);
+	const booking = bank.result.transactions[0];
+	booking.description.value = 'Card payment Orchard Workshop 1234';
+	booking.counterpartyCandidate = source === 'counterparty' ? { value: 'Orchard Workshop', evidence: booking.description.evidence } : null;
+	const receipt = (filename: string, total = '1,234.56') => document(root, filename, 'Receipt', `Total: EUR ${total}`);
+	const generic = receipt('IMG_1234.pdf');
+	const substring = receipt('Orchard Workshops.pdf');
+	const named = receipt('2032-02-28_Órchard-Workshop_lunch.pdf');
+	const wrongAmount = receipt('Orchard Workshop.pdf', '1,234.57');
+	generic.id = '00000000-0000-4000-8000-000000000001';
+	substring.id = '00000000-0000-4000-8000-000000000002';
+	assert.equal(named.result.sections[0].merchants.length, 0);
+	await createWorkspace(file, newMetadata(), [bank], [documentRun(root, [generic, substring, named, wrongAmount])]);
+	const session = new WorkspaceSession({ open: async () => file, save: async () => file, unsaved: async () => 'discard' });
+	await session.dispatch({ type: 'open' });
+	const { transactionId } = bank.transactions[0];
+	const savedMatch = session.matchResults().find(match => match.transactionId === transactionId)!;
+	assert.equal(savedMatch.status, 'uncertain');
+	assert.equal(savedMatch.candidates[0].documentId, generic.id);
+	const revision = session.state().workspace!.matchRevision;
+	const details = session.matchDetails(revision, transactionId)!;
+	assert.deepEqual(details.candidates.map(candidate => candidate.documentId), [named.id, substring.id, wrongAmount.id, generic.id]);
+	const bankText = booking.counterpartyCandidate?.value ?? booking.description.value;
+	assert.deepEqual(details.candidates.map(candidate => candidate.signals.filename.state), ['match', 'partial', 'match', 'missing']);
+	assert.equal(details.candidates[0].signals.filename.bankText, bankText);
+	assert.equal(details.candidates[2].signals.amount, 'close');
+	assert.equal(session.state().workspace?.dirty, false);
+});
+
+test('combines independent signals for existing workspaces with no exact amount match', async (context) => {
+	const root = await directory(context);
+	const file = path.join(root, 'signals.receiptmatch');
+	const bank = retainedBank(root);
+	const booking = bank.result.transactions[0];
+	booking.description.value = 'Vela Restaurant New';
+	booking.counterpartyCandidate = null;
+	booking.reportedOriginalAmount = null;
+	booking.accountAmount.value = { coefficient: '-17677', scale: 2, currency: 'EUR' };
+	const named = document(root, 'Vela-Backyard.pdf', 'Vela Backyard', 'Total: EUR 160.70');
+	const reference = document(root, 'other-merchant.pdf', 'Invoice', 'Merchant: Other Merchant', 'Invoice Number: SYNTHETIC-A', 'Invoice Total: USD 48.00');
+	const dated = document(root, 'Vela.pdf', 'Receipt', 'Merchant: Vela', 'Issue Date: 2032-02-27', 'Receipt Number: UNRELATED');
+	const near = document(root, 'Different-Shop.pdf', 'Receipt', 'Issue Date: 2032-02-28', 'Total: EUR 167.00');
+	const generic = document(root, 'IMG_1234.pdf', 'Receipt', 'Total: EUR 160.70');
+	const large = document(root, 'Vela Large.pdf', 'Receipt', 'Total: EUR 80.00');
+	assert.equal(named.result.sections[0].kind, 'unknown');
+	await createWorkspace(file, newMetadata(), [bank], [documentRun(root, [named, reference, dated, near, generic, large])]);
+	const savedBytes = await readFile(file);
+	const session = new WorkspaceSession({ open: async () => file, save: async () => file, unsaved: async () => 'discard' });
+	await session.dispatch({ type: 'open' });
+	const { transactionId } = bank.transactions[0];
+	const revision = session.state().workspace!.matchRevision;
+	assert.equal(session.matchResults().find(match => match.transactionId === transactionId)?.status, 'unmatched');
+	assert.equal(session.matchSummaries(revision)?.find(row => row.transactionId === transactionId)?.status, 'uncertain');
+	const candidates = new Map(session.matchDetails(revision, transactionId)?.candidates.map(candidate => [candidate.documentId, candidate]));
+	assert.equal(candidates.size, 4);
+	assert.equal(candidates.get(named.id)?.signals.amount, 'close');
+	assert.equal(candidates.get(named.id)?.signals.filename.state, 'partial');
+	assert.equal(candidates.get(reference.id)?.signals.reference, 'match');
+	assert.equal(candidates.get(reference.id)?.signals.merchant.state, 'different');
+	assert.equal(candidates.get(reference.id)?.signals.amount, 'currency-differs');
+	assert.equal(candidates.get(dated.id)?.signals.amount, 'missing');
+	assert.equal(candidates.get(dated.id)?.date?.daysApart, 1);
+	assert.equal(candidates.get(near.id)?.signals.filename.state, 'different');
+	assert.equal(session.state().workspace?.dirty, false);
+	assert.deepEqual(await readFile(file), savedBytes);
+});
+
 test('recomputes the workspace snapshot on each successful import and saves it only on explicit Save', async (context) => {
 	const root = await directory(context);
 	const file = path.join(root, 'matches.receiptmatch');
@@ -306,7 +376,10 @@ test('corrects booking values with exact money, retains original evidence and pr
 	assert.equal(changedDate?.withinWindow, false);
 	assert.match((await correct(first.transactionId, { bookingDate: originalDate }, revision)).error!, /Refresh/);
 	assert.equal((await correct(first.transactionId, { accountAmount: { currency: 'EUR', coefficient: '-25620', scale: 2 } })).error, null);
-	assert.equal(summary(first.transactionId)?.status, 'unmatched');
+	assert.equal(summary(first.transactionId)?.status, 'uncertain');
+	const referenceOnly = session.matchDetails(state().matchRevision, first.transactionId)?.candidates[0];
+	assert.equal(referenceOnly?.signals.reference, 'match');
+	assert.equal(referenceOnly?.signals.amount, 'different');
 	const correctedRevision = state().matchRevision;
 	await correct(first.transactionId, { accountAmount: { currency: 'EUR', coefficient: '-256200', scale: 3 } });
 	assert.equal(state().matchRevision, correctedRevision);

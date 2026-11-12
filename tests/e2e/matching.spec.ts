@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { test, expect, type ElectronApplication } from '@playwright/test';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
+import { airwallexStatement } from '../unit/airwallex-fixtures.js';
 import { row, span, statement } from '../unit/bank-fixtures.js';
 import { documentRun, extractedDocument, retainedBank } from '../unit/document-fixtures.js';
 import { interpretSupportingDocument } from '../../electron/documents/interpret.js';
@@ -49,7 +50,7 @@ test('packaged match suggestions from import through keyboard review and reopeni
 	const bankFile = path.join(root, 'statement.pdf');
 	const workspaceFile = path.join(root, 'reconciliation.receiptmatch');
 	await Promise.all([mkdir(first, { recursive: true }), mkdir(second, { recursive: true })]);
-	await Promise.all([statementPdf(bankFile), invoicePdf(path.join(first, 'account-invoice.pdf'), 'EUR 1,234.56'),
+	await Promise.all([statementPdf(bankFile), invoicePdf(path.join(first, 'Orchard_Workshop_invoice.pdf'), 'EUR 1,234.56'),
 		invoicePdf(path.join(second, 'original-invoice.pdf'), 'USD 1,500.01'), invoicePdf(path.join(first, 'restaurant-receipt.pdf'), 'EUR 142.00', true)]);
 	async function launch(profile: string) {
 		return playwright._electron.launch({
@@ -109,7 +110,9 @@ test('packaged match suggestions from import through keyboard review and reopeni
 		await orchard.press('Enter');
 		await expect(orchard).toHaveAttribute('aria-pressed', 'true');
 		await expect(detail.getByRole('heading', { name: /Orchard Workshop/ })).toBeFocused();
-		await expect(detail.getByRole('heading', { name: 'account-invoice.pdf' })).toBeVisible();
+		await expect(detail.getByRole('heading', { name: 'Orchard_Workshop_invoice.pdf' })).toBeVisible();
+		await expect(detail.getByText('Receipt filename', { exact: true })).toBeVisible();
+		await expect(detail.getByText('Orchard_Workshop_invoice.pdf · Bank Orchard Workshop')).toBeVisible();
 		await expect.poll(async () => {
 			const [transactions, evidence] = await Promise.all([list.boundingBox(), detail.boundingBox()]);
 			return transactions!.x + transactions!.width < evidence!.x && transactions!.y === evidence!.y;
@@ -161,18 +164,18 @@ test('packaged match suggestions from import through keyboard review and reopeni
 			await expect(originalCandidate.getByText('Assigned to this transaction', { exact: true })).toBeVisible();
 			await expect(originalCandidate.getByText('Uncertain', { exact: true })).toBeVisible();
 			await expect(manual.getByText('Document assigned · original-invoice.pdf')).toBeVisible();
-			const accountCandidate = detail.getByRole('article').filter({ has: page.getByRole('heading', { name: 'account-invoice.pdf', exact: true }) });
+			const accountCandidate = detail.getByRole('article').filter({ has: page.getByRole('heading', { name: 'Orchard_Workshop_invoice.pdf', exact: true }) });
 			await accountCandidate.getByRole('button', { name: /^Replace with this document/ }).click();
-			await expect(manual.getByText('Document assigned · account-invoice.pdf')).toBeVisible();
+			await expect(manual.getByText('Document assigned · Orchard_Workshop_invoice.pdf')).toBeVisible();
 			await manual.getByRole('button', { name: 'Remove assignment' }).click();
 			await manual.getByRole('button', { name: 'Complete without document' }).click();
 			await expect(manual.getByRole('button', { name: 'Reopen transaction' })).toBeVisible();
 			await manual.getByRole('button', { name: 'Reopen transaction' }).click();
 			await manual.getByRole('button', { name: 'Complete without document' }).click();
 			await filters.getByRole('button', { name: 'Unmatched 1' }).click();
-			await choose('account-invoice');
+			await choose('Orchard_Workshop_invoice');
 			await manual.getByRole('button', { name: 'Replace document' }).click();
-			await expect(manual.getByText('Document assigned · account-invoice.pdf')).toBeVisible();
+			await expect(manual.getByText('Document assigned · Orchard_Workshop_invoice.pdf')).toBeVisible();
 			await manual.getByRole('button', { name: 'Remove assignment' }).click();
 			await expect(manual.getByText('Open', { exact: true })).toBeVisible();
 			await choose('restaurant-receipt');
@@ -263,12 +266,22 @@ test('keeps the assignment panel in view and previews a document without a total
 		bank.result.transactions.push({ ...seed, rowId, references: [], description: { ...seed.description, value: `Synthetic purchase ${index}` } });
 		bank.transactions.push({ rowId, transactionId: randomUUID() });
 	}
+	seed.description = { ...seed.description, value: 'Vela Restaurant New' };
+	seed.counterpartyCandidate = null;
+	seed.reportedOriginalAmount = null;
+	seed.accountAmount = { ...seed.accountAmount, value: { currency: 'EUR', coefficient: '-17677', scale: 2 } };
 	const receipt = extractedDocument(Buffer.from('synthetic receipt without total'), randomUUID());
 	receipt.input.pages[0].spans = ['Receipt', 'Merchant: Corner Cafe', 'Receipt Number: WITHOUT-TOTAL'].map((line, index) => span(line, 30, 30 + index * 30, 250));
+	const near = extractedDocument(Buffer.from('synthetic receipt with a different total'), randomUUID());
+	near.input.pages[0].spans = ['Vela Backyard', 'Total: EUR 160.70'].map((line, index) => span(line, 30, 30 + index * 30, 250));
 	const imports = documentRun(root, [{ id: randomUUID(), filePath: path.join(root, 'without-total.pdf'), format: 'pdf',
-		importedAt: '2032-02-27T00:00:00.000Z', result: interpretSupportingDocument(receipt.input) }]);
+		importedAt: '2032-02-27T00:00:00.000Z', result: interpretSupportingDocument(receipt.input) },
+	{ id: randomUUID(), filePath: path.join(root, 'Vela-Backyard.pdf'), format: 'pdf',
+		importedAt: '2032-02-27T00:00:00.000Z', result: interpretSupportingDocument(near.input) }]);
 	const file = path.join(root, 'scroll.receiptmatch');
-	await createWorkspace(file, newMetadata(), [bank], [imports]);
+	const airwallex = retainedBank(root, airwallexStatement());
+	airwallex.filePath = path.join(root, 'airwallex.pdf');
+	await createWorkspace(file, newMetadata(), [bank, airwallex], [imports]);
 	const app = await playwright._electron.launch({
 		executablePath: path.resolve(process.platform === 'win32' ? 'release/win-unpacked/ReceiptMatch.exe' : 'release/linux-unpacked/receiptmatch'),
 		args: ['--hidden', '--disable-gpu', `--user-data-dir=${path.join(root, 'profile')}`],
@@ -281,6 +294,10 @@ test('keeps the assignment panel in view and previews a document without a total
 		await page.getByRole('button', { name: 'Match suggestions', exact: true }).click();
 		const list = page.getByRole('region', { name: 'Transactions', exact: true });
 		const detail = page.locator('#match-detail-panel');
+		const card = list.getByRole('button', { name: 'Card Lantern Supplies, USA, (Main Card, **0000): USD 18.07 1 EUR = 1.100000 USD', exact: true });
+		await expect(card).toBeVisible();
+		await expect(card).toHaveCSS('white-space', 'pre-line');
+		await expect(list.getByRole('button', { name: 'Payout Pay EUR 13.07 to Silver Birch Workshop', exact: true })).toBeVisible();
 		const purchase = list.getByRole('button', { name: 'Synthetic purchase 27', exact: true });
 		await purchase.scrollIntoViewIfNeeded();
 		const position = await page.evaluate(() => scrollY);
@@ -300,5 +317,11 @@ test('keeps the assignment panel in view and previews a document without a total
 		await expect(manual.getByText('Receipt Number: WITHOUT-TOTAL', { exact: true })).toBeVisible();
 		await picker.selectOption('');
 		await expect(manual.getByRole('heading', { name: 'Document fields' })).toHaveCount(0);
+		await page.getByRole('group', { name: 'Filter match results' }).getByRole('button', { name: 'Uncertain 1' }).click();
+		await expect(list.getByRole('button', { name: 'Vela Restaurant New' })).toBeVisible();
+		const candidate = detail.getByRole('article').filter({ has: page.getByRole('heading', { name: 'Vela-Backyard.pdf', exact: true }) });
+		await expect(candidate.getByText('Part of the name matches.')).toBeVisible();
+		await expect(candidate.getByText('Amounts are close, with a difference to review.')).toBeVisible();
+		await expect(candidate.getByRole('button', { name: /^Assign this document/ })).toBeEnabled();
 	} finally { await app.close(); }
 });

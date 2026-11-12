@@ -78,7 +78,27 @@ export interface MatchSourceExcerpt {
 	y: number;
 }
 
-export interface MatchCandidateView extends MatchCandidate {
+export interface MatchNameEvidence {
+	state: 'match' | 'partial' | 'different' | 'missing';
+	bankText: string | null;
+	documentText: string | null;
+}
+
+export interface ReviewMatchCandidate extends Omit<MatchCandidate, 'issues'> {
+	issues: (MatchCandidate['issues'][number] | 'amount-needs-review')[];
+	signals: {
+		amount: 'equal' | 'close' | 'different' | 'currency-differs' | 'missing';
+		merchant: MatchNameEvidence;
+		filename: MatchNameEvidence;
+		reference: 'match' | 'different' | 'missing';
+	};
+}
+
+export interface ReviewMatch extends Omit<TransactionMatch, 'candidates'> {
+	candidates: ReviewMatchCandidate[];
+}
+
+export interface MatchCandidateView extends ReviewMatchCandidate {
 	filePath: string;
 	sectionKind: DocumentSection['kind'];
 	sectionNumber: number | null;

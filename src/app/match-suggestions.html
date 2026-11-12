@@ -69,7 +69,7 @@
 												@if ((row.approvalSelection && !row.approval) || checked) {
 													<label class="match-batch-checkbox">
 														<input type="checkbox" [checked]="checked" [disabled]="reviewDisabled()" (change)="selectForApproval(row, $event)" />
-														<span class="sr-only">Select {{ transactionName(row.description) }} for approval</span>
+														<span class="sr-only">Select {{ row.description.trim() || 'Transaction' }} for approval</span>
 													</label>
 												}
 											</td>
@@ -84,7 +84,7 @@
 													aria-controls="match-detail-panel"
 													(click)="selectTransaction(row.transactionId, $event)"
 												>
-													{{ transactionName(row.description) }}
+													{{ row.description.trim() || 'Transaction' }}
 												</button>
 											</th>
 											<td class="match-account-amount">{{ money(row.accountAmount) }}</td>
@@ -288,10 +288,30 @@
 												<dd>Bank {{ money(amount.transactionAmount) }} · Document {{ money(amount.documentAmount) }}</dd>
 											</div>
 										}
+										<div>
+											<dt>Amount comparison</dt>
+											<dd>{{ amountLabels[candidate.signals.amount] }}</dd>
+										</div>
 										@for (reference of candidate.references; track $index) {
 											<div>
 												<dt>Matching reference</dt>
 												<dd>Bank {{ reference.bankValue }} · Document {{ reference.documentValue }}</dd>
+											</div>
+										}
+										@if (candidate.signals.reference !== 'match') {
+											<div>
+												<dt>Reference comparison</dt>
+												<dd>{{ candidate.signals.reference === 'different' ? 'No shared reference.' : 'No usable reference comparison.' }}</dd>
+											</div>
+										}
+										@for (source of ['merchant', 'filename']; track source) {
+											@let name = source === 'merchant' ? candidate.signals.merchant : candidate.signals.filename;
+											<div>
+												<dt>{{ source === 'merchant' ? 'Merchant on document' : 'Receipt filename' }}</dt>
+												<dd>{{ nameLabels[name.state] }}</dd>
+												@if (name.documentText && name.bankText) {
+													<dd>{{ name.documentText }} · Bank {{ name.bankText }}</dd>
+												}
 											</div>
 										}
 										<div>

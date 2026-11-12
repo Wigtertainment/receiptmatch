@@ -3,9 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { test } from 'vitest';
 import { interpretSupportingDocument } from '../../electron/documents/interpret.js';
 import { suggestTransactionMatches } from '../../electron/matching.js';
+import { evaluateReviewMatches } from '../../electron/review-matching.js';
 import { storedSupportingDocumentSchema } from '../../src/shared/workspace-documents.js';
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
-import { extractedDocument, retainedBank } from './document-fixtures.js';
+import { documentRun, extractedDocument, retainedBank } from './document-fixtures.js';
 
 function document(...lines: string[]) {
 	const { input } = extractedDocument(Buffer.from(lines.join('\n')), randomUUID());
@@ -22,6 +23,23 @@ function matchFor(bank: StoredBankImport, index: number, ...documents: ReturnTyp
 	const { transactionId } = bank.transactions[index];
 	return suggestTransactionMatches([bank], documents).find((match) => match.transactionId === transactionId)!;
 }
+
+test('rechecks the amounts of a historically reliable candidate before displaying it', () => {
+	const root = process.cwd();
+	const bank = retainedBank(root);
+	const original = invoice('Invoice Number: SYNTHETIC-A', 'Invoice Total: EUR 1,234.56');
+	const replacement = invoice('Invoice Number: SYNTHETIC-A', 'Invoice Total: EUR 1,234.57');
+	const historical = matchFor(bank, 0, original);
+	const [candidate] = historical.candidates;
+	candidate.documentId = replacement.id;
+	candidate.sectionId = replacement.result.sections[0].sectionId;
+	candidate.amounts[0].documentAmount.coefficient = '123457';
+	const [reviewed] = evaluateReviewMatches([historical], [bank], [documentRun(root, [replacement])]);
+	assert.equal(historical.status, 'reliable');
+	assert.equal(reviewed.status, 'uncertain');
+	assert.equal(reviewed.candidates[0].signals.amount, 'close');
+	assert.deepEqual(reviewed.candidates[0].issues, ['amount-needs-review']);
+});
 
 test('normalizes only reference case and surrounding whitespace and applies inclusive calendar-day evidence', () => {
 	const bank = retainedBank(process.cwd());

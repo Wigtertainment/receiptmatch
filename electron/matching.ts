@@ -25,7 +25,7 @@ function compare(left: string, right: string): number {
 	return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function moneyKey(amount: Money): string {
+export function moneyKey(amount: Money): string {
 	let coefficient = BigInt(amount.coefficient);
 	let scale = amount.scale;
 	if (coefficient < 0n) coefficient = -coefficient;
@@ -36,15 +36,16 @@ function moneyKey(amount: Money): string {
 	return `${amount.currency}:${coefficient}:${scale}`;
 }
 
-function normalizeReference(value: string): string {
+export function normalizeReference(value: string): string {
 	return value.trim().replace(/[a-z]/g, (letter) => letter.toUpperCase());
 }
 
-function outgoingAmounts(section: DocumentSection, recordedPayments: Set<string>): AmountField[] {
-	if (section.kind !== 'receipt' && section.kind !== 'invoice') return [];
+export function outgoingAmounts(section: DocumentSection, recordedPayments: Set<string>, requireIdentifiedDocument = true): AmountField[] {
+	if (section.kind !== 'receipt' && section.kind !== 'invoice' &&
+		(requireIdentifiedDocument || (section.kind !== 'unknown' && section.kind !== 'payment-information'))) return [];
 	const payments = section.amounts.filter((field) => recordedPayments.has(field.id));
 	if (payments.length) return payments;
-	if (section.kind === 'invoice' && !section.merchants.some((field) => field.candidates.length === 1)) return [];
+	if (requireIdentifiedDocument && section.kind === 'invoice' && !section.merchants.some((field) => field.candidates.length === 1)) return [];
 	return section.amounts.filter((field) => field.role === 'billed-total');
 }
 
@@ -93,12 +94,19 @@ export function suggestWorkspaceMatches(bankImports: readonly StoredBankImport[]
 	return suggestTransactionMatches(bankImports, documentImports.flatMap(record => record.files.flatMap(file => file.status === 'imported' ? [file.record] : [])));
 }
 
-function referenceEvidence(row: TransactionCandidate, section: DocumentSection): { matches: ReferenceEvidence[]; conflicting: boolean } {
-	const bankReferences = row.references.filter((field) => /^(?:ref|reference|payment reference)$/i.test(field.label.trim()));
+export function bankReferenceFields(row: TransactionCandidate) {
+	return row.references.filter((field) => /^(?:ref|reference|payment reference)$/i.test(field.label.trim()));
+}
+
+export function documentReferenceFields(section: DocumentSection) {
+	return section.references.filter(field => field.role === 'payment' || field.role === 'invoice' || field.role === 'receipt');
+}
+
+export function referenceEvidence(row: TransactionCandidate, section: DocumentSection): { matches: ReferenceEvidence[]; conflicting: boolean } {
+	const bankReferences = bankReferenceFields(row);
 	const matches = new Map<string, ReferenceEvidence>();
 	let conflicting = false;
-	for (const field of section.references) {
-		if (field.role !== 'payment' && field.role !== 'invoice' && field.role !== 'receipt') continue;
+	for (const field of documentReferenceFields(section)) {
 		const values = new Set(field.candidates.map(normalizeReference));
 		for (const bank of bankReferences) {
 			const normalized = normalizeReference(bank.value);
@@ -113,7 +121,7 @@ function referenceEvidence(row: TransactionCandidate, section: DocumentSection):
 	return { matches: [...matches.keys()].sort(compare).map((key) => matches.get(key)!), conflicting };
 }
 
-function dateEvidence(row: TransactionCandidate, dates: DateField[]): DateEvidence | null {
+export function dateEvidence(row: TransactionCandidate, dates: DateField[]): DateEvidence | null {
 	const values = new Set(dates.flatMap((field) => field.candidates));
 	if (values.size !== 1) return null;
 	const field = dates.filter((field) => field.candidates.length > 0).sort((left, right) => compare(left.id, right.id))[0];
