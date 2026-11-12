@@ -1,6 +1,8 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { bankImportInputSchema, importIssue, type BankImportInput, type PositionedSpan } from '../../src/shared/bank-import.js';
+import { formatMoney } from '../../src/shared/display.js';
+import { formatDocumentTotal } from '../../src/shared/document-display.js';
 import { supportingDocumentSchema, type DocumentSection } from '../../src/shared/supporting-document.js';
 import { interpretSupportingDocument } from '../../electron/documents/interpret.js';
 
@@ -254,6 +256,7 @@ test('a column value above its total label retains both evidence regions and nee
 	assert.ok(total.evidence.some(evidence => evidence.rawText === 'EUR 47.12'));
 	assert.ok(total.evidence.some(evidence => evidence.rawText === 'Grand Total'));
 	assert.ok(result.issues.some(issue => issue.fieldId === total.id && /association|unconfirmed/.test(issue.code)));
+	assert.equal(formatDocumentTotal(result), null);
 	const telephone = invoice();
 	telephone.pages[0].spans = telephone.pages[0].spans.filter(span => !span.text.startsWith('Invoice Total:'));
 	telephone.pages[0].spans.push(
@@ -272,6 +275,7 @@ test('equivalent exact totals with different printed scales are not conflicting 
 	assert.deepEqual(amounts(result.sections[0], 'billed-total'), [
 		{ coefficient: '7325', scale: 2, currency: 'EUR' }, { coefficient: '732500', scale: 4, currency: 'EUR' }
 	]);
+	assert.equal(formatDocumentTotal(result), formatMoney({ coefficient: '7325', scale: 2, currency: 'EUR' }));
 });
 
 test('the document contract rejects a complete result with contradictory scalar fields and no conflict issue', () => {
@@ -302,6 +306,7 @@ test('page continuation and repeated totals preserve evidence without double-cou
     assert.ok(amounts(result.sections[0], 'billed-total').every(value => value.coefficient === '7325'));
     assert.ok(!result.issues.some(issue => /conflict/.test(issue.code)));
     assert.ok(result.sections[0].amounts.filter(field => field.role === 'billed-total').flatMap(field => field.evidence).some(evidence => evidence.pageId === 'page-2'));
+    assert.equal(formatDocumentTotal(result), formatMoney({ coefficient: '7325', scale: 2, currency: 'EUR' }));
 });
 
 test('ambiguous slash dates retain both calendar readings and do not replace the invoice date with due or service dates', () => {
@@ -394,6 +399,7 @@ test('conflicting totals remain candidates with an issue while distinct payments
     assert.ok(conflicts.length);
     assert.ok(!conflicts.some(issue => /payment/.test(issue.field ?? '')));
     assert.deepEqual(amounts(result.sections[0], 'payment').map(value => value.coefficient).sort(), ['-2000', '-5325']);
+    assert.equal(formatDocumentTotal(result), null);
 });
 
 test('unlabelled values and customer, table, order or account identifiers never supply a missing invoice reference', () => {
