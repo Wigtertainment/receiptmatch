@@ -8,8 +8,11 @@ import { applyDocumentCorrections, documentCorrectionKey, documentCorrectionSche
 import { advanceReviewRevision, documentRevisionIndex, reviewApprovalStateSchema, type ReviewApprovalState } from '../src/shared/match-approvals.js';
 import { workspaceName } from '../src/shared/protocol.js';
 import { moneySchema, type Money } from '../src/shared/money.js';
+import { originalSourceExtensions } from '../src/shared/original-preview.js';
+import { activeStatements, activeSupportingDocuments } from '../src/shared/source-replacements.js';
+import { excludedDuplicateIds, validateDuplicateDecisions, type DuplicateDecision } from '../src/shared/transaction-duplicates.js';
 import { storedBankImportSchema, type StoredBankImport } from '../src/shared/workspace-import.js';
-import { storedDocumentImportSchema, type StoredDocumentImport, type WorkspaceSource } from '../src/shared/workspace-documents.js';
+import { storedDocumentImportSchema, type DocumentFormat, type StoredDocumentImport, type WorkspaceSource } from '../src/shared/workspace-documents.js';
 import { transactionMatchSchema, type TransactionMatch } from '../src/shared/workspace-matching.js';
 import type { TransactionCandidate } from '../src/shared/bank-import.js';
 import { suggestWorkspaceMatches } from './matching.js';
@@ -17,7 +20,7 @@ import { suggestWorkspaceMatches } from './matching.js';
 export { moneySchema } from '../src/shared/money.js';
 
 export const APPLICATION_ID = 0x52434d54;
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 11;
 const metadataSchema = z.strictObject({ id: z.uuid(), name: workspaceName.refine(value => value.trim().length > 0), createdAt: z.iso.datetime(), savedAt: z.iso.datetime().nullable() });
 export type WorkspaceMetadata = z.infer<typeof metadataSchema>;
 export interface SavedWorkspace {
@@ -27,6 +30,10 @@ export interface SavedWorkspace {
   bankCorrections: Map<string, BankCorrection>;
   documentCorrections: Map<string, DocumentCorrection>;
   reviewApprovals: Map<string, ReviewApprovalState>;
+  duplicateDecisions: Map<string, DuplicateDecision>;
+  sourceRelocations: Map<string, string>;
+  sourceReplacements: Map<string, string>;
+  archivedSourceReviews: Map<string, Map<string, string | null>>;
 }
 
 export function newMetadata(): WorkspaceMetadata { return { id: randomUUID(), name: 'Untitled workspace', createdAt: new Date().toISOString(), savedAt: null }; }
@@ -85,6 +92,26 @@ const matchApprovalSchema = `CREATE TABLE match_approval_state(
   document_id TEXT REFERENCES documents(id),
   record_json TEXT NOT NULL
 );`;
+const duplicateDecisionSchema = `CREATE TABLE duplicate_decisions(
+  first_id TEXT NOT NULL REFERENCES transactions(id),
+  second_id TEXT NOT NULL REFERENCES transactions(id),
+  record_json TEXT NOT NULL,
+  PRIMARY KEY(first_id,second_id)
+);`;
+const sourceRelocationSchema = `CREATE TABLE source_relocations(
+  source_id TEXT PRIMARY KEY NOT NULL REFERENCES sources(id),
+  file_path TEXT NOT NULL
+);`;
+const sourceReplacementSchema = `CREATE TABLE source_replacements(
+  source_id TEXT PRIMARY KEY NOT NULL REFERENCES sources(id),
+  replacement_id TEXT UNIQUE NOT NULL REFERENCES sources(id)
+);
+CREATE TABLE source_replacement_reviews(
+  source_id TEXT NOT NULL REFERENCES source_replacements(source_id),
+  transaction_id TEXT NOT NULL REFERENCES transactions(id),
+  document_id TEXT REFERENCES documents(id),
+  PRIMARY KEY(source_id,transaction_id)
+);`;
 
 function importIdentities(record: StoredBankImport): [string, string | null][] {
   return [
@@ -122,6 +149,117 @@ function sourceCatalog(db: Database.Database): WorkspaceSource[] {
   }
   return sources;
 }
+
+export function isSourceRelocationPath(filePath: string, format: DocumentFormat): boolean {
+  if (!filePath || filePath.length > 32768 || /\p{Cc}|[\\/]$/u.test(filePath)) return false;
+  const windows = /^[a-z]:[\\/]|^[\\/]{2}/i.test(filePath);
+  if (windows) {
+    const normalized = filePath.replaceAll('\\', '/');
+    if (!/^(?:[a-z]:\/|\/\/[^/]+\/[^/]+\/).+$/i.test(normalized) || /[<>:"|?*]/u.test(normalized.replace(/^[a-z]:/i, '')) ||
+      /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/iu.test(path.win32.basename(filePath)) || normalized.startsWith('//./')) return false;
+  } else if (!path.posix.isAbsolute(filePath) || (process.platform === 'win32' && filePath.includes(':'))) return false;
+  const extension = (windows ? path.win32 : path.posix).extname(filePath).toLowerCase();
+  return originalSourceExtensions[format].some(allowed => allowed === extension);
+}
+
+function validateSourceRelocations(
+  entries: Iterable<readonly [string, string]>, imports: StoredBankImport[], documentImports: StoredDocumentImport[]
+): Map<string, string> {
+  const relocations = new Map<string, string>();
+  const formats = new Map<string, DocumentFormat>();
+  for (const record of imports) formats.set(record.result.sourceProvenance!.sourceId, 'pdf');
+  for (const record of documentImports) for (const file of record.files) {
+    if (file.status === 'imported') formats.set(file.record.result.input!.source.sourceId, file.record.format);
+  }
+  for (const [sourceId, filePath] of entries) {
+    const format = formats.get(sourceId);
+    if (!z.uuid().safeParse(sourceId).success || !format || relocations.has(sourceId)) {
+      throw new Error('A source relocation must refer to an imported original.');
+    }
+    if (typeof filePath !== 'string' || !isSourceRelocationPath(filePath, format)) {
+      throw new Error('A source relocation needs an absolute path with the original file type.');
+    }
+    relocations.set(sourceId, filePath);
+  }
+  return relocations;
+}
+
+function writeSourceRelocations(db: Database.Database, previous: ReadonlyMap<string, string>, relocations: ReadonlyMap<string, string>) {
+  const remove = db.prepare('DELETE FROM source_relocations WHERE source_id=?');
+  const write = db.prepare(`INSERT INTO source_relocations(source_id,file_path) VALUES(?,?)
+    ON CONFLICT(source_id) DO UPDATE SET file_path=excluded.file_path WHERE source_relocations.file_path<>excluded.file_path`);
+  for (const sourceId of previous.keys()) if (!relocations.has(sourceId)) remove.run(sourceId);
+  for (const [sourceId, filePath] of relocations) write.run(sourceId, filePath);
+}
+
+export function validateSourceReplacements(
+  entries: Iterable<readonly [string, string]>, imports: readonly StoredBankImport[], documentImports: readonly StoredDocumentImport[]
+): Map<string, string> {
+  const kinds = new Map<string, 'statement' | 'document'>();
+  for (const record of imports) kinds.set(record.result.sourceProvenance!.sourceId, 'statement');
+  for (const record of documentImports) for (const file of record.files) {
+    if (file.status === 'imported') kinds.set(file.record.result.input!.source.sourceId, 'document');
+  }
+  const replacements = new Map<string, string>();
+  const targets = new Set<string>();
+  for (const [sourceId, replacementId] of entries) {
+    const kind = kinds.get(sourceId);
+    if (!kind || kind !== kinds.get(replacementId) || sourceId === replacementId || replacements.has(sourceId) || targets.has(replacementId)) {
+      throw new Error('A source replacement must link distinct imported originals of the same kind.');
+    }
+    replacements.set(sourceId, replacementId);
+    targets.add(replacementId);
+  }
+  // Each node has at most one predecessor. Walking from the heads visits every edge only if there is no cycle.
+  let edges = 0;
+  for (const sourceId of replacements.keys()) {
+    if (targets.has(sourceId)) continue;
+    for (let next = replacements.get(sourceId); next; next = replacements.get(next)) edges++;
+  }
+  if (edges !== replacements.size) throw new Error('Source replacements cannot form a cycle.');
+  return replacements;
+}
+
+function writeSourceReplacements(db: Database.Database, previous: ReadonlyMap<string, string>, replacements: ReadonlyMap<string, string>) {
+  const insert = db.prepare('INSERT INTO source_replacements(source_id,replacement_id) VALUES(?,?)');
+  for (const [sourceId, replacementId] of previous) {
+    if (replacements.get(sourceId) !== replacementId) throw new Error('Saved source replacements cannot be removed or rewritten.');
+  }
+  for (const [sourceId, replacementId] of replacements) if (!previous.has(sourceId)) insert.run(sourceId, replacementId);
+}
+
+type ArchivedSourceReviews = ReadonlyMap<string, ReadonlyMap<string, string | null>>;
+
+function validateArchivedSourceReviews(
+  entries: ArchivedSourceReviews, replacements: ReadonlyMap<string, string>, imports: readonly StoredBankImport[], documentImports: readonly StoredDocumentImport[]
+): SavedWorkspace['archivedSourceReviews'] {
+  const archive: SavedWorkspace['archivedSourceReviews'] = new Map();
+  const transactions = new Set(imports.flatMap(record => record.transactions.map(row => row.transactionId)));
+  const documents = new Set(documentImports.flatMap(record => record.files.flatMap(file => file.status === 'imported' ? [file.record.id] : [])));
+  for (const [sourceId, reviews] of entries) {
+    if (!replacements.has(sourceId)) throw new Error('Archived reviews require an imported source replacement.');
+    const retained = new Map<string, string | null>();
+    for (const [transactionId, documentId] of reviews) {
+      if (!transactions.has(transactionId) || (documentId !== null && !documents.has(documentId))) {
+        throw new Error('An archived source review refers to a booking or document outside the workspace imports.');
+      }
+      retained.set(transactionId, documentId);
+    }
+    if (retained.size) archive.set(sourceId, retained);
+  }
+  return archive;
+}
+
+function writeArchivedSourceReviews(db: Database.Database, previous: ArchivedSourceReviews, archive: ArchivedSourceReviews) {
+  const insert = db.prepare('INSERT INTO source_replacement_reviews(source_id,transaction_id,document_id) VALUES(?,?,?)');
+  for (const [sourceId, reviews] of previous) for (const [transactionId, documentId] of reviews) {
+    if (archive.get(sourceId)?.get(transactionId) !== documentId) throw new Error('Saved source replacement reviews cannot be removed or rewritten.');
+  }
+  for (const [sourceId, reviews] of archive) for (const [transactionId, documentId] of reviews) {
+    if (!previous.get(sourceId)?.has(transactionId)) insert.run(sourceId, transactionId, documentId);
+  }
+}
+
 function accountName(record: StoredBankImport, sectionId: string): string {
   return record.result.accountSections.find(section => section.sectionId === sectionId)!.accountReference?.value ?? record.result.adapter!.bankId;
 }
@@ -298,9 +436,12 @@ function writeMatches(db: Database.Database, matches: TransactionMatch[]) {
   for (const match of matches) write.run(match.transactionId, JSON.stringify(match));
 }
 
-function validateMatchDecisions(decisions: ReadonlyMap<string, string | null>, imports: StoredBankImport[], documentImports: StoredDocumentImport[]) {
-  const transactions = new Set(imports.flatMap(record => record.transactions.map(row => row.transactionId)));
-  const documents = new Set(documentImports.flatMap(record => record.files.flatMap(file => file.status === 'imported' ? [file.record.id] : [])));
+function validateMatchDecisions(
+  decisions: ReadonlyMap<string, string | null>, imports: StoredBankImport[], documentImports: StoredDocumentImport[], replacements: ReadonlyMap<string, string>
+) {
+  const transactions = new Set(activeStatements(imports, replacements).flatMap(record => record.transactions.map(row => row.transactionId)));
+  const documents = new Set(activeSupportingDocuments(documentImports, replacements).flatMap(record =>
+    record.files.flatMap(file => file.status === 'imported' ? [file.record.id] : [])));
   for (const [transactionId, documentId] of decisions) {
     if (!transactions.has(transactionId)) throw new Error('A review decision refers to a transaction outside the workspace imports.');
     if (documentId === null) continue;
@@ -313,6 +454,29 @@ function writeMatchDecisions(db: Database.Database, previous: ReadonlyMap<string
   const insert = db.prepare('INSERT INTO match_reviews(transaction_id,document_id) VALUES(?,?)');
   for (const [transactionId, documentId] of previous) if (decisions.get(transactionId) !== documentId) remove.run(transactionId);
   for (const [transactionId, documentId] of decisions) if (previous.get(transactionId) !== documentId) insert.run(transactionId, documentId);
+}
+
+function validateDuplicateReviews(
+  duplicates: ReadonlyMap<string, DuplicateDecision>, reviews: ReadonlyMap<string, string | null>, documentImports: StoredDocumentImport[]
+) {
+  if (!duplicates.size) return;
+  for (const id of excludedDuplicateIds(duplicates.values())) {
+    if (reviews.has(id)) throw new Error('An excluded duplicate has an active review decision.');
+  }
+  const documents = new Set(documentImports.flatMap(record => record.files.flatMap(file => file.status === 'imported' ? [file.record.id] : [])));
+  for (const { archivedReview } of duplicates.values()) {
+    if (archivedReview?.documentId && !documents.has(archivedReview.documentId)) {
+      throw new Error('An archived duplicate review refers to a document outside the workspace imports.');
+    }
+  }
+}
+
+function writeDuplicateDecisions(db: Database.Database, previous: ReadonlyMap<string, DuplicateDecision>, decisions: ReadonlyMap<string, DuplicateDecision>) {
+  const remove = db.prepare('DELETE FROM duplicate_decisions WHERE first_id=? AND second_id=?');
+  const write = db.prepare(`INSERT INTO duplicate_decisions(first_id,second_id,record_json) VALUES(?,?,?)
+    ON CONFLICT(first_id,second_id) DO UPDATE SET record_json=excluded.record_json WHERE duplicate_decisions.record_json<>excluded.record_json`);
+  for (const [key, { firstId, secondId }] of previous) if (!decisions.has(key)) remove.run(firstId, secondId);
+  for (const decision of decisions.values()) write.run(decision.firstId, decision.secondId, JSON.stringify(decision));
 }
 
 function parseReviewApprovals(entries: Iterable<readonly [string, unknown]>): Map<string, ReviewApprovalState> {
@@ -497,6 +661,9 @@ function validateDatabase(db: Database.Database): Omit<SavedWorkspace, 'filePath
   if (version >= 6n) expected.push('bank_corrections');
   if (version >= 7n) expected.push('document_corrections');
   if (version >= 8n) expected.push('match_approval_state');
+  if (version >= 9n) expected.push('duplicate_decisions');
+  if (version >= 10n) expected.push('source_relocations');
+  if (version >= 11n) expected.push('source_replacements', 'source_replacement_reviews');
   expected.sort();
   if (JSON.stringify(tables) !== JSON.stringify(expected) || db.prepare("SELECT name FROM sqlite_schema WHERE type IN ('trigger','view')").all().length) throw new Error('The workspace structure is not supported.');
   if (db.pragma('quick_check', { simple: true }) !== 'ok' || (db.pragma('foreign_key_check') as unknown[]).length) throw new Error('The workspace is damaged.');
@@ -533,7 +700,17 @@ function validateDatabase(db: Database.Database): Omit<SavedWorkspace, 'filePath
   }[];
   const matchDecisions = new Map(reviewRows.map(row => [row.transaction_id, row.document_id]));
   if (matchDecisions.size !== reviewRows.length) throw new Error('The workspace contains duplicate review decisions.');
-  validateMatchDecisions(matchDecisions, effective, documentImports);
+  const duplicateRows = version < 9n ? [] : db.prepare('SELECT first_id,second_id,record_json FROM duplicate_decisions').all() as {
+    first_id: string; second_id: string; record_json: string;
+  }[];
+  const duplicateDecisions = validateDuplicateDecisions(duplicateRows.map(row => {
+    const decision = JSON.parse(row.record_json) as DuplicateDecision | null;
+    if (!decision || decision.firstId !== row.first_id || decision.secondId !== row.second_id) {
+      throw new Error('Stored duplicate decisions do not agree with their transactions.');
+    }
+    return decision;
+  }), effective);
+  validateDuplicateReviews(duplicateDecisions, matchDecisions, documentImports);
   const approvalRows = version < 8n ? [] : db.prepare('SELECT transaction_id,document_id,record_json FROM match_approval_state').all() as {
     transaction_id: string; document_id: string | null; record_json: string;
   }[];
@@ -542,8 +719,28 @@ function validateDatabase(db: Database.Database): Omit<SavedWorkspace, 'filePath
     throw new Error('Stored match approvals do not agree with their documents.');
   }
   validateReviewApprovals(reviewApprovals, matchDecisions, effective, documentImports, bankCorrections, documentRevisions);
+  const relocationRows = version < 10n ? [] : db.prepare('SELECT source_id,file_path FROM source_relocations ORDER BY rowid').all() as {
+    source_id: string; file_path: string;
+  }[];
+  const sourceRelocations = validateSourceRelocations(relocationRows.map(row => [row.source_id, row.file_path] as const), imports, documentImports);
+  const replacementRows = version < 11n ? [] : db.prepare('SELECT source_id,replacement_id FROM source_replacements ORDER BY rowid').all() as {
+    source_id: string; replacement_id: string;
+  }[];
+  const sourceReplacements = validateSourceReplacements(replacementRows.map(row => [row.source_id, row.replacement_id] as const), imports, documentImports);
+  validateMatchDecisions(matchDecisions, effective, documentImports, sourceReplacements);
+  const archivedRows = version < 11n ? [] : db.prepare('SELECT source_id,transaction_id,document_id FROM source_replacement_reviews ORDER BY rowid').all() as {
+    source_id: string; transaction_id: string; document_id: string | null;
+  }[];
+  const archive: SavedWorkspace['archivedSourceReviews'] = new Map();
+  for (const { source_id, transaction_id, document_id } of archivedRows) {
+    const reviews = archive.get(source_id) ?? new Map<string, string | null>();
+    if (reviews.has(transaction_id)) throw new Error('The workspace contains duplicate archived source reviews.');
+    reviews.set(transaction_id, document_id);
+    archive.set(source_id, reviews);
+  }
+  const archivedSourceReviews = validateArchivedSourceReviews(archive, sourceReplacements, effective, documentImports);
   return { metadata: metadataSchema.parse(rows[0]), schemaVersion: Number(version), imports, documentImports, sources: sourceCatalog(db), matches, matchDecisions,
-    bankCorrections, documentCorrections, reviewApprovals };
+    bankCorrections, documentCorrections, reviewApprovals, duplicateDecisions, sourceRelocations, sourceReplacements, archivedSourceReviews };
 }
 
 function checkHeader(filePath: string) {
@@ -579,7 +776,9 @@ export async function loadWorkspace(filePath: string): Promise<SavedWorkspace> {
 export async function createWorkspace(
   filePath: string, metadata: WorkspaceMetadata, imports: StoredBankImport[] = [], documentImports: StoredDocumentImport[] = [],
   decisions: ReadonlyMap<string, string | null> = new Map(), corrections: ReadonlyMap<string, BankCorrection> = new Map(),
-  documentEdits: ReadonlyMap<string, DocumentCorrection> = new Map(), approvalEdits: ReadonlyMap<string, ReviewApprovalState> = new Map()
+  documentEdits: ReadonlyMap<string, DocumentCorrection> = new Map(), approvalEdits: ReadonlyMap<string, ReviewApprovalState> = new Map(),
+  duplicateEdits: ReadonlyMap<string, DuplicateDecision> = new Map(), relocationEdits: ReadonlyMap<string, string> = new Map(),
+  replacementEdits: ReadonlyMap<string, string> = new Map(), archivedSourceReviewEdits: ArchivedSourceReviews = new Map()
 ): Promise<SavedWorkspace> {
   if (path.extname(filePath).toLowerCase() !== '.receiptmatch') throw new Error('Use the .receiptmatch filename extension for a workspace.');
   const saved = metadataSchema.parse({ ...metadata, savedAt: new Date().toISOString() });
@@ -589,9 +788,14 @@ export async function createWorkspace(
   const bankCorrections = parseBankCorrections(corrections);
   const documentCorrections = parseDocumentCorrections(documentEdits);
   const reviewApprovals = parseReviewApprovals(approvalEdits);
+  const sourceRelocations = validateSourceRelocations(relocationEdits, retained, retainedDocuments);
+  const sourceReplacements = validateSourceReplacements(replacementEdits, retained, retainedDocuments);
   const effective = applyBankCorrections(retained, bankCorrections);
+  const archivedSourceReviews = validateArchivedSourceReviews(archivedSourceReviewEdits, sourceReplacements, effective, retainedDocuments);
   const effectiveDocuments = applyDocumentCorrections(retainedDocuments, documentCorrections);
-  validateMatchDecisions(matchDecisions, effective, retainedDocuments);
+  validateMatchDecisions(matchDecisions, effective, retainedDocuments, sourceReplacements);
+  const duplicateDecisions = validateDuplicateDecisions(duplicateEdits.values(), effective);
+  validateDuplicateReviews(duplicateDecisions, matchDecisions, retainedDocuments);
   validateReviewApprovals(reviewApprovals, matchDecisions, effective, retainedDocuments, bankCorrections, documentRevisionIndex(documentCorrections.values()));
   const matches = suggestWorkspaceMatches(effective, effectiveDocuments);
   const descriptor = openSync(filePath, 'wx+', 0o600);
@@ -615,6 +819,9 @@ export async function createWorkspace(
       db!.exec(bankCorrectionsSchema);
       db!.exec(documentCorrectionsSchema);
       db!.exec(matchApprovalSchema);
+      db!.exec(duplicateDecisionSchema);
+      db!.exec(sourceRelocationSchema);
+      db!.exec(sourceReplacementSchema);
       db!.pragma(`application_id = ${APPLICATION_ID}`); db!.pragma(`user_version = ${SCHEMA_VERSION}`);
       db!.prepare('INSERT INTO workspace VALUES(?,?,?,?)').run(saved.id, saved.name, saved.createdAt, saved.savedAt);
       validateAppend(db!, [], retained, [], retainedDocuments); appendImports(db!, retained); appendDocumentImports(db!, retainedDocuments);
@@ -623,12 +830,17 @@ export async function createWorkspace(
       writeMatches(db!, matches);
       writeMatchDecisions(db!, new Map(), matchDecisions);
       writeReviewApprovals(db!, new Map(), reviewApprovals, []);
+      writeDuplicateDecisions(db!, new Map(), duplicateDecisions);
+      writeSourceRelocations(db!, new Map(), sourceRelocations);
+      writeSourceReplacements(db!, new Map(), sourceReplacements);
+      writeArchivedSourceReviews(db!, new Map(), archivedSourceReviews);
     }).exclusive();
     // SQLite EXCLUSIVE locking mode retains the committed-file lock until this connection closes.
     const committedFingerprint = fingerprintDescriptor(descriptor, filePath);
     completed = true;
     return { metadata: saved, filePath, fingerprint: committedFingerprint, schemaVersion: SCHEMA_VERSION, imports: retained,
-      documentImports: retainedDocuments, sources: sourceCatalog(db), matches, matchDecisions, bankCorrections, documentCorrections, reviewApprovals };
+      documentImports: retainedDocuments, sources: sourceCatalog(db), matches, matchDecisions, bankCorrections, documentCorrections, reviewApprovals,
+      duplicateDecisions, sourceRelocations, sourceReplacements, archivedSourceReviews };
   } finally {
     try { db?.close(); }
     finally {
@@ -641,7 +853,9 @@ export async function createWorkspace(
 export async function saveWorkspace(
   current: SavedWorkspace, metadata: WorkspaceMetadata, imports: StoredBankImport[] = current.imports, documentImports: StoredDocumentImport[] = current.documentImports,
   decisions: ReadonlyMap<string, string | null> = current.matchDecisions, corrections: ReadonlyMap<string, BankCorrection> = current.bankCorrections,
-  documentEdits: ReadonlyMap<string, DocumentCorrection> = current.documentCorrections, approvalEdits?: ReadonlyMap<string, ReviewApprovalState>
+  documentEdits: ReadonlyMap<string, DocumentCorrection> = current.documentCorrections, approvalEdits?: ReadonlyMap<string, ReviewApprovalState>,
+  duplicateEdits: ReadonlyMap<string, DuplicateDecision> = current.duplicateDecisions, relocationEdits: ReadonlyMap<string, string> = current.sourceRelocations,
+  replacementEdits: ReadonlyMap<string, string> = current.sourceReplacements, archivedSourceReviewEdits: ArchivedSourceReviews = current.archivedSourceReviews
 ): Promise<SavedWorkspace> {
   const matchDecisions = new Map(decisions);
   const bankCorrections = parseBankCorrections(corrections);
@@ -654,9 +868,14 @@ export async function saveWorkspace(
   const saved = metadataSchema.parse({ ...metadata, savedAt: new Date().toISOString() });
   const retained = z.array(storedBankImportSchema).parse(imports);
   const retainedDocuments = z.array(storedDocumentImportSchema).parse(documentImports);
+  const sourceRelocations = validateSourceRelocations(relocationEdits, retained, retainedDocuments);
+  const sourceReplacements = validateSourceReplacements(replacementEdits, retained, retainedDocuments);
   const effective = applyBankCorrections(retained, bankCorrections);
+  const archivedSourceReviews = validateArchivedSourceReviews(archivedSourceReviewEdits, sourceReplacements, effective, retainedDocuments);
   const effectiveDocuments = applyDocumentCorrections(retainedDocuments, documentCorrections);
-  validateMatchDecisions(matchDecisions, effective, retainedDocuments);
+  validateMatchDecisions(matchDecisions, effective, retainedDocuments, sourceReplacements);
+  const duplicateDecisions = validateDuplicateDecisions(duplicateEdits.values(), effective);
+  validateDuplicateReviews(duplicateDecisions, matchDecisions, retainedDocuments);
   validateReviewApprovals(reviewApprovals, matchDecisions, effective, retainedDocuments, bankCorrections, documentRevisionIndex(documentCorrections.values()));
   const descriptor = openSync(current.filePath, 'r');
   let db: Database.Database | undefined;
@@ -679,6 +898,9 @@ export async function saveWorkspace(
       if (existing.schemaVersion < 6) db!.exec(bankCorrectionsSchema);
       if (existing.schemaVersion < 7) db!.exec(documentCorrectionsSchema);
       if (existing.schemaVersion < 8) db!.exec(matchApprovalSchema);
+      if (existing.schemaVersion < 9) db!.exec(duplicateDecisionSchema);
+      if (existing.schemaVersion < 10) db!.exec(sourceRelocationSchema);
+      if (existing.schemaVersion < 11) db!.exec(sourceReplacementSchema);
       if (existing.schemaVersion < SCHEMA_VERSION) db!.pragma(`user_version = ${SCHEMA_VERSION}`);
       const newImports = retained.slice(existing.imports.length);
       const newDocumentImports = retainedDocuments.slice(existing.documentImports.length);
@@ -691,11 +913,16 @@ export async function saveWorkspace(
       if (existing.schemaVersion < 4 || updated !== existing.matches) writeMatches(db!, updated);
       writeMatchDecisions(db!, existing.matchDecisions, matchDecisions);
       writeReviewApprovals(db!, existing.reviewApprovals, reviewApprovals, changed);
+      writeDuplicateDecisions(db!, existing.duplicateDecisions, duplicateDecisions);
+      writeSourceRelocations(db!, existing.sourceRelocations, sourceRelocations);
+      writeSourceReplacements(db!, existing.sourceReplacements, sourceReplacements);
+      writeArchivedSourceReviews(db!, existing.archivedSourceReviews, archivedSourceReviews);
       db!.prepare('UPDATE workspace SET name=?,saved_at=? WHERE id=?').run(saved.name, saved.savedAt, saved.id);
       return updated;
     }).exclusive();
     const committedFingerprint = fingerprintDescriptor(descriptor, current.filePath);
     return { metadata: saved, filePath: current.filePath, fingerprint: committedFingerprint, schemaVersion: SCHEMA_VERSION, imports: retained,
-      documentImports: retainedDocuments, sources: sourceCatalog(db), matches, matchDecisions, bankCorrections, documentCorrections, reviewApprovals };
+      documentImports: retainedDocuments, sources: sourceCatalog(db), matches, matchDecisions, bankCorrections, documentCorrections, reviewApprovals,
+      duplicateDecisions, sourceRelocations, sourceReplacements, archivedSourceReviews };
   } finally { try { db?.close(); } finally { closeSync(descriptor); } }
 }

@@ -43,6 +43,9 @@ test('opens local originals independently from statements, documents and match s
         bank.result.sourceProvenance!.sha256 = createHash('sha256').update(bankBytes).digest('hex');
         const lines = ['Invoice', 'Merchant: Cedar Workshop', 'Invoice Number: SYNTHETIC-A', 'Invoice Date: 2032-02-28', 'Invoice Total: EUR 1,234.56'];
         const receipt = await original(root, 'receipt.pdf', 'pdf', await pdf([lines]), lines);
+        const movedReceipt = path.join(root, 'moved-receipt.pdf');
+        const movedStatement = path.join(root, 'moved-statement.pdf');
+        const changedReceipt = path.join(root, 'changed-receipt.pdf');
         const pictures = await Promise.all((['png', 'jpeg'] as const).map(async format => {
             const base64 = await main.evaluate(value => {
                 const canvas = document.createElement('canvas');
@@ -55,10 +58,14 @@ test('opens local originals independently from statements, documents and match s
         }));
         const workspaceFile = path.join(root, 'preview.receiptmatch');
         await createWorkspace(workspaceFile, newMetadata(), [bank], [documentRun(root, [receipt, ...pictures])]);
-        await app.evaluate(({ dialog }, filePath) => {
-            dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [filePath] });
+        await app.evaluate(({ dialog }, selections) => {
+            dialog.showOpenDialog = async () => {
+                if (!selections.length) throw new Error('Unexpected file dialog.');
+                const filePath = selections.shift();
+                return filePath ? { canceled: false, filePaths: [filePath] } : { canceled: true, filePaths: [] };
+            };
             dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
-        }, workspaceFile);
+        }, [workspaceFile, null, changedReceipt, movedReceipt, movedStatement, workspaceFile]);
         await main.getByRole('button', { name: 'Open workspace', exact: false }).click();
         const invalid = await main.evaluate(async () => {
             const payload = { kind: 'statement' as const, id: crypto.randomUUID(), loadRevision: 1, filePath: 'unrelated.pdf' };
@@ -101,13 +108,51 @@ test('opens local originals independently from statements, documents and match s
         expect(app.windows()).toHaveLength(5);
 
         await candidate.close();
+        await rename(receipt.filePath, movedReceipt);
         await writeFile(receipt.filePath, await pdf([['Different source']]));
         await matches.getByRole('button', { name: 'Open original receipt.pdf', exact: true }).click();
         await expect(matches.getByRole('alert')).toContainText('has changed');
-        await rename(receipt.filePath, `${receipt.filePath}.moved`);
+        await rename(receipt.filePath, changedReceipt);
         await matches.getByRole('button', { name: 'Open original receipt.pdf', exact: true }).click();
         await expect(matches.getByRole('alert')).toContainText('no longer at its imported location');
+
+        const relinkReceipt = matches.getByRole('button', { name: 'Relink original receipt.pdf', exact: true });
+        await relinkReceipt.click();
+        await expect(relinkReceipt).not.toHaveAttribute('aria-busy', 'true');
+        await expect(matches.getByRole('alert')).toContainText('no longer at its imported location');
+        await relinkReceipt.click();
+        await expect(matches.getByRole('alert')).toContainText('The selected file differs from the imported original.');
+        await relinkReceipt.click();
+        await expect(matches.getByText('Original relinked. You can open it again.', { exact: true })).toBeVisible();
+        await expect(matches.getByRole('button', { name: 'Open original receipt.pdf', exact: true })).toBeFocused();
+        const relocatedReceipt = await openPreview(main, 'receipt.pdf');
+        await expect(relocatedReceipt.locator('canvas')).toBeVisible();
+        await expect.poll(() => relocatedReceipt.title()).toContain(path.basename(movedReceipt));
+
+        await statement.close();
+        await rename(bank.filePath, movedStatement);
+        await main.getByRole('button', { name: 'Sources', exact: true }).click();
+        const statements = main.getByRole('region', { name: 'Bank statements', exact: true });
+        const statementName = path.basename(bank.filePath);
+        await statements.getByRole('button', { name: `Open original ${statementName}`, exact: true }).click();
+        await expect(statements.getByRole('alert')).toContainText('no longer at its imported location');
+        await statements.getByRole('button', { name: `Relink original ${statementName}`, exact: true }).click();
+        await expect(statements.getByText('Original relinked. You can open it again.', { exact: true })).toBeVisible();
+        const relocatedStatement = await openPreview(main, statementName);
+        await expect(relocatedStatement.getByText('Page 1 of 2', { exact: true })).toBeVisible();
+        await expect.poll(() => relocatedStatement.title()).toContain(path.basename(movedStatement));
+        await main.getByRole('button', { name: 'Save', exact: true }).click();
+        await expect(main.getByText('All changes saved', { exact: true })).toBeVisible();
         await main.getByRole('button', { name: 'New', exact: true }).click();
         await expect.poll(() => app.windows().length).toBe(1);
+        await main.getByRole('button', { name: 'Open', exact: true }).click();
+        const reopenedStatement = await openPreview(main, statementName);
+        await expect(reopenedStatement.getByText('Page 1 of 2', { exact: true })).toBeVisible();
+        await expect.poll(() => reopenedStatement.title()).toContain(path.basename(movedStatement));
+        await main.getByRole('button', { name: 'Match suggestions', exact: true }).click();
+        await expect(matches.getByText('Document assigned · receipt.jpeg', { exact: true })).toBeVisible();
+        const reopenedReceipt = await openPreview(main, 'receipt.pdf');
+        await expect(reopenedReceipt.locator('canvas')).toBeVisible();
+        await expect.poll(() => reopenedReceipt.title()).toContain(path.basename(movedReceipt));
     } finally { await app.close(); }
 });

@@ -6,9 +6,19 @@ import { calendarDateSchema, type ImportIssue, type SourceEvidence, type Transac
 import { formatCalendarDate, formatMoney } from './shared/display.js';
 import { sameMoneyValue, type Money } from './shared/money.js';
 import type { WorkspaceCommand, WorkspaceState } from './shared/protocol.js';
+import { indexStatementOverlaps, type StatementOverlap } from './shared/statement-overlaps.js';
+import { excludedDuplicateIds, type DuplicateDecision } from './shared/transaction-duplicates.js';
 import type { StoredBankImport } from './shared/workspace-import.js';
 
 type ImportRow = TransactionCandidate | UnresolvedDraft;
+type DuplicateAction = Extract<WorkspaceCommand, { type: 'set-duplicate-decision' }>['decision'];
+type ExclusionAction = Extract<DuplicateAction, 'keep-first' | 'keep-second'>;
+type BookingLocation = Pick<StatementOverlap, 'statementId' | 'filePath' | 'transactionId' | 'transactionNumber'>;
+interface DuplicatePairView {
+    other: BookingLocation;
+    evidence: StatementOverlap | null;
+    decision: DuplicateDecision | null;
+}
 function filename(value: string) { return value.split(/[\\/]/).at(-1) || value; }
 function directionLabel(value: ImportRow['direction']) { return value === 'incoming' ? 'Incoming' : value === 'outgoing' ? 'Outgoing' : 'Unknown'; }
 
@@ -99,16 +109,77 @@ export class StatementImports {
     readonly selected = computed(() => this.records().find(record => record.id === this.selectedId()) ?? null);
     readonly corrections = computed(() => new Map((this.state().workspace?.bankCorrections ?? []).map(correction => [correction.rowId, correction])));
     readonly statementCounts = computed(() => new Map((this.state().workspace?.imports ?? []).map(record => [record.id, record.transactions])));
-    readonly displayed = computed(() => {
-        const original = this.selected();
-        if (!original) return null;
+    private readonly effectiveRecords = computed(() => {
+        const records = this.records();
         const allCorrections = this.corrections();
-        if (!allCorrections.size) return original;
-        const corrections = new Map([...this.rowIds().values()].flatMap(id => {
-            const correction = allCorrections.get(id);
-            return correction ? [[id, correction] as const] : [];
-        }));
-        return corrections.size ? applyBankCorrections([original], corrections)[0] : original;
+        if (!allCorrections.size || !records.length) return records;
+        const ids = new Set(records.flatMap(record => [...record.transactions.map(row => row.transactionId), ...record.drafts.map(row => row.draftId)]));
+        const corrections = new Map([...allCorrections].filter(([id]) => ids.has(id)));
+        return applyBankCorrections(records, corrections);
+    });
+    readonly displayed = computed(() => this.effectiveRecords().find(record => record.id === this.selectedId()) ?? null);
+    readonly displayedStatements = computed(() => {
+        const record = this.displayed();
+        return record ? [record] : [];
+    });
+    private readonly overlapIndex = computed(() => {
+        const archived = new Set(this.state().workspace?.supersededStatements);
+        return indexStatementOverlaps(this.effectiveRecords().filter(record => !archived.has(record.id)));
+    });
+    readonly overlaps = computed(() => this.overlapIndex()(this.selectedId() ?? ''));
+    private readonly expandedOverlapRows = signal<ReadonlySet<string>>(new Set());
+    private readonly duplicateDecisions = computed(() => this.state().workspace?.duplicateDecisions ?? []);
+    private readonly decisionsByBooking = computed(() => {
+        const decisions = new Map<string, DuplicateDecision[]>();
+        for (const decision of this.duplicateDecisions()) for (const id of [decision.firstId, decision.secondId]) {
+            const existing = decisions.get(id) ?? [];
+            existing.push(decision);
+            decisions.set(id, existing);
+        }
+        return decisions;
+    });
+    readonly excludedBookings = computed(() => excludedDuplicateIds(this.duplicateDecisions()));
+    readonly leadingBookings = computed(() => new Set(this.duplicateDecisions().flatMap(decision => decision.primaryId ? [decision.primaryId] : [])));
+    readonly duplicateStatus = computed(() => {
+        const excluded = this.excludedBookings();
+        const leading = this.leadingBookings();
+        return new Map([...this.decisionsByBooking().keys()].map(id => [id,
+            excluded.has(id) ? 'Excluded duplicate' : leading.has(id) ? 'Leading booking' : 'Duplicate decisions',
+        ]));
+    });
+    private readonly bookingLocations = computed(() => {
+        const locations = new Map<string, BookingLocation>();
+        for (const record of this.effectiveRecords()) {
+            const ids = new Map(record.transactions.map(row => [row.rowId, row.transactionId]));
+            for (const [index, row] of record.result.transactions.entries()) {
+                const transactionId = ids.get(row.rowId);
+                if (transactionId) locations.set(transactionId, { statementId: record.id, filePath: record.filePath, transactionId, transactionNumber: index + 1 });
+            }
+        }
+        return locations;
+    });
+    readonly expandedDuplicates = computed(() => {
+        const expanded = new Map<string, DuplicatePairView[]>();
+        for (const id of this.expandedOverlapRows()) {
+            const pairs = new Map<string, DuplicatePairView>();
+            for (const evidence of this.overlaps().get(id)) pairs.set(evidence.transactionId, { other: evidence, evidence, decision: null });
+            for (const decision of this.decisionsByBooking().get(id) ?? []) {
+                const otherId = decision.firstId === id ? decision.secondId : decision.firstId;
+                const pair = pairs.get(otherId);
+                if (pair) pair.decision = decision;
+                else {
+                    const other = this.bookingLocations().get(otherId);
+                    if (other) pairs.set(otherId, { other, evidence: null, decision });
+                }
+            }
+            expanded.set(id, [...pairs.values()]);
+        }
+        return expanded;
+    });
+    private readonly exclusion = signal<{ transactionId: string; otherTransactionId: string; revision: number; action: ExclusionAction } | null>(null);
+    readonly pendingExclusion = computed(() => {
+        const pending = this.exclusion();
+        return pending?.revision === this.state().workspace?.matchRevision ? pending : null;
     });
     readonly originalRows = computed(() => {
         const result = this.selected()?.result;
@@ -170,7 +241,7 @@ export class StatementImports {
     private key(value: WorkspaceState) { return JSON.stringify([value.workspace?.id ?? null, value.workspace?.loadRevision ?? null, value.workspace?.imports.map(record => record.id) ?? []]); }
     private loadRecords(value: WorkspaceState, key: string) {
         const generation = ++this.generation; const previousSelection = this.selectedId();
-        this.recordsKey = key; this.records.set([]); this.detailsError.set(null);
+        this.recordsKey = key; this.records.set([]); this.detailsError.set(null); this.expandedOverlapRows.set(new Set()); this.exclusion.set(null);
         const ids = value.workspace?.imports.map(record => record.id) ?? [];
         const previous = this.recordsSnapshot; const workspace = value.workspace;
         const appended = previous && workspace && previous.workspaceId === workspace.id && previous.loadRevision === workspace.loadRevision &&
@@ -195,7 +266,53 @@ export class StatementImports {
     retryDetails() { this.loadRecords(this.state(), this.key(this.state())); }
     select(event: Event) {
         const id = (event.target as HTMLSelectElement).value;
-        if (this.records().some(record => record.id === id)) { this.edit.set(null); this.selectedId.set(id); }
+        if (this.records().some(record => record.id === id)) {
+            this.edit.set(null); this.expandedOverlapRows.set(new Set()); this.exclusion.set(null); this.selectedId.set(id);
+        }
+    }
+    toggleOverlap(id: string, event: Event) {
+        const { open } = event.currentTarget as HTMLDetailsElement;
+        if (!open && this.exclusion()?.transactionId === id) this.exclusion.set(null);
+        this.expandedOverlapRows.update(previous => {
+            if (previous.has(id) === open) return previous;
+            const next = new Set(previous);
+            if (open) next.add(id);
+            else next.delete(id);
+            return next;
+        });
+    }
+    openOverlap(overlap: BookingLocation) {
+        if (this.state().busy || !this.records().some(record => record.id === overlap.statementId)) return;
+        this.edit.set(null);
+        this.expandedOverlapRows.set(new Set());
+        this.exclusion.set(null);
+        this.selectedId.set(overlap.statementId);
+        requestAnimationFrame(() => {
+            if (this.selectedId() === overlap.statementId) document.getElementById('bank-description-' + overlap.transactionId)?.focus();
+        });
+    }
+    chooseDuplicate(transactionId: string, otherTransactionId: string, decision: DuplicateAction) {
+        const { workspace, busy } = this.state();
+        if (!workspace || busy) return;
+        if (decision === 'keep-first' || decision === 'keep-second') {
+            this.exclusion.set({ transactionId, otherTransactionId, revision: workspace.matchRevision, action: decision });
+            requestAnimationFrame(() => document.getElementById('duplicate-exclusion')?.focus());
+            return;
+        }
+        this.exclusion.set(null);
+        this.workspaceCommand.emit({ type: 'set-duplicate-decision', revision: workspace.matchRevision, transactionId, otherTransactionId, decision });
+    }
+    confirmExclusion() {
+        const pending = this.pendingExclusion();
+        if (!pending || this.state().busy) return;
+        this.exclusion.set(null);
+        this.workspaceCommand.emit({ type: 'set-duplicate-decision', revision: pending.revision, transactionId: pending.transactionId,
+            otherTransactionId: pending.otherTransactionId, decision: pending.action });
+    }
+    cancelExclusion() {
+        const pending = this.pendingExclusion();
+        this.exclusion.set(null);
+        if (pending) requestAnimationFrame(() => document.getElementById('duplicate-' + pending.transactionId + '-' + pending.otherTransactionId + '-' + pending.action)?.focus());
     }
     startCorrection(rowId: string) {
         const record = this.selected();

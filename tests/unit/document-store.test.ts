@@ -69,7 +69,7 @@ for (const version of [1, 2])
 			file = path.join(root, "legacy.receiptmatch");
 		await createWorkspace(file, newMetadata());
 		const db = new Database(file);
-		db.exec(`DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
+		db.exec(`DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
 			DROP TABLE match_results; DROP TABLE document_imports; ${version === 1 ? "DROP TABLE bank_imports;" : ""} PRAGMA user_version=${version};`);
 		db.prepare("INSERT INTO sources VALUES(?,?,?)").run("legacy-source", path.join(root, "legacy.pdf"), "a".repeat(64));
 		db.prepare("INSERT INTO sources VALUES(?,?,?)").run("legacy-duplicate-hash", path.join(root, "legacy-copy.pdf"), "a".repeat(64));
@@ -133,7 +133,7 @@ test("v2 bank manifests survive document migration and both import types share t
 		bank = retainedBank(root);
 	await createWorkspace(file, newMetadata(), [bank]);
 	const db = new Database(file);
-	db.exec(`DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
+	db.exec(`DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
 		DROP TABLE match_results; DROP TABLE document_imports; PRAGMA user_version=2;`);
 	db.close();
 	const before = await readFile(file),
@@ -194,7 +194,7 @@ test("an append failure rolls back schema migration, document projection and met
 		file = path.join(root, "rollback.receiptmatch");
 	await createWorkspace(file, newMetadata());
 	const db = new Database(file);
-	db.exec(`DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
+	db.exec(`DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
 		DROP TABLE match_results; DROP TABLE document_imports; PRAGMA user_version=2;`);
 	db.close();
 	const saved = await loadWorkspace(file),

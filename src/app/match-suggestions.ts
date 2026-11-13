@@ -185,7 +185,7 @@ export class MatchSuggestions {
 			const key = this.documentKey();
 			this.documentRetry();
 			if (!this.active() || untracked(() => this.documentRequest()?.key === key)) return;
-			const { documentImports, documentCorrections } = untracked(this.workspace);
+			const { documentImports, documentCorrections, supersededDocuments } = untracked(this.workspace);
 			const reportIds = documentImports.map(report => report.id);
 			if (!reportIds.length) { this.documentRequest.set({ key, documents: [] }); return; }
 			let current = true;
@@ -196,7 +196,8 @@ export class MatchSuggestions {
 			void window.receiptmatch.documentImports().then(records => {
 				if (records.length !== reportIds.length || records.some((record, index) => record.id !== reportIds[index])) return update(null);
 				const corrections = new Map(documentCorrections.map(correction => [documentCorrectionKey(correction, correction.change.kind), correction]));
-				const documents = applyDocumentCorrections(records, corrections).flatMap(record => record.files.flatMap(file => file.status === 'imported' ? [{
+				const archived = new Set(supersededDocuments);
+				const documents = applyDocumentCorrections(records, corrections).flatMap(record => record.files.flatMap(file => file.status === 'imported' && !archived.has(file.record.id) ? [{
 					id: file.record.id, name: this.basename(file.record.filePath), path: file.record.filePath, total: formatDocumentTotal(file.record.result), record: file.record,
 				}] : []));
 				update(documents.sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path)));

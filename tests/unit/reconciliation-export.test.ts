@@ -5,11 +5,14 @@ import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test, vi, type TestContext } from 'vitest';
+import { interpretSupportingDocument } from '../../electron/documents/interpret.js';
+import { reconciliationRows } from '../../electron/reconciliation-csv.js';
 import { writeReconciliationExport } from '../../electron/reconciliation-export.js';
-import { createWorkspace, newMetadata } from '../../electron/store.js';
+import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace } from '../../electron/store.js';
 import { WorkspaceSession } from '../../electron/workspace-session.js';
 import { defaultExportFilenamePattern } from '../../src/shared/export-filename.js';
-import { approvalSelectionFor } from '../../src/shared/match-approvals.js';
+import { advanceReviewRevision, approvalSelectionFor, type ReviewApprovalState } from '../../src/shared/match-approvals.js';
+import { duplicatePairKey } from '../../src/shared/transaction-duplicates.js';
 import { documentRun, retainedBank, retainedDocument } from './document-fixtures.js';
 
 async function fixture(context: TestContext, approve = true) {
@@ -78,6 +81,87 @@ test('writes a report without creating a documents folder when no copies are app
 	const csv = await fs.readFile(result.csv.filePath, 'utf8');
 	assert.ok(csv.includes('transaction,' + first));
 	assert.ok(csv.includes(',not-eligible,'));
+});
+
+test('reads approved copies from the saved relocation and keeps imported filenames in the CSV', async context => {
+	const { destination, snapshot, file, document, first } = await fixture(context);
+	const movedDirectory = path.join(path.dirname(destination), 'moved');
+	await fs.mkdir(movedDirectory);
+	const movedFile = path.join(movedDirectory, 'renamed.pdf');
+	await fs.rename(document.filePath, movedFile);
+	const sourceRelocations = new Map([[document.result.input!.source.sourceId, movedFile]]);
+	await saveWorkspace(snapshot, snapshot.metadata, snapshot.imports, snapshot.documentImports, snapshot.matchDecisions, snapshot.bankCorrections,
+		snapshot.documentCorrections, snapshot.reviewApprovals, snapshot.duplicateDecisions, sourceRelocations);
+	const reopened = await loadWorkspace(file);
+
+	await assert.rejects(writeReconciliationExport(reopened, movedDirectory, defaultExportFilenamePattern), /separate from the originals/);
+	const result = await writeReconciliationExport(reopened, destination, defaultExportFilenamePattern);
+	assert.equal(result.csv.status, 'written');
+	const copied = result.documentCopies.outcomes.find(outcome => outcome.transactionId === first)!;
+	assert.equal(copied.status, 'copied');
+	assert.equal(copied.sourcePath, movedFile);
+	assert.equal(await fs.readFile(path.join(result.documentCopies.directory!, copied.filename!), 'utf8'), 'verified bytes');
+	const csv = await fs.readFile(result.csv.filePath, 'utf8');
+	assert.ok(csv.includes(',bank.pdf,'));
+	assert.ok(csv.includes(',present.pdf,'));
+	assert.ok(!csv.includes('renamed.pdf'));
+
+	await fs.writeFile(movedFile, 'changed bytes');
+	const retryDirectory = path.join(path.dirname(destination), 'retry');
+	await fs.mkdir(retryDirectory);
+	const retry = await writeReconciliationExport(reopened, retryDirectory, defaultExportFilenamePattern);
+	const failed = retry.documentCopies.outcomes.find(outcome => outcome.transactionId === first);
+	assert.ok(failed?.status === 'failed');
+	assert.equal(failed.reason, 'source-changed');
+});
+
+test('exports the primary booking and its approved document without the confirmed duplicate', async context => {
+	const root = await fs.mkdtemp(path.join(tmpdir(), 'receiptmatch-duplicate-export-'));
+	context.onTestFinished(() => fs.rm(root, { recursive: true, force: true }));
+	const originals = path.join(root, 'originals');
+	const destination = path.join(root, 'export');
+	await Promise.all([fs.mkdir(originals), fs.mkdir(destination)]);
+	const first = retainedBank(originals);
+	const second = retainedBank(originals);
+	second.filePath = path.join(originals, 'overlapping-statement.pdf');
+	const [{ transactionId: primaryId }] = first.transactions;
+	const [{ transactionId: excludedId }] = second.transactions;
+	const document = retainedDocument(originals, 'primary.pdf', 'primary bytes');
+	const archived = retainedDocument(originals, 'archived.pdf', 'archived bytes');
+	const input = document.result.input!;
+	input.pages[0].spans = input.pages[0].spans.map(span => ({
+		...span, text: span.text.replace('SYNTHETIC-ONLY', 'SYNTHETIC-A').replace('9007199254740993.27', '1,234.56'),
+	}));
+	document.result = interpretSupportingDocument(input);
+	await Promise.all([fs.writeFile(document.filePath, 'primary bytes'), fs.writeFile(archived.filePath, 'archived bytes')]);
+	const approvals = new Map<string, ReviewApprovalState>([[primaryId, document.id], [excludedId, archived.id]].map(([transactionId, documentId]) => [transactionId, {
+		associationRevision: 1, approval: { ...approvalSelectionFor(transactionId, documentId), batchId: randomUUID(), approvedAt: '2032-03-01T12:00:00.000Z' },
+	}]));
+	approvals.set(excludedId, advanceReviewRevision(approvals.get(excludedId)));
+	const [firstId, secondId] = [primaryId, excludedId].sort();
+	const duplicates = new Map([[duplicatePairKey(firstId, secondId), { firstId, secondId, primaryId, archivedReview: { documentId: archived.id } }]]);
+	const file = path.join(root, 'workspace.receiptmatch');
+	await createWorkspace(file, newMetadata(), [first, second], [documentRun(originals, [document, archived])],
+		new Map([[primaryId, document.id]]), new Map(), new Map(), approvals, duplicates);
+	const snapshot = await loadWorkspace(file);
+
+	assert.equal(snapshot.matches.find(match => match.transactionId === primaryId)?.status, 'uncertain');
+	assert.ok(snapshot.matches.some(match => match.transactionId === excludedId));
+	const rows = reconciliationRows(snapshot);
+	assert.deepEqual(rows.map(row => row.transaction_id), [
+		...first.transactions.map(row => row.transactionId), ...second.transactions.slice(1).map(row => row.transactionId),
+	]);
+	assert.equal(rows[0].match_status, 'reliable');
+	assert.equal(rows[0].approval_status, 'approved');
+	const result = await writeReconciliationExport(snapshot, destination, defaultExportFilenamePattern);
+	assert.equal(result.csv.status, 'written');
+	assert.deepEqual(result.documentCopies.outcomes.map(outcome => [outcome.transactionId, outcome.documentId, outcome.status]),
+		[[primaryId, document.id, 'copied']]);
+	const csv = await fs.readFile(result.csv.filePath, 'utf8');
+	assert.ok(csv.includes('transaction,' + primaryId));
+	assert.ok(!csv.includes('transaction,' + excludedId));
+	assert.ok(!csv.includes(archived.id));
+	assert.equal(await fs.readFile(archived.filePath, 'utf8'), 'archived bytes');
 });
 
 test('stops before copying when reconciliation.csv already exists', async context => {
