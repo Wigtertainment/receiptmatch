@@ -12,6 +12,8 @@ import { isRendererRequestAllowed, resolveRendererUrl } from './runtime-policy.j
 import { OriginalPreviewWindows } from './original-preview.js';
 import { readExportFilenamePattern, saveExportFilenamePattern } from './export-settings.js';
 import { ExportDestinationError } from './document-export.js';
+import { LocalOcrSettings } from './local-ocr-settings.js';
+import { localOcrRequestSchema } from '../src/shared/local-ocr-settings.js';
 
 // Load the same module instance as other main-process consumers of the extraction API.
 const { extractPdfBytes, extractDocumentBytes } = createRequire(__filename)('./extraction-host.cjs') as Pick<typeof import('./extraction/host.js'), 'extractPdfBytes' | 'extractDocumentBytes'>;
@@ -46,6 +48,12 @@ async function launch() {
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
   const window = new BrowserWindow({ title: 'ReceiptMatch', width: 1120, height: 780, minWidth: 680, minHeight: 540, backgroundColor: '#edf2f0', show: !process.argv.includes('--hidden'), webPreferences: { preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, spellcheck: false } });
+  const userData = app.getPath('userData');
+  const runtimes = path.join(app.isPackaged ? process.resourcesPath : userData, 'local-ocr-runtimes');
+  const localOcr = new LocalOcrSettings(path.join(userData, 'local-ocr'), {
+    'pp-ocrv6-medium': path.join(runtimes, 'python', process.platform === 'win32' ? 'python.exe' : 'bin/python3.12'),
+    'paddleocr-vl-1.6': path.join(runtimes, 'llama', process.platform === 'win32' ? 'llama-mtmd-cli.exe' : 'llama-mtmd-cli')
+  });
   const previews = new OriginalPreviewWindows(process.argv.includes('--hidden'));
   let previewLoadRevision: number | undefined;
   const publish = (state: WorkspaceState) => {
@@ -92,10 +100,42 @@ async function launch() {
       const selected = await dialog.showOpenDialog(window, { title: 'Analyze supporting document folder', properties: ['openDirectory'] });
       return selected.canceled ? null : selected.filePaths[0] ?? null;
     },
-    extract: extractDocumentBytes
+    extract: extractDocumentBytes,
+    localOcr: () => localOcr.selected()
   }), extractDocumentBytes);
   const authorized = (event: Electron.IpcMainInvokeEvent) => event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && event.senderFrame.url === appUrl;
   const exportSettingsFile = path.join(app.getPath('userData'), 'export-settings.json');
+  let confirmingOcrDownload = false;
+  ipcMain.handle('app:local-ocr', async (event, payload: unknown) => {
+    if (!authorized(event) || closeRequested) throw new Error('Local OCR settings request denied.');
+    const request = localOcrRequestSchema.parse(payload);
+    if (request.type === 'cancel') await localOcr.cancel();
+    if (request.type === 'select') await localOcr.select(request.selection);
+    if (request.type === 'install') {
+      if (confirmingOcrDownload) throw new Error('A local OCR download confirmation is already open.');
+      confirmingOcrDownload = true;
+      try {
+        const status = await localOcr.status();
+        const model = status.models.find(model => model.model === request.model)!;
+        if (status.download || !model.runtimeAvailable) throw new Error('The local OCR model cannot be installed right now.');
+        if (model.installed) await localOcr.select(request.model);
+        else {
+          const unit = model.downloadBytes >= 1_000_000_000 ? 'gigabyte' : 'megabyte';
+          const size = new Intl.NumberFormat(undefined, { style: 'unit', unit, maximumFractionDigits: 2 })
+            .format(model.downloadBytes / (unit === 'gigabyte' ? 1_000_000_000 : 1_000_000));
+          const confirmation = await dialog.showMessageBox(window, {
+            type: 'question', title: 'Download OCR model', message: `Download ${model.name} to this device?`,
+            detail: `Download size: ${size}. ReceiptMatch processes documents on this device. Only the model download uses the network.`,
+            buttons: ['Download', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true
+          });
+          if (confirmation.response === 0 && !closeRequested && !window.isDestroyed()) await localOcr.install(request.model);
+        }
+      } finally {
+        confirmingOcrDownload = false;
+      }
+    }
+    return localOcr.status();
+  });
   let exportSettingsWrite: Promise<string> | null = null;
   ipcMain.handle('app:export-settings', async (event, ...payload: unknown[]) => {
     if (!authorized(event) || payload.length !== 1) throw new Error('Export settings request denied.');
@@ -214,6 +254,7 @@ async function launch() {
     void workspace.requestClose().then(async allowed => {
       if (!allowed) { closeRequested = false; return; }
       while (exportSettingsWrite) await exportSettingsWrite.catch(() => null);
+      await localOcr.cancel();
       if (!window.isDestroyed()) { closing = true; window.close(); }
     });
   });

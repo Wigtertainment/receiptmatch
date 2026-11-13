@@ -25,8 +25,8 @@ export function assertImageDimensions(width: number, height: number): void {
 	}
 }
 // This bounds decoder allocation using metadata; successful header parsing does not prove a complete or decodable image.
-export function imageInputDimensions(bytes: Uint8Array, format: "png" | "jpeg"): { width: number; height: number } {
-	if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1 || bytes.byteLength > PDF_EXTRACTION_LIMITS.bytes) {
+export function imageInputDimensions(bytes: Uint8Array, format: "png" | "jpeg", byteLimit: number = PDF_EXTRACTION_LIMITS.bytes): { width: number; height: number } {
+	if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1 || bytes.byteLength > byteLimit) {
 		throw new ImageInputError("invalid-input", "Choose a nonempty image within the local extraction byte limit.");
 	}
 	if (format !== "png" && format !== "jpeg") throw new ImageInputError("image-format", "Choose a PNG or JPEG image.");

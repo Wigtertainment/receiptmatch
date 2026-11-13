@@ -1,0 +1,5 @@
+numpy==2.3.5
+onnxruntime==1.31.1
+opencv-contrib-python==4.10.0.84
+paddleocr==3.7.0
+paddlex[ocr-core]==3.7.2

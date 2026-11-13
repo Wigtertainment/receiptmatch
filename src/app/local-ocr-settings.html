@@ -1,0 +1,85 @@
+<section aria-labelledby="settings-heading">
+	<h1 class="view-heading" id="settings-heading" tabindex="-1">Settings</h1>
+	<div class="source-panel ocr-settings">
+		<header>
+			<h2>Document recognition</h2>
+			<p>Choose how ReceiptMatch reads images and scanned PDFs. Text embedded in PDFs is read directly.</p>
+			<p>AI models are downloaded to this device after you confirm. All document processing runs locally. Only model downloads use the network.</p>
+		</header>
+		@if (status(); as current) {
+			<div class="ocr-option">
+				<div>
+					<h3 id="ocr-option-standard" tabindex="-1">Standard OCR</h3>
+					<p>Built-in Tesseract recognition. Ready to use.</p>
+				</div>
+				@if (current.selection === 'standard') {
+					<strong role="status">In use</strong>
+				} @else {
+					<button
+						type="button"
+						class="button-secondary"
+						[disabled]="changing() || !!current.download"
+						(click)="change({ type: 'select', selection: 'standard' }, $event)"
+					>
+						Use Standard OCR
+					</button>
+				}
+			</div>
+			@for (model of current.models; track model.model) {
+				<div class="ocr-option">
+					<div>
+						<h3 [id]="'ocr-option-' + model.model" tabindex="-1">{{ model.name }}</h3>
+						<p>{{ descriptions[model.model] }}</p>
+						<p>{{ size(model.downloadBytes) }} download · {{ model.installed ? 'Installed' : 'Not installed' }}</p>
+						@if (model.runtimeIssue) {
+							<p>{{ model.runtimeIssue }}</p>
+						}
+					</div>
+					@if (current.selection === model.model) {
+						<strong role="status">In use</strong>
+					} @else if (model.installed) {
+						<button
+							type="button"
+							class="button-secondary"
+							[disabled]="changing() || !!current.download || !model.runtimeAvailable"
+							(click)="change({ type: 'select', selection: model.model }, $event)"
+						>
+							Use {{ model.name }}
+						</button>
+					} @else {
+						<button
+							type="button"
+							class="button-secondary"
+							[disabled]="changing() || !!current.download || !model.runtimeAvailable"
+							(click)="change({ type: 'install', model: model.model }, $event)"
+						>
+							Download {{ model.name }}
+						</button>
+					}
+				</div>
+				@if (current.download; as download) {
+					@if (download.model === model.model) {
+						<div class="ocr-download">
+							<label for="ocr-download-progress">Downloading {{ model.name }}</label>
+							<progress id="ocr-download-progress" [value]="download.receivedBytes" [max]="download.totalBytes"></progress>
+							<span>{{ size(download.receivedBytes) }} of {{ size(download.totalBytes) }}</span>
+							<button type="button" class="button-secondary compact" (click)="cancel($event)" [disabled]="cancelling()">
+								{{ cancelling() ? 'Cancelling…' : 'Cancel download' }}
+							</button>
+						</div>
+					}
+				}
+			}
+		} @else if (!error()) {
+			<p class="ocr-feedback" role="status">Loading OCR settings…</p>
+		}
+		@if (error(); as message) {
+			<p class="ocr-feedback error" role="alert">{{ message }}</p>
+			@if (!status()) {
+				<button class="button-secondary ocr-feedback" type="button" (click)="refresh()">Retry</button>
+			}
+		} @else if (status()?.failedDownload && !changing()) {
+			<p class="ocr-feedback error" role="alert">The model could not be downloaded or installed. Try again.</p>
+		}
+	</div>
+</section>

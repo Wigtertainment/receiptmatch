@@ -277,7 +277,7 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		assert.equal(await page.evaluate(() => window.documentTestInjection), undefined);
 		const image = await openFile(report, "b.PNG");
 		const imageSource = await openDetails(image, /^Source text/);
-		await imageSource.getByText("Local English OCR", { exact: true }).first().waitFor();
+		await imageSource.getByText("Local OCR", { exact: true }).first().waitFor();
 		await imageSource
 			.getByText(/Region in pixels/i)
 			.first()
@@ -337,7 +337,7 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		await chooseFolder().press("Enter");
 		await documents()
 			.getByRole("status")
-			.filter({ hasText: /Reading with local English OCR.*b-long\.png/i })
+			.filter({ hasText: /Reading with local OCR.*b-long\.png/i })
 			.waitFor();
 		await documents().getByRole("button", { name: "Cancel analysis" }).press("Enter");
 		await page.waitForFunction(() => window.documentTestState?.documentOutcome?.status === "cancelled", undefined, { polling: 50 });

@@ -72,6 +72,20 @@ label { font-size: 12px; font-weight: 600; display: block; margin-bottom: 10px; 
 .section-heading h2 { margin: 0; font-size: 19px; line-height: 1.25; font-weight: 720; letter-spacing: -.025em; }
 .muted { color: #5f6d63; }
 .source-panel { min-width: 0; border: 1px solid var(--divider); border-radius: 10px; background: var(--surface); }
+.welcome-settings { width: min(100%, 760px); }
+.welcome-settings > button { margin-bottom: 16px; }
+.ocr-settings { max-width: 760px; }
+.ocr-settings > header, .ocr-option { padding: 16px 18px; }
+.ocr-settings h2 { margin: 0; font-size: 19px; }
+.ocr-settings h3 { margin: 0; font-size: 15px; }
+.ocr-settings p:not(.error) { margin: 5px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.ocr-option { display: flex; align-items: center; justify-content: space-between; gap: 12px 18px; flex-wrap: wrap; border-top: 1px solid var(--divider); }
+.ocr-option strong { color: var(--action); font-size: 13px; }
+.ocr-download { display: grid; gap: 7px; margin: 0 18px 16px; color: var(--muted); font-size: 13px; }
+.ocr-download label { margin: 0; }
+.ocr-download progress { width: 100%; accent-color: var(--action); }
+.ocr-download button { justify-self: start; }
+.ocr-settings .ocr-feedback { margin: 12px 18px; }
 .export-documents-panel { margin-bottom: 16px; padding: 18px; }
 .export-documents-panel p { margin: 8px 0 0; font-size: 13px; }
 .export-documents-panel .error { margin-top: 12px; }
