@@ -1,4 +1,5 @@
-import { Component, DestroyRef, ElementRef, computed, inject, input, signal, viewChild } from '@angular/core';
+import { NgTemplateOutlet } from '@angular/common';
+import { Component, DestroyRef, ElementRef, TemplateRef, computed, inject, input, signal, viewChild } from '@angular/core';
 import type { OriginalAnalysisComparison, OriginalPreviewRequest, OriginalPreviewResult } from '../shared/original-preview.js';
 
 interface PreviewFeedback extends OriginalPreviewResult {
@@ -12,6 +13,7 @@ interface PreviewFeedback extends OriginalPreviewResult {
 @Component({
     selector: 'app-original-preview-button',
     standalone: true,
+    imports: [NgTemplateOutlet],
     styles: [`
       .analysis-dialog { width: min(48rem, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); border: 1px solid var(--outline); border-radius: 8px; padding: 1.25rem; color: var(--ink); }
       .analysis-dialog::backdrop { background: #172d2a80; }
@@ -28,11 +30,20 @@ interface PreviewFeedback extends OriginalPreviewResult {
     template: `
       @let current = feedback();
       @let canRelink = current?.status === 'missing' || current?.status === 'changed';
-      <button #openButton type="button" class="button-secondary compact" [attr.aria-label]="'Open original ' + sourceName()"
+      @if (sourceId()) {
+      <button #openButton type="button" [class]="iconOnly() ? 'preview-icon' : 'button-secondary compact'" [attr.aria-label]="'Open original ' + sourceName()"
+        [attr.title]="iconOnly() ? (current?.pending === 'open' ? 'Opening…' : 'Open original') : null"
         [attr.aria-busy]="current?.pending === 'open' ? 'true' : null"
         [attr.aria-disabled]="current?.pending || loadRevision() === undefined ? 'true' : null" (click)="open()">
-        {{ current?.pending === 'open' ? 'Opening…' : 'Open original' }}
+        @if (iconOnly()) {
+          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <circle cx="10.5" cy="10.5" r="6.5" /><path d="m15.1 15.1 4.9 4.9" />
+          </svg>
+        } @else {
+          {{ current?.pending === 'open' ? 'Opening…' : 'Open original' }}
+        }
       </button>
+      <ng-template #feedbackContent>
       @if (current?.error; as error) {
         <p class="original-preview-error" role="alert">
           {{ error }}
@@ -54,6 +65,10 @@ interface PreviewFeedback extends OriginalPreviewResult {
       }
       @if (current?.notice; as notice) {
         <p class="muted" role="status">{{ notice }}</p>
+      }
+      </ng-template>
+      @if (!iconOnly()) {
+        <ng-container [ngTemplateOutlet]="feedbackContent" />
       }
       @if (current?.comparison; as comparison) {
         <dialog #analysisDialog class="analysis-dialog" aria-label="Review analyzed file" (cancel)="closeAnalysis(analysisDialog, $event)" (close)="dismissAnalysis()">
@@ -94,26 +109,33 @@ interface PreviewFeedback extends OriginalPreviewResult {
           </div>
         </dialog>
       }
+      }
     `
 })
 export class OriginalPreviewButton {
     readonly kind = input.required<'statement' | 'document'>();
-    readonly sourceId = input.required<string>();
+    readonly sourceId = input.required<string | undefined>();
     readonly sourceName = input.required<string>();
     readonly loadRevision = input.required<number | undefined>();
+    readonly iconOnly = input(false);
     readonly acknowledgeConflicts = signal(false);
     private readonly request = signal<PreviewFeedback | null>(null);
     private readonly destroyed = inject(DestroyRef);
     private readonly analysisDialog = viewChild<ElementRef<HTMLDialogElement>>('analysisDialog');
+    readonly feedbackContent = viewChild<TemplateRef<unknown>>('feedbackContent');
     readonly feedback = computed(() => {
         const request = this.request();
-        return request?.source.id === this.sourceId() && request.source.kind === this.kind() && request.source.loadRevision === this.loadRevision() ? request : null;
+        return request && request.source.id === this.sourceId() && request.source.kind === this.kind() && request.source.loadRevision === this.loadRevision() ? request : null;
+    });
+    readonly hasFeedback = computed(() => {
+        const current = this.feedback();
+        return !!(current?.error || current?.notice || current?.status === 'missing' || current?.status === 'changed');
     });
 
     async open() {
-        const loadRevision = this.loadRevision();
-        if (loadRevision === undefined || this.feedback()?.pending) return;
-        const request: PreviewFeedback = { source: { kind: this.kind(), id: this.sourceId(), loadRevision }, pending: 'open', error: null };
+        const loadRevision = this.loadRevision(), id = this.sourceId();
+        if (id === undefined || loadRevision === undefined || this.feedback()?.pending) return;
+        const request: PreviewFeedback = { source: { kind: this.kind(), id, loadRevision }, pending: 'open', error: null };
         this.request.set(request);
         try {
             const result = await window.receiptmatch.openOriginal(request.source);

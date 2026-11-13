@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PDFDocument, StandardFonts } from "pdf-lib";
-import { test as base, type ElectronApplication, type Locator, type Page } from "@playwright/test";
+import { expect, test as base, type ElectronApplication, type Locator, type Page } from "@playwright/test";
 import type { BrowserWindow, OpenDialogOptions } from "electron";
 import type { WorkspaceCommand, WorkspaceState } from "../../src/shared/protocol.js";
 import type { StoredDocumentImport } from "../../src/shared/workspace-documents.js";
@@ -176,7 +176,7 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 	}
 	async function openFile(report: Locator, name: string) {
 		const button = report.getByRole("button", { name, exact: true });
-		if ((await button.getAttribute("aria-expanded")) !== "true") await button.press("Enter");
+		if ((await button.getAttribute("aria-expanded")) !== "true") await button.click();
 		const details = report.locator(`[id="${await button.getAttribute("aria-controls")}"]`);
 		await details.waitFor();
 		return details;
@@ -292,7 +292,19 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		({ application, page } = await launch());
 		await dialogs([workspaceFile]);
 		await page.getByRole("button", { name: "Open workspace", exact: true }).press("Enter");
-		const report = await openDetails(documents(), /^\s*mixed/i);
+		const report = documents().locator(".report-details").filter({ hasText: "mixed" });
+		await expect(report).toHaveAttribute("open", "");
+		const pdfButton = report.getByRole("button", { name: "a.PDF", exact: true });
+		await expect(pdfButton).toHaveAttribute("aria-expanded", "false");
+		await pdfButton.press("Enter");
+		await expect(pdfButton).toHaveAttribute("aria-expanded", "true");
+		const summary = report.locator(":scope > summary");
+		await summary.press("Enter");
+		await expect(report).not.toHaveAttribute("open");
+		await expect(report.locator("table")).toHaveCount(0);
+		await summary.press("Enter");
+		await expect(report).toHaveAttribute("open", "");
+		await expect(pdfButton).toHaveAttribute("aria-expanded", "false");
 		const broken = await openFile(report, "e-broken.pdf");
 		await broken.getByText(/PDF engine could not open/i).waitFor();
 		const pdf = await openFile(report, "a.PDF");
@@ -303,6 +315,15 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		const state = await command({ type: "get-state" });
 		assert.equal(state.workspace?.dirty, false);
 		assert.deepEqual(await records(), expected);
+	});
+	await check("sources-share-the-width-on-wide-windows-and-stack-on-narrow-windows", async () => {
+		const columns = () => page.locator(".workspace-imports").evaluate(element => getComputedStyle(element).gridTemplateColumns.split(" "));
+		await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1440, 860));
+		await expect.poll(async () => (await columns()).length).toBe(2);
+		const [statements, supporting] = await columns();
+		assert.ok(Math.abs(parseFloat(statements) - parseFloat(supporting)) < 1);
+		await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(680, 860));
+		await expect.poll(async () => (await columns()).length).toBe(1);
 	});
 	await check("repeated-folder-skips-successful-bytes-retries-failures-and-can-save-its-new-report", async () => {
 		await dialogs([folder]);
