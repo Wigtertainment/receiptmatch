@@ -2,13 +2,12 @@ import { BrowserWindow, ipcMain, session, type Session, type WebContents } from 
 import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { OriginalPreviewData, OriginalPreviewResult } from '../src/shared/original-preview.js';
+import { originalSourceExtensions, type OriginalPreviewData, type OriginalPreviewResult } from '../src/shared/original-preview.js';
 import { imageInputDimensions } from './extraction/image-input.js';
 import { readSourceSnapshot } from './import/source.js';
 
 const origin = 'receiptmatch-extraction://preview';
 const previewUrl = `${origin}/index.html`;
-const extensions = { pdf: ['.pdf'], png: ['.png'], jpeg: ['.jpg', '.jpeg'] };
 const types: Record<string, string> = { '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.mjs': 'application/javascript', '.wasm': 'application/wasm' };
 const policy = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; style-src 'self'; img-src 'self' blob: data:; font-src 'self' blob:; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'";
 
@@ -70,16 +69,17 @@ export class OriginalPreviewWindows {
     }
 
     async open(key: string, source: OriginalSource): Promise<OriginalPreviewResult> {
-        if (this.focusExisting(key)) return { error: null };
         const generation = this.generation;
         let bytes: Uint8Array;
         try {
-            bytes = await readSourceSnapshot(source.filePath, extensions[source.format]);
+            bytes = await readSourceSnapshot(source.filePath, originalSourceExtensions[source.format]);
         } catch (error) {
             const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-            return { error: code === 'ENOENT' || code === 'ENOTDIR' ? 'The original file is no longer at its imported location.' : 'The original file could not be read.' };
+            if (code === 'ENOENT' || code === 'ENOTDIR') return { status: 'missing', error: 'The original file is no longer at its imported location or its last linked path.' };
+            if (code === 'source-changed') return { status: 'changed', error: 'The file at the linked location changed while it was being read.' };
+            return { status: 'unreadable', error: 'The original file could not be read.' };
         }
-        if (createHash('sha256').update(bytes).digest('hex') !== source.sha256) return { error: 'The file at the imported location has changed. The original is unavailable.' };
+        if (createHash('sha256').update(bytes).digest('hex') !== source.sha256) return { status: 'changed', error: 'The file at the linked location has changed. Locate an identical copy of the original.' };
         if (source.format !== 'pdf') {
             try { imageInputDimensions(bytes, source.format); }
             catch { return { error: 'The original image could not be read within the preview limits.' }; }

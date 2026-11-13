@@ -26,7 +26,7 @@ test('approves an explicit batch atomically and preserves its revisions through 
     const other = retainedDocument(root, 'second.pdf');
     await createWorkspace(file, newMetadata(), [bank], [documentRun(root, [receipt, other])], new Map([[first, receipt.id], [second, other.id]]));
     const db = new Database(file);
-    try { db.exec('DROP TABLE match_approval_state; PRAGMA user_version=7;'); } finally { db.close(); }
+    try { db.exec('DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; PRAGMA user_version=7;'); } finally { db.close(); }
     const before = await readFile(file);
     const session = new WorkspaceSession({ open: async () => file, save: async () => file, unsaved: async () => 'discard' });
     const workspace = () => session.state().workspace!;

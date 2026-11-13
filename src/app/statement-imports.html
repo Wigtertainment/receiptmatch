@@ -70,19 +70,20 @@
 				@for (record of records(); track record.id) {
 					<option [value]="record.id" [selected]="record.id === selectedId()">
 						{{ filename(record.filePath) }} · {{ statementCounts().get(record.id) ?? record.result.transactions.length }} transactions ·
-						{{ record.result.status === 'partial' ? 'Partial import' : 'Complete import' }}
+						{{ state().workspace?.supersededStatements?.includes(record.id) ? 'Archived analysis' : record.result.status === 'partial' ? 'Partial import' : 'Complete import' }}
 					</option>
 				}
 			</select>
 		</div>
-		@if (displayed(); as record) {
+		@for (record of displayedStatements(); track record.id) {
+			@let archived = state().workspace?.supersededStatements?.includes(record.id);
 			<div class="statement-summary">
 				<div class="statement-summary-heading">
 					<h3>{{ filename(record.filePath) }}</h3>
 					<span
 						class="source-status"
-						[class.source-status-warning]="record.result.status === 'partial'"
-						>{{ record.result.status === 'partial' ? 'Partial import' : 'Complete import' }}</span
+						[class.source-status-warning]="archived || record.result.status === 'partial'"
+						>{{ archived ? 'Archived analysis' : record.result.status === 'partial' ? 'Partial import' : 'Complete import' }}</span
 					>
 					<app-original-preview-button
 						kind="statement"
@@ -195,9 +196,111 @@
 							<tr>
 								<td class="date-cell">{{ date(row.bookingDate.value) }}</td>
 								<td class="description-cell">
-									<p class="row-description" [id]="'bank-description-' + correctionId">{{ row.description.value }}</p>
+									<p class="row-description" [id]="'bank-description-' + correctionId" tabindex="-1">{{ row.description.value }}</p>
 									@if (correctionId && corrections().has(correctionId)) {
 										<span class="source-status">Corrected</span>
+									}
+									@if (correctionId && (overlaps().has(correctionId) || duplicateStatus().has(correctionId))) {
+										<details class="source-details" (toggle)="toggleOverlap(correctionId, $event)">
+											<summary [attr.aria-describedby]="'bank-description-' + correctionId">
+												<span class="source-status source-status-warning">{{ duplicateStatus().get(correctionId) ?? 'Possible duplicate' }}</span>
+											</summary>
+											<ul class="source-detail-body evidence-list">
+												@for (pair of expandedDuplicates().get(correctionId); track pair.other.transactionId) {
+													<li>
+														@let other = pair.other;
+														<button
+															type="button"
+															class="button-secondary compact"
+															[title]="other.filePath"
+															[disabled]="state().busy"
+															(click)="openOverlap(other)"
+														>
+															{{ filename(other.filePath) }} · Transaction {{ other.transactionNumber }}
+														</button>
+														@if (pair.evidence; as overlap) {
+															<p>{{ overlap.basis === 'transaction-id' ? 'Same transaction ID' : 'Same booking date, amount and description' }}</p>
+															@if (!overlap.accountConfirmed) {
+																<p class="muted">Account could not be confirmed.</p>
+															}
+														}
+														@if (pair.decision; as decision) {
+															<p>
+																<strong
+																	>{{ !decision.primaryId ? 'Both bookings kept' : decision.primaryId === correctionId ? 'This is the leading booking' : 'This booking is excluded' }}</strong
+																>
+															</p>
+															@if (decision.archivedReview; as review) {
+																<p>
+																	{{ review.documentId ? 'The excluded booking’s document assignment was retained.' : 'The excluded booking’s review completion was retained.' }}
+																</p>
+															}
+															@if (decision.primaryId) {
+																<p class="muted">
+																	Undo restores the excluded booking for matching and CSV export. Any previous approval must be renewed.
+																</p>
+															}
+															<button
+																type="button"
+																class="button-secondary compact"
+																[disabled]="state().busy"
+																(click)="chooseDuplicate(correctionId, other.transactionId, 'clear')"
+															>
+																Undo decision
+															</button>
+														} @else if (excludedBookings().has(correctionId) || excludedBookings().has(other.transactionId)) {
+															<p class="muted">Undo the existing exclusion before deciding on this pair.</p>
+														} @else {
+															@let pending = pendingExclusion();
+															@if (pending && pending.transactionId === correctionId && pending.otherTransactionId === other.transactionId) {
+																<p id="duplicate-exclusion" tabindex="-1">
+																	{{ pending.action === 'keep-first' ? 'The other booking' : 'This booking' }} will be excluded from matching and
+																	CSV export. Its review and document assignment stay with that booking. Any approval on it is revoked.
+																</p>
+																<div class="bank-correction-actions">
+																	<button type="button" class="button-primary compact" [disabled]="state().busy" (click)="confirmExclusion()">
+																		Confirm exclusion
+																	</button>
+																	<button type="button" class="button-secondary compact" (click)="cancelExclusion()">Cancel</button>
+																</div>
+															} @else {
+																<div class="bank-correction-actions">
+																	<button
+																		type="button"
+																		class="button-secondary compact"
+																		[disabled]="state().busy"
+																		(click)="chooseDuplicate(correctionId, other.transactionId, 'separate')"
+																	>
+																		Keep both
+																	</button>
+																	<button
+																		type="button"
+																		class="button-secondary compact"
+																		[id]="'duplicate-' + correctionId + '-' + other.transactionId + '-keep-first'"
+																		[disabled]="state().busy || leadingBookings().has(other.transactionId)"
+																		(click)="chooseDuplicate(correctionId, other.transactionId, 'keep-first')"
+																	>
+																		Keep this booking
+																	</button>
+																	<button
+																		type="button"
+																		class="button-secondary compact"
+																		[id]="'duplicate-' + correctionId + '-' + other.transactionId + '-keep-second'"
+																		[disabled]="state().busy || leadingBookings().has(correctionId)"
+																		(click)="chooseDuplicate(correctionId, other.transactionId, 'keep-second')"
+																	>
+																		Keep the other booking
+																	</button>
+																</div>
+																@if (leadingBookings().has(correctionId) || leadingBookings().has(other.transactionId)) {
+																	<p class="muted">To exclude a leading booking, undo its other duplicate decisions first.</p>
+																}
+															}
+														}
+													</li>
+												}
+											</ul>
+										</details>
 									}
 									<app-row-source [row]="originalRows().get(row.rowId) ?? row" [record]="record" />
 									<button

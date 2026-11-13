@@ -7,9 +7,10 @@ import { matchReviewSchema, type MatchDetails, type MatchReviewCounts, type Matc
 import { bankCorrectionChangesSchema, type BankCorrection } from './bank-corrections.js';
 import { documentCorrectionTarget, documentCorrectionValueSchema, type DocumentCorrection } from './document-corrections.js';
 import { matchApprovalSelectionSchema } from './match-approvals.js';
-import type { OriginalPreviewRequest, OriginalPreviewResult } from './original-preview.js';
+import type { OriginalAdoptionRequest, OriginalAdoptionResult, OriginalAnalysisResult, OriginalPreviewRequest, OriginalPreviewResult, OriginalRelinkResult } from './original-preview.js';
 import { exportFilenamePatternLimit } from './export-filename.js';
 import type { DocumentExportResponse } from './document-export.js';
+import type { DuplicateDecision } from './transaction-duplicates.js';
 
 export const workspaceName = z.string().max(120);
 export const commandSchema = z.discriminatedUnion('type', [
@@ -22,6 +23,8 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('cancel-import') }),
   z.strictObject({ type: z.literal('rename'), name: workspaceName }),
   z.strictObject({ type: z.literal('review-match'), revision: z.number().int().nonnegative(), transactionId: z.uuid(), review: matchReviewSchema }),
+  z.strictObject({ type: z.literal('set-duplicate-decision'), revision: z.number().int().nonnegative(), transactionId: z.uuid(), otherTransactionId: z.uuid(),
+    decision: z.enum(['separate', 'keep-first', 'keep-second', 'clear']) }),
   z.strictObject({ type: z.literal('correct-bank-row'), revision: z.number().int().nonnegative(), rowId: z.uuid(), changes: bankCorrectionChangesSchema }),
   z.strictObject({ type: z.literal('correct-document-field'), revision: z.number().int().nonnegative(), ...documentCorrectionTarget, change: documentCorrectionValueSchema }),
   z.strictObject({ type: z.literal('approve-matches'), loadRevision: z.number().int().nonnegative(), selections: z.array(matchApprovalSelectionSchema).min(1)
@@ -40,6 +43,9 @@ export interface WorkspaceView {
   id: string; loadRevision: number; matchRevision: number; name: string; filePath: string | null; dirty: boolean; savedAt: string | null;
   imports: BankImportSummary[]; documentImports: DocumentImportSummary[]; matchReviewCounts: MatchReviewCounts; bankCorrections: BankCorrection[];
   documentCorrections: DocumentCorrection[]; approvedDocumentCount: number;
+  duplicateDecisions: DuplicateDecision[];
+  supersededStatements: string[];
+  supersededDocuments: string[];
 }
 export interface ImportOutcome { status: 'imported' | 'skipped' | 'cancelled' | 'failed' | 'unsupported'; importId: string | null; issues: ImportIssue[]; }
 export interface WorkspaceState {
@@ -59,6 +65,9 @@ export interface WorkspaceBridge {
   matchSummaries(revision: number): Promise<MatchSummary[] | null>;
   matchDetails(revision: number, transactionId: string): Promise<MatchDetails | null>;
   openOriginal(request: OriginalPreviewRequest): Promise<OriginalPreviewResult>;
+  relinkOriginal(request: OriginalPreviewRequest): Promise<OriginalRelinkResult>;
+  analyzeOriginal(request: OriginalPreviewRequest): Promise<OriginalAnalysisResult>;
+  acceptOriginalAnalysis(request: OriginalAdoptionRequest): Promise<OriginalAdoptionResult>;
   exportSettings(request: ExportSettingsRequest): Promise<string>;
   exportDocuments(loadRevision: number): Promise<DocumentExportResponse>;
   exportReconciliation(loadRevision: number): Promise<DocumentExportResponse>;

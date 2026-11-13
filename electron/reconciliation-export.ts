@@ -3,6 +3,8 @@ import path from 'node:path';
 import { applyBankCorrections } from '../src/shared/bank-corrections.js';
 import type { ReconciliationExportReport } from '../src/shared/document-export.js';
 import { currentMatchApprovals, documentRevisionIndex } from '../src/shared/match-approvals.js';
+import { excludeDuplicateTransactions } from '../src/shared/transaction-duplicates.js';
+import { activeStatements, activeSupportingDocuments } from '../src/shared/source-replacements.js';
 import {
 	approvedExportDocuments, copyApprovedDocuments, errorCode, ExportDestinationError, ExportFileCleanupError, openExportDirectory, writeExportFile,
 } from './document-export.js';
@@ -12,7 +14,7 @@ import type { SavedWorkspace } from './store.js';
 const filename = 'reconciliation.csv';
 
 export async function writeReconciliationExport(snapshot: SavedWorkspace, destination: string, pattern: string): Promise<ReconciliationExportReport> {
-	const sources = snapshot.sources.map(source => source.filePath);
+	const sources = [...snapshot.sources.map(source => source.filePath), ...snapshot.sourceRelocations.values()];
 	const directory = await openExportDirectory(destination, sources);
 	const filePath = path.join(directory.path, filename);
 	const exists = await lstat(filePath).then(() => true, error => {
@@ -21,10 +23,10 @@ export async function writeReconciliationExport(snapshot: SavedWorkspace, destin
 	});
 	if (exists) throw new ExportDestinationError('reconciliation.csv already exists. Choose another export folder.');
 
-	const imports = applyBankCorrections(snapshot.imports, snapshot.bankCorrections);
+	const imports = excludeDuplicateTransactions(activeStatements(applyBankCorrections(snapshot.imports, snapshot.bankCorrections), snapshot.sourceReplacements), snapshot.duplicateDecisions.values());
 	const revisions = documentRevisionIndex(snapshot.documentCorrections.values());
 	const approvals = currentMatchApprovals(snapshot.reviewApprovals, snapshot.matchDecisions, snapshot.bankCorrections, revisions);
-	const documents = approvedExportDocuments(imports, snapshot.documentImports, approvals);
+	const documents = approvedExportDocuments(imports, activeSupportingDocuments(snapshot.documentImports, snapshot.sourceReplacements), approvals, snapshot.sourceRelocations);
 	const documentCopies = await copyApprovedDocuments(directory, pattern, documents, sources);
 	try {
 		const csv = serializeReconciliationCsv(reconciliationRows(snapshot, documentCopies.outcomes));

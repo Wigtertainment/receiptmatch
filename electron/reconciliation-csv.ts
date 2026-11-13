@@ -5,7 +5,10 @@ import type { TransactionCandidate, UnresolvedDraft } from '../src/shared/bank-i
 import { applyDocumentCorrections } from '../src/shared/document-corrections.js';
 import type { DocumentExportOutcome } from '../src/shared/document-export.js';
 import { documentRevisionIndex } from '../src/shared/match-approvals.js';
+import { excludeDuplicateTransactions } from '../src/shared/transaction-duplicates.js';
+import { activeStatements, activeSupportingDocuments } from '../src/shared/source-replacements.js';
 import { summarizeMatches } from './match-view.js';
+import { suggestWorkspaceMatches } from './matching.js';
 import { evaluateReviewMatches } from './review-matching.js';
 import type { SavedWorkspace } from './store.js';
 
@@ -24,9 +27,11 @@ function sourceName(file: string): string {
 }
 
 export function reconciliationRows(snapshot: SavedWorkspace, copyOutcomes: readonly DocumentExportOutcome[] = []): ReconciliationRow[] {
-	const imports = applyBankCorrections(snapshot.imports, snapshot.bankCorrections);
-	const documents = applyDocumentCorrections(snapshot.documentImports, snapshot.documentCorrections);
-	const matches = evaluateReviewMatches(snapshot.matches, imports, documents);
+	const corrected = applyBankCorrections(snapshot.imports, snapshot.bankCorrections);
+	const imports = excludeDuplicateTransactions(activeStatements(corrected, snapshot.sourceReplacements), snapshot.duplicateDecisions.values());
+	const documents = activeSupportingDocuments(applyDocumentCorrections(snapshot.documentImports, snapshot.documentCorrections), snapshot.sourceReplacements);
+	const exactMatches = imports === corrected ? snapshot.matches : suggestWorkspaceMatches(imports, documents);
+	const matches = evaluateReviewMatches(exactMatches, imports, documents);
 	const documentRevisions = documentRevisionIndex(snapshot.documentCorrections.values());
 	const summaries = new Map(summarizeMatches(matches, imports, snapshot.matchDecisions, snapshot.bankCorrections, snapshot.reviewApprovals, documentRevisions)
 		.map(summary => [summary.transactionId, summary]));

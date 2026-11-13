@@ -366,7 +366,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		seed.pragma('foreign_keys=ON');
 		try {
 			// The seven original tables are unchanged; remove the additive manifest to reproduce format 1.
-			seed.exec(`DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
+			seed.exec(`DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
                 DROP TABLE match_results; DROP TABLE document_imports; DROP TABLE bank_imports; PRAGMA user_version=1;
                 INSERT INTO sources VALUES('legacy-source','/synthetic/original.pdf',NULL);
                 INSERT INTO accounts VALUES('legacy-account','Legacy account','EUR');
