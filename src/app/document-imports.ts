@@ -279,7 +279,7 @@ export class DocumentAnalysis {
 interface ReportCache { workspaceKey: string; requestKey: string; records: Map<string, StoredDocumentImport>; }
 
 @Component({
-    selector: 'app-document-imports', standalone: true, imports: [DocumentAnalysis, OriginalPreviewButton],
+    selector: 'app-document-imports', standalone: true, imports: [DocumentAnalysis, OriginalPreviewButton, NgTemplateOutlet],
     templateUrl: './document-imports.html'
 })
 export class DocumentImports {
@@ -290,14 +290,13 @@ export class DocumentImports {
         return workspace ? JSON.stringify([workspace.id, workspace.loadRevision]) : '';
     });
     readonly summaries = computed(() => this.state().workspace?.documentImports ?? []);
-    private readonly openReports = signal<{ workspaceKey: string; ids: Set<string> }>({ workspaceKey: '', ids: new Set() });
+    private readonly closedReports = signal<{ workspaceKey: string; ids: Set<string> }>({ workspaceKey: '', ids: new Set() });
     private readonly retryVersion = signal(0);
     private readonly cache = signal<ReportCache | null>(null);
     private readonly failedRequest = signal<string | null>(null);
     private readonly requestKey = computed(() => {
-        const open = this.openReports();
         const summaries = this.summaries();
-        if (open.workspaceKey !== this.workspaceKey() || !summaries.some(report => open.ids.has(report.id))) return null;
+        if (!summaries.some(report => this.isReportOpen(report.id))) return null;
         return JSON.stringify([this.workspaceKey(), summaries.map(report => report.id)]);
     });
     readonly records = computed(() => {
@@ -306,7 +305,6 @@ export class DocumentImports {
     });
     readonly detailsError = computed(() => this.requestKey() !== null && this.failedRequest() === this.requestKey());
     readonly openFileIds = signal<ReadonlySet<string>>(new Set());
-    private latestReportId: string | null = null;
     readonly correctionsByDocument = computed(() => {
         const byDocument = new Map<string, Map<string, DocumentCorrection>>();
         for (const correction of this.state().workspace?.documentCorrections ?? []) {
@@ -318,11 +316,11 @@ export class DocumentImports {
     });
     readonly fileRows = computed(() => {
         const records = this.records();
-        const open = this.openReports();
         const rows = new Map<string, { file: DocumentFileResult; total: string | null; projectedIssues: DocumentIssue[] | null }[]>();
-        if (records && open.workspaceKey === this.workspaceKey()) {
+        if (records) {
             const corrections = this.correctionsByDocument();
-            for (const id of open.ids) {
+            for (const { id } of this.summaries()) {
+                if (!this.isReportOpen(id)) continue;
                 const record = records.get(id);
                 if (!record) continue;
                 const fields = new Map(record.files.flatMap(file => file.status === 'imported' ? [...(corrections.get(file.record.id) ?? [])] : []));
@@ -350,17 +348,12 @@ export class DocumentImports {
     constructor() {
         effect(() => {
             const workspaceKey = this.workspaceKey();
-            const latestId = this.summaries().at(-1)?.id ?? null;
             untracked(() => {
                 if (this.cache()?.workspaceKey !== workspaceKey) this.cache.set(null);
-                const open = this.openReports();
-                if (open.workspaceKey !== workspaceKey) {
-                    this.openReports.set({ workspaceKey, ids: new Set() });
+                if (this.closedReports().workspaceKey !== workspaceKey) {
+                    this.closedReports.set({ workspaceKey, ids: new Set() });
                     this.openFileIds.set(new Set());
-                } else if (latestId && latestId !== this.latestReportId) {
-                    this.openReports.set({ workspaceKey, ids: new Set([...open.ids, latestId]) });
                 }
-                this.latestReportId = latestId;
             });
         });
         effect(onCleanup => {
@@ -385,16 +378,20 @@ export class DocumentImports {
             });
         });
     }
-    isReportOpen(id: string) { return this.openReports().workspaceKey === this.workspaceKey() && this.openReports().ids.has(id); }
+    isReportOpen(id: string) {
+        const closed = this.closedReports();
+        return closed.workspaceKey !== this.workspaceKey() || !closed.ids.has(id);
+    }
     toggleReport(id: string, event: Event) {
         if (!this.summaries().some(report => report.id === id)) return;
         if (this.isReportOpen(id) === expanded(event)) return;
         const workspaceKey = this.workspaceKey();
-        const ids = new Set(this.openReports().workspaceKey === workspaceKey ? this.openReports().ids : []);
-        if (expanded(event)) ids.add(id);
-        else ids.delete(id);
-        this.openReports.set({ workspaceKey, ids });
-        if (!ids.has(id)) this.openFileIds.update(open => new Set([...open].filter(key => !key.startsWith('document-file-' + id + '-'))));
+        const closed = this.closedReports();
+        const ids = new Set(closed.workspaceKey === workspaceKey ? closed.ids : []);
+        if (expanded(event)) ids.delete(id);
+        else ids.add(id);
+        this.closedReports.set({ workspaceKey, ids });
+        if (ids.has(id)) this.openFileIds.update(open => new Set([...open].filter(key => !key.startsWith('document-file-' + id + '-'))));
     }
     toggleFile(key: string) {
         this.openFileIds.update(current => {
