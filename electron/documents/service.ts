@@ -3,7 +3,7 @@ import { lstat, opendir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { importIssue } from "../../src/shared/bank-import.js";
-import { extractionProgressSchema, extractionResultSchema, PDF_EXTRACTION_VERSION, type ExtractionProgress, type ExtractionResult } from "../../src/shared/pdf-extraction.js";
+import { extractionProgressSchema, extractionResultSchema, LOCAL_OCR_VERSIONS, PDF_EXTRACTION_VERSION, type ExtractionProgress, type ExtractionResult } from "../../src/shared/pdf-extraction.js";
 import {
 	DOCUMENT_IMPORT_LIMITS,
 	storedDocumentImportSchema,
@@ -14,6 +14,7 @@ import {
 	type WorkspaceSource,
 } from "../../src/shared/workspace-documents.js";
 import { assertSourceNotCancelled, readSourceSnapshot, SourceReadError } from "../import/source.js";
+import type { LocalDocumentOcr } from "../extraction/host.js";
 import { interpretSupportingDocument } from "./interpret.js";
 
 export interface DocumentImportOptions {
@@ -26,11 +27,12 @@ export interface DocumentImportService {
 }
 interface DocumentImportDependencies {
 	choose(): Promise<string | null>;
+	localOcr?: () => Promise<LocalDocumentOcr | undefined>;
 	extract(
 		bytes: Uint8Array,
 		sourceId: string,
 		format: DocumentFormat,
-		options: { signal?: AbortSignal; onProgress?: (progress: ExtractionProgress) => void },
+		options: { signal?: AbortSignal; onProgress?: (progress: ExtractionProgress) => void; localOcr?: LocalDocumentOcr },
 	): Promise<ExtractionResult>;
 }
 const formats: Readonly<Record<string, DocumentFormat>> = { ".pdf": "pdf", ".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg" };
@@ -55,6 +57,7 @@ export class FolderDocumentImportService implements DocumentImportService {
 			throw new SourceReadError("invalid-source", "Choose an absolute local folder using the document dialog.");
 		const folderPath = path.resolve(selected),
 			identities = new Set(options.existingSources.map((source) => source.id.toLowerCase()));
+		const localOcr = await this.dependencies.localOcr?.();
 		const freshId = () => {
 			let id: string;
 			do {
@@ -129,6 +132,7 @@ export class FolderDocumentImportService implements DocumentImportService {
 				assertSourceNotCancelled(options.signal);
 				const raw = await this.dependencies.extract(bytes, sourceId, format, {
 					signal: options.signal,
+					localOcr,
 					onProgress: (value) => {
 						if (!acceptingProgress || options.signal?.aborted) return;
 						const checked = extractionProgressSchema.safeParse(value);
@@ -153,7 +157,9 @@ export class FolderDocumentImportService implements DocumentImportService {
 					extraction.input.source.sourceId !== sourceId ||
 					extraction.input.source.sha256 !== sha256 ||
 					!z.uuid().safeParse(extraction.input.extraction.runId).success ||
-					extraction.input.extraction.version !== PDF_EXTRACTION_VERSION ||
+					(extraction.input.extraction.version !== (localOcr ? LOCAL_OCR_VERSIONS[localOcr.model] : PDF_EXTRACTION_VERSION) &&
+						!(format === "pdf" && extraction.input.extraction.version === PDF_EXTRACTION_VERSION &&
+							extraction.input.pages.every(page => page.spans.every(span => span.method === "embedded-text")))) ||
 					(format !== "pdf" &&
 						(extraction.input.pages.length !== 1 ||
 							extraction.input.pages[0].status !== "complete" ||

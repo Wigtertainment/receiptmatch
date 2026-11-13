@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { LocalOcrRequest, LocalOcrStatus } from './local-ocr-settings.js';
 import type { ExtractionProgress } from './pdf-extraction.js';
 import type { BankImportSummary, StoredBankImport } from './workspace-import.js';
 import type { ImportIssue } from './bank-import.js';
@@ -60,6 +61,7 @@ export interface WorkspaceBridge {
   matchDetails(revision: number, transactionId: string): Promise<MatchDetails | null>;
   openOriginal(request: OriginalPreviewRequest): Promise<OriginalPreviewResult>;
   exportSettings(request: ExportSettingsRequest): Promise<string>;
+  localOcr(request: LocalOcrRequest): Promise<LocalOcrStatus>;
   exportDocuments(loadRevision: number): Promise<DocumentExportResponse>;
   exportReconciliation(loadRevision: number): Promise<DocumentExportResponse>;
   subscribe(listener: (state: WorkspaceState) => void): () => void;

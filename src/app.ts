@@ -2,21 +2,23 @@ import { Component, computed, DestroyRef, inject, signal } from '@angular/core';
 import { bootstrapApplication } from '@angular/platform-browser';
 import { DocumentImports } from './app/document-imports.js';
 import { ExportSettings } from './app/export-settings.js';
+import { LocalOcrSettings } from './app/local-ocr-settings.js';
 import { MatchSuggestions } from './app/match-suggestions.js';
 import type { WorkspaceBridge, WorkspaceCommand, WorkspaceState } from './shared/protocol.js';
 import { StatementImports } from './statement-imports.js';
 
 declare global { interface Window { receiptmatch: WorkspaceBridge; } }
 
-type WorkspaceSection = 'sources' | 'matches' | 'export-settings';
+type WorkspaceSection = 'sources' | 'matches' | 'export-settings' | 'settings';
 
 @Component({
-  selector: 'app-root', standalone: true, imports: [StatementImports, DocumentImports, MatchSuggestions, ExportSettings],
+  selector: 'app-root', standalone: true, imports: [StatementImports, DocumentImports, MatchSuggestions, ExportSettings, LocalOcrSettings],
   templateUrl: './app/workspace-shell.html'
 })
 class ReceiptMatchApp {
   readonly state = signal<WorkspaceState>({ workspace: null, busy: true, error: null, statementImport: null, importOutcome: null, documentImport: null, documentOutcome: null });
   readonly commandError = signal<string | null>(null);
+  readonly welcomeSettings = signal(false);
   private readonly navigation = signal<{ loadRevision: number; section: WorkspaceSection } | null>(null);
   readonly section = computed(() => {
     const navigation = this.navigation();
@@ -57,6 +59,14 @@ class ReceiptMatchApp {
     requestAnimationFrame(() => {
       if (!this.disposed && this.state().workspace?.loadRevision === workspace.loadRevision && this.section() === section) {
         document.getElementById(section + '-heading')?.focus();
+      }
+    });
+  }
+  showWelcomeSettings(open: boolean) {
+    this.welcomeSettings.set(open);
+    requestAnimationFrame(() => {
+      if (!this.disposed && !this.state().workspace && this.welcomeSettings() === open) {
+        document.getElementById(open ? 'settings-heading' : 'welcome-settings-button')?.focus();
       }
     });
   }

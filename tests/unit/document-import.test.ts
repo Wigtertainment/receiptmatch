@@ -8,6 +8,7 @@ import path from "node:path";
 import { FolderDocumentImportService } from "../../electron/documents/service.js";
 import { StatementImportService } from "../../electron/import/service.js";
 import { importIssue } from "../../src/shared/bank-import.js";
+import { LOCAL_OCR_VERSIONS } from "../../src/shared/pdf-extraction.js";
 import { storedDocumentImportSchema, type DocumentImportProgress, type StoredDocumentImport } from "../../src/shared/workspace-documents.js";
 import { extractedDocument } from "./document-fixtures.js";
 
@@ -166,6 +167,28 @@ test("invalid provenance and malformed progress are isolated as per-file failure
 		assert.equal(run.files[0].status, "failed", defect);
 		assert.equal(imported(run).length, 1, defect);
 	}
+});
+
+test("the selected OCR model is used for the folder and embedded PDF text retains standard provenance", async () => {
+	const root = await directory();
+	for (const name of ["a.png", "b.pdf", "c.jpg", "d.pdf", "e.jpeg"]) await writeFile(path.join(root, name), name);
+	const localOcr = { model: "pp-ocrv6-medium", files: { executable: "python", detection: "det", recognition: "rec" } } as const;
+	const service = new FolderDocumentImportService({
+		choose: async () => root,
+		localOcr: async () => localOcr,
+		extract: async (bytes, id, format, options) => {
+			assert.equal(options.localOcr, localOcr);
+			const result = extractedDocument(bytes, id, format);
+			const name = Buffer.from(bytes).toString();
+			if (name === "a.png") result.input.extraction.version = LOCAL_OCR_VERSIONS[localOcr.model];
+			if (name === "c.jpg") result.input.extraction.version = LOCAL_OCR_VERSIONS["paddleocr-vl-1.6"];
+			if (name === "d.pdf") for (const span of result.input.pages[0].spans) span.method = "local-ocr";
+			return result;
+		},
+	});
+	const run = await service.run({ existingSources: [] });
+	assert.ok(run);
+	assert.deepEqual(run.files.map(file => file.status), ["imported", "imported", "failed", "failed", "failed"]);
 });
 
 test("a transient ancestor replacement cannot replace the file identity selected before snapshotting", async () => {

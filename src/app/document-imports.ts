@@ -17,7 +17,7 @@ function expanded(event: Event) { return (event.target as HTMLDetailsElement).op
 function basename(path: string) { return path.split(/[\\/]/).filter(Boolean).at(-1) || path; }
 const numberFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
 const dateTimeFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-const extractionLabels = { 'embedded-text': 'Embedded text', 'local-ocr': 'Local English OCR' };
+const extractionLabels = { 'embedded-text': 'Embedded text', 'local-ocr': 'Local OCR' };
 function regionText({ x, y, width, height }: PositionedSpan['region']) {
     const format = (value: number) => numberFormat.format(value);
     return `x ${format(x)}, y ${format(y)}, width ${format(width)}, height ${format(height)}`;
@@ -423,7 +423,7 @@ export class DocumentImports {
         const progress = current.progress;
         if (!progress) return 'Choose a folder in the dialog.';
         if (progress.phase === 'scanning') return 'Scanning the folder…';
-        const phases = { loading: 'Opening document', text: 'Reading embedded text', rendering: 'Preparing page image', ocr: 'Reading with local English OCR', 'page-complete': 'Page read' };
+        const phases = { loading: 'Opening document', text: 'Reading embedded text', rendering: 'Preparing page image', ocr: 'Reading with local OCR', 'page-complete': 'Page read' };
         const extraction = progress.extraction;
         const page = extraction?.pageNumber && extraction.pageCount ? ` · Page ${extraction.pageNumber} of ${extraction.pageCount}` : '';
         const filename = progress.filePath ? ` · ${basename(progress.filePath)}` : '';

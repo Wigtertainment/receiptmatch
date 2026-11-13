@@ -11,6 +11,9 @@ files:
   - .build/preview/**/*
   - package.json
   - LICENSE
+extraResources:
+  - from: .build/local-ocr-runtimes
+    to: local-ocr-runtimes
 
 asar: true
 asarUnpack:

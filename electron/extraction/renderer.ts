@@ -11,6 +11,8 @@ import {
 } from '../../src/shared/bank-import.js';
 import {
     extractionJobSchema,
+    LOCAL_OCR_VERSIONS,
+    ocrRegionsSchema,
     PDF_EXTRACTION_LIMITS,
     PDF_EXTRACTION_VERSION,
     type ExtractionBridge,
@@ -63,6 +65,7 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
     }) : null;
     let worker: Worker | undefined;
     let ocrUnavailable = false;
+    let extractionVersion = PDF_EXTRACTION_VERSION;
     let pageNumber: number | null = null;
     let totalPixels = 0;
     let totalSpans = 0;
@@ -88,7 +91,7 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
         totalSpans++;
         totalText += span.text.length;
     };
-    const recognize = async (canvas: HTMLCanvasElement, page: ImportPage, pageCount: number) => {
+    const recognizeStandard = async (canvas: HTMLCanvasElement, pageCount: number) => {
         if (ocrUnavailable) throw new ExtractionFault('ocr-unavailable', 'The bundled English OCR resources are unavailable for this job.');
         if (!worker) {
             try {
@@ -114,20 +117,34 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
         progress('ocr', pageCount);
         const recognized = await worker.recognize(canvas, {}, { blocks: true });
         if (!recognized.data.blocks && recognized.data.text.trim()) throw new ExtractionFault('ocr-result', 'OCR returned text without positioned word evidence.');
-        for (const block of recognized.data.blocks ?? [])
-            for (const paragraph of block.paragraphs)
-                for (const line of paragraph.lines)
-                    for (const word of line.words) {
-                        if (!word.text.trim()) continue;
-                        const box = ocrWordGeometry(word.bbox, page, canvas);
-                        if (!box.region || box.clipped) issue('geometry-warning', 'An OCR word touches or exceeds the visible page bounds.', page.pageId);
-                        if (box.region) append(page, { text: word.text, region: box.region, method: 'local-ocr' });
-                    }
+        return (recognized.data.blocks ?? []).flatMap(block => block.paragraphs.flatMap(paragraph => paragraph.lines.flatMap(line => line.words)))
+            .filter(word => word.text.trim()).map(word => ({ text: word.text, ...word.bbox }));
+    };
+    const recognizeModel = async (canvas: HTMLCanvasElement, page: ImportPage, pageCount: number, model: NonNullable<ExtractionJob['ocrModel']>) => {
+        progress('ocr', pageCount);
+        try {
+            const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/png'));
+            if (!blob) throw new Error('Raster serialization failed.');
+            const raster = { pageNumber: page.pageNumber, width: canvas.width, height: canvas.height, png: new Uint8Array(await blob.arrayBuffer()) };
+            const regions = ocrRegionsSchema.parse(await window.receiptMatchExtraction.recognize(raster));
+            extractionVersion = LOCAL_OCR_VERSIONS[model];
+            return regions;
+        } catch {
+            throw new ExtractionFault('ocr-model', 'The selected local OCR model could not read this page.');
+        }
+    };
+    const recognize = async (canvas: HTMLCanvasElement, page: ImportPage, pageCount: number) => {
+        const words = job.ocrModel ? await recognizeModel(canvas, page, pageCount, job.ocrModel) : await recognizeStandard(canvas, pageCount);
+        for (const { text, ...bounds } of words) {
+            const box = ocrWordGeometry(bounds, page, canvas);
+            if (!box.region || box.clipped) issue('geometry-warning', 'An OCR region touches or exceeds the visible page bounds.', page.pageId);
+            if (box.region) append(page, { text, region: box.region, method: 'local-ocr' });
+        }
         if (!page.spans.length) issue('no-readable-text', 'No positioned text was readable on this page.', page.pageId);
     };
     const result = (): ExtractionResult => {
         if (pages.every((page) => page.status === 'failed')) return { status: 'failed', issues };
-        const input: BankImportInput = { source: { sourceId: job.sourceId, sha256: job.sha256 }, extraction: { runId: job.jobId, version: PDF_EXTRACTION_VERSION }, pages, issues };
+        const input: BankImportInput = { source: { sourceId: job.sourceId, sha256: job.sha256 }, extraction: { runId: job.jobId, version: extractionVersion }, pages, issues };
         const checked = bankImportInputSchema.safeParse(input);
         if (!checked.success) return failed('extraction-limit', 'The extracted document could not satisfy the bounded positioned-text contract.');
         return { status: issues.length ? 'partial' : 'complete', input: checked.data };

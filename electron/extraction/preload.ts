@@ -11,6 +11,7 @@ const bridge: ExtractionBridge = {
         ipcRenderer.once('extraction:job', (_event, payload: unknown) => listener(payload));
     },
     ready: () => ipcRenderer.send('extraction:ready', { jobId }),
-    report: (event: ExtractionEvent) => ipcRenderer.send('extraction:event', { jobId, event })
+    report: (event: ExtractionEvent) => ipcRenderer.send('extraction:event', { jobId, event }),
+    recognize: (raster) => ipcRenderer.invoke('extraction:recognize', jobId, raster)
 };
 contextBridge.exposeInMainWorld('receiptMatchExtraction', bridge);

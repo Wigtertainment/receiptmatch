@@ -6,6 +6,7 @@
 				<button type="button" [attr.aria-current]="section() === 'sources' ? 'page' : null" (click)="showSection('sources')">Sources</button>
 				<button type="button" [attr.aria-current]="section() === 'matches' ? 'page' : null" (click)="showSection('matches')">Match suggestions</button>
 				<button type="button" [attr.aria-current]="section() === 'export-settings' ? 'page' : null" (click)="showSection('export-settings')">Export</button>
+				<button type="button" [attr.aria-current]="section() === 'settings' ? 'page' : null" (click)="showSection('settings')">Settings</button>
 			</nav>
 		</aside>
 		<div class="workspace-body">
@@ -58,9 +59,17 @@
 				</section>
 				<app-match-suggestions [workspace]="workspace" [busy]="state().busy" [active]="section() === 'matches'" [hidden]="section() !== 'matches'" />
 				<app-export-settings [workspace]="workspace" [workspaceBusy]="state().busy" [hidden]="section() !== 'export-settings'" />
+				<app-local-ocr-settings [active]="section() === 'settings'" [hidden]="section() !== 'settings'" />
 			</main>
 		</div>
 	</div>
+} @else if (welcomeSettings()) {
+	<main class="welcome" aria-labelledby="settings-heading">
+		<div class="welcome-settings">
+			<button type="button" class="button-secondary compact" (click)="showWelcomeSettings(false)">Back</button>
+			<app-local-ocr-settings [active]="true" />
+		</div>
+	</main>
 } @else {
 	<main class="welcome" aria-labelledby="welcome-heading">
 		<section class="welcome-card">
@@ -70,6 +79,7 @@
 			<div class="welcome-actions">
 				<button type="button" class="button-primary" (click)="run({ type: 'new' })" [disabled]="state().busy">Create workspace</button>
 				<button type="button" class="button-secondary" (click)="run({ type: 'open' })" [disabled]="state().busy">Open workspace</button>
+				<button type="button" id="welcome-settings-button" class="button-secondary" (click)="showWelcomeSettings(true)" [disabled]="state().busy">Settings</button>
 			</div>
 			@if (state().error || commandError(); as error) {
 				<p class="error" role="alert">{{ error }}</p>
