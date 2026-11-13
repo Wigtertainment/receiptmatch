@@ -9,7 +9,7 @@ export function formatDocumentTotal({ sections, issues }: SupportingDocument): s
     if (!first?.currency) return null;
 
     const total = { ...first, currency: first.currency };
-    const flagged = new Set(issues.map(issue => issue.fieldId));
+    const flagged = new Set(issues.filter(issue => issue.code !== 'reconstructed-total').map(issue => issue.fieldId));
     const consistent = totals.every(({ id, candidates }) => {
         const candidate = candidates[0];
         return candidates.length === 1 && !!candidate.currency && !flagged.has(id) &&

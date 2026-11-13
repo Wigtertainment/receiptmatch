@@ -383,6 +383,49 @@ test('reads an unlabeled printed total from an arithmetically consistent invoice
 	assert.deepEqual(amounts(interpretSupportingDocument(input).sections[0], 'billed-total'), []);
 });
 
+test('recognizes an unlabeled receipt date and recovers a clipped total from the printed VAT breakdown', () => {
+	const input = document([]);
+	const page = input.pages[0];
+	const add = (text: string, x: number, y: number, width: number, height = 16) => {
+		const span: PositionedSpan = { text, region: { x, y, width, height }, method: 'local-ocr' };
+		page.spans.push(span);
+		return span;
+	};
+	add('SUBTOTAL', 12, 237, 77, 19);
+	const original = add('ORIGINAL', 33, 264, 76, 19);
+	add('14 May 2032', 15, 290, 105, 17);
+	add('20:26', 131, 293, 47, 17);
+	const printed = add('0.00', 411, 738, 44, 31);
+	add('{', 466, 744, 8, 26);
+	add('TOTAL', 280, 753, 46);
+	add('Tax included', 108, 795, 114);
+	add('Base', 308, 797, 37);
+	add('Tax', 449, 799, 26);
+	add('VAT 9%', 166, 846, 55);
+	add('64.22', 280, 846, 45);
+	const vat = add('5.78', 421, 848, 36);
+	add('€', 468, 851, 8, 13);
+
+	const result = interpretSupportingDocument(input);
+	const section = result.sections[0];
+	assert.deepEqual(dates(section, 'issue'), ['2032-05-14']);
+	assert.deepEqual(amounts(section, 'subtotal'), [{ coefficient: '6422', scale: 2, currency: 'EUR' }]);
+	assert.deepEqual(amounts(section, 'tax'), [{ coefficient: '578', scale: 2, currency: 'EUR' }]);
+	assert.deepEqual(amounts(section, 'billed-total'), [{ coefficient: '7000', scale: 2, currency: 'EUR' }]);
+	assert.equal(formatDocumentTotal(result), formatMoney({ coefficient: '7000', scale: 2, currency: 'EUR' }));
+	assert.ok(result.issues.some(issue => issue.code === 'reconstructed-total'));
+
+	vat.text = '5.88';
+	assert.deepEqual(amounts(interpretSupportingDocument(input).sections[0], 'billed-total'), []);
+	vat.text = '5.78';
+	printed.text = '80.00';
+	assert.deepEqual(amounts(interpretSupportingDocument(input).sections[0], 'billed-total'), []);
+	printed.text = '70.00';
+	assert.ok(!interpretSupportingDocument(input).issues.some(issue => issue.code === 'reconstructed-total'));
+	original.text = 'UNRELATED';
+	assert.deepEqual(dates(interpretSupportingDocument(input).sections[0], 'issue'), []);
+});
+
 test('currency declarations stay inside their own section', () => {
     const result = interpretSupportingDocument(document(['Invoice', 'Currency: USD', 'Invoice Number: SYNTHETIC-A', 'Total: 11.00'],
         ['Invoice', 'Invoice Number: SYNTHETIC-B', 'Total: $12.00']));

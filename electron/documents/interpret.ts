@@ -22,6 +22,10 @@ const monthNames = [
 function order(left: PositionedSpan, right: PositionedSpan) {
 	return left.region.y - right.region.y || left.region.x - right.region.x || left.text.localeCompare(right.text) || left.method.localeCompare(right.method);
 }
+function sameVisualRow(a: PositionedSpan['region'], b: PositionedSpan['region']) {
+	const overlap = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+	return overlap > 0 && overlap >= Math.min(a.height, b.height) / 2;
+}
 function linesOf(page: ImportPage): Line[] {
 	const lines: Line[] = [];
 	for (const span of page.spans) {
@@ -161,6 +165,59 @@ function invoiceSummaryTotal(lines: Line[], currency: string | null): Omit<Docum
 		evidence: [...source({ ...title, spans: [span] }), ...source({ ...headers, spans: [netHeader] }), ...source({ ...net, spans: [netValue] }), ...source(tax), ...source(total)] };
 }
 
+function receiptVatTotal(section: DocumentSection, lines: Line[], declared: string | null) {
+	const taxFields = section.amounts.filter(field => field.role === 'tax');
+	if ((section.kind !== 'receipt' && section.kind !== 'unknown') || taxFields.length < 2 || section.amounts.some(field => field.role === 'billed-total')) return null;
+	const totals = lines.flatMap(line => line.spans.filter(span => /^total\s*:?$/i.test(span.text.trim())).map(span => ({ line, span })));
+	if (totals.length !== 1) return null;
+	const { line, span: total } = totals[0];
+	const spans = lines.filter(other => other.page === line.page).flatMap(other => other.spans);
+	const columns = spans.filter(span => /^base$/i.test(span.text.trim()) && span.region.y > total.region.y && span.region.y - total.region.y <= total.region.height * 4);
+	if (columns.length !== 1) return null;
+	const [base] = columns;
+	const visualRow = (span: PositionedSpan) => spans.filter(other => other.method === span.method && sameVisualRow(other.region, span.region))
+		.sort((a, b) => a.region.x - b.region.x);
+	const headers = visualRow(base);
+	const left = headers.filter(span => span.region.x < base.region.x);
+	const taxColumn = headers.find(span => span.region.x > base.region.x && /^tax$/i.test(span.text.trim()));
+	if (!taxColumn || !/^(?:tax|vat)\s+included$/i.test(left.map(span => span.text.trim()).join(' '))) return null;
+	const vatRows = spans.filter(span => /^vat(?:\s|$)/i.test(span.text.trim()) && span.region.y > base.region.y && span.region.y - base.region.y <= base.region.height * 4);
+	if (vatRows.length !== 1) return null;
+	const [vatRow] = vatRows;
+	const breakdown = visualRow(vatRow);
+	const rate = /^vat\s+(\d{1,2})\s*%/i.exec(breakdown.map(span => span.text.trim()).join(' '));
+	const decimal = /^\d{1,18}[.,]\d{2}$/;
+	const values = breakdown.filter(span => decimal.test(span.text.trim()));
+	if (!rate || values.length !== 2) return null;
+	const [net, tax] = values;
+	const boundary = (base.region.x + base.region.width / 2 + taxColumn.region.x + taxColumn.region.width / 2) / 2;
+	if (net.region.x <= left.at(-1)!.region.x + left.at(-1)!.region.width || net.region.x + net.region.width >= boundary || tax.region.x <= boundary) return null;
+	const totalRow = visualRow(total).filter(span => span.region.x > total.region.x + total.region.width);
+	const printed = totalRow.filter(span => decimal.test(span.text.trim()));
+	if (printed.length !== 1 || printed[0].region.x <= boundary) return null;
+	const cellText = [...breakdown, ...totalRow].map(span => span.text.trim()).join(' ');
+	const codes = currencies(cellText);
+	if (codes.length > 1 || (declared && codes.some(code => code !== declared)) || /[$£¥]/.test(cellText)) return null;
+	const currency = codes[0] ?? declared;
+	if (!currency) return null;
+	const coefficient = (span: PositionedSpan) => BigInt(span.text.trim().replace(/[.,]/, ''));
+	const netValue = coefficient(net), taxValue = coefficient(tax);
+	if ((netValue * BigInt(rate[1]) + 50n) / 100n !== taxValue) return null;
+	const sum = netValue + taxValue, shown = coefficient(printed[0]);
+	const reconstructed = shown !== sum;
+	const cents = sum.toString().padStart(3, '0');
+	const digits = printed[0].text.trim().replace(/[.,]/, '');
+	// A damaged leading digit can be recovered only when the remaining printed digits agree.
+	if (reconstructed && (total.method !== 'local-ocr' || cents.length !== digits.length + 1 || !cents.endsWith(digits))) return null;
+	const originalFields = taxFields.filter(field => field.evidence.some(evidence =>
+		evidence.pageId === line.page.pageId && /^vat\s+\d+\s*%/i.test(evidence.rawText) && sameVisualRow(evidence.region, vatRow.region)));
+	if (originalFields.length !== 2 || !originalFields.every((field, index) => field.candidates.length === 1 && field.candidates[0].scale === 2 &&
+		field.candidates[0].coefficient === (index === 0 ? netValue : taxValue).toString() && (!field.candidates[0].currency || field.candidates[0].currency === currency))) return null;
+	const amounts = [netValue, taxValue, sum].map(value => ({ coefficient: value.toString(), scale: 2, currency }));
+	const evidence = source({ ...line, spans: breakdown });
+	return { originalFields, amounts, evidence, reconstructed, totalEvidence: [...source({ ...line, spans: [total, ...totalRow] }), ...evidence] };
+}
+
 function dateCandidates(raw: string): string[] {
 	const values: string[] = [];
 	const append = (year: string, month: string | number, day: string | number) => {
@@ -193,9 +250,22 @@ function dateRole(raw: string): DateRole {
 }
 const genericDateLabel = /^date\s*:?$/i;
 
+function receiptDateContext(section: DocumentSection, page: ImportPage, evidence: SourceEvidence): SourceEvidence | null {
+	if (section.kind !== 'receipt' && section.kind !== 'unknown') return null;
+	const value = evidence.region;
+	const nearby = page.spans.filter(span => span.method === evidence.method && span.region.y < value.y && value.y - span.region.y <= value.height * 4 &&
+		Math.abs(span.region.x - value.x) <= value.height * 2);
+	const original = nearby.filter(span => /^\(?\s*original\s*\)?$/i.test(span.text.trim()));
+	if (original.length !== 1 || !nearby.some(span => /^subtotal$/i.test(span.text.trim()) && span.region.y < original[0].region.y)) return null;
+	if (!/\s\d{1,2}:\d{2}(?::\d{2})?\s*$/.test(evidence.rawText) && !page.spans.some(span => span.method === evidence.method && /^\d{1,2}:\d{2}(?::\d{2})?$/.test(span.text.trim()) &&
+		span.region.x >= value.x + value.width && span.region.x - (value.x + value.width) <= value.height * 4 && sameVisualRow(span.region, value))) return null;
+	return { pageId: page.pageId, method: original[0].method, rawText: original[0].text.trim(), region: original[0].region };
+}
+
 export function withGenericIssueDate(section: DocumentSection, pages: readonly ImportPage[]): DocumentSection['dates'] {
 	if (section.kind === 'payment-information' || section.dates.some(field => field.role === 'issue' && field.candidates.length)) return section.dates;
 	const labelled = new Map<string, SourceEvidence | null>();
+	const receiptDates = new Map<string, SourceEvidence>();
 	for (const field of section.dates) {
 		if (field.role !== 'unknown' || !field.candidates.length) continue;
 		for (const evidence of field.evidence) {
@@ -208,24 +278,25 @@ export function withGenericIssueDate(section: DocumentSection, pages: readonly I
 			const page = pages.find(page => page.pageId === evidence.pageId);
 			const value = evidence.region;
 			// OCR can put words from the same printed row on separate lines because their top edges differ.
-			const before = page?.spans.filter(({ method, text, region }) => {
-				const overlap = Math.min(region.y + region.height, value.y + value.height) - Math.max(region.y, value.y);
-				return method === evidence.method && text.trim() && region.x + region.width <= value.x &&
-					overlap > 0 && overlap >= Math.min(region.height, value.height) / 2;
-			});
+			const before = page?.spans.filter(({ method, text, region }) =>
+				method === evidence.method && text.trim() && region.x + region.width <= value.x && sameVisualRow(region, value));
 			if (before?.length === 1 && genericDateLabel.test(before[0].text.trim())) {
 				const { text, region, method } = before[0];
 				labelled.set(field.id, { pageId: evidence.pageId, rawText: text.trim(), region, method });
 				break;
 			}
+			const context = page && receiptDateContext(section, page, evidence);
+			if (context) receiptDates.set(field.id, context);
 		}
 	}
-	const dates = section.dates.filter(field => labelled.has(field.id));
+	const resolved = labelled.size ? labelled : receiptDates;
+	const dates = section.dates.filter(field => resolved.has(field.id));
 	if (new Set(dates.flatMap(field => field.candidates)).size !== 1) return section.dates;
 	return section.dates.map(field => {
-		if (!labelled.has(field.id)) return field;
-		const label = labelled.get(field.id);
-		return { ...field, role: 'issue', label: label ? label.rawText : field.label, evidence: label ? [label, ...field.evidence] : field.evidence };
+		if (!resolved.has(field.id)) return field;
+		const context = resolved.get(field.id);
+		const label = context && labelled.has(field.id) ? context.rawText : field.label;
+		return { ...field, role: 'issue', label, evidence: context ? [context, ...field.evidence] : field.evidence };
 	});
 }
 
@@ -435,6 +506,16 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 		if (section.kind === 'invoice' && declared.length <= 1 && !section.amounts.some(field => field.role === 'billed-total')) {
 			const summary = invoiceSummaryTotal(lines, currency);
 			if (summary) section.amounts.push({ ...summary, id: nextId() });
+		}
+		const breakdown = declared.length <= 1 ? receiptVatTotal(section, lines, currency) : null;
+		if (breakdown) {
+			const { originalFields: [net, tax], amounts: [netAmount, taxAmount, totalAmount], evidence, reconstructed, totalEvidence } = breakdown;
+			Object.assign(net, { role: 'subtotal', label: 'VAT base', candidates: [netAmount], evidence });
+			Object.assign(tax, { label: 'VAT amount', candidates: [taxAmount], evidence });
+			const total = { id: nextId(), role: 'billed-total' as const, label: reconstructed ? 'Total reconstructed from VAT breakdown' : 'Total', candidates: [totalAmount], evidence: totalEvidence };
+			section.amounts.push(total);
+			if (reconstructed) addIssue('reconstructed-total', 'The total was reconstructed from the printed net amount and VAT because the OCR missed a leading digit.',
+				section, total.id, total.role, totalEvidence);
 		}
 		for (const field of [...section.amounts, ...section.dates, ...section.merchants, ...section.references, ...section.currencies]) {
 			if (field.candidates.length !== 1) addIssue(field.candidates.length ? 'ambiguous-field' : 'unresolved-field', 'The printed field has no single established interpretation.', section, field.id, field.role, field.evidence);

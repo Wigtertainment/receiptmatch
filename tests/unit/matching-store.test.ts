@@ -101,19 +101,28 @@ test('combines independent signals for existing workspaces with no exact amount 
 	assert.deepEqual(await readFile(file), savedBytes);
 });
 
-test('recovers a split OCR date in match suggestions for an already imported receipt', async (context) => {
+test.for(['Date', 'ORIGINAL'])('recovers an OCR date using %s in match suggestions for an already imported receipt', async (label, context) => {
 	const root = await directory(context);
 	const file = path.join(root, 'split-date.receiptmatch');
 	const bank = retainedBank(root);
 	const booking = bank.result.transactions[0];
 	booking.description.value = 'Orchard Workshop Ltd 1';
 	booking.counterpartyCandidate = null;
-	const receipt = document(root, 'Orchard-Workshop.pdf', 'Orchard Workshop', '27/02/2032 Original');
+	const receipt = document(root, 'Orchard-Workshop.pdf', 'Orchard Workshop', label === 'Date' ? '27/02/2032 Original' : '27 Feb 2032');
 	const page = receipt.result.input!.pages[0];
 	page.spans[1].method = 'local-ocr';
 	const date = receipt.result.sections[0].dates[0];
 	date.evidence[0].method = 'local-ocr';
-	page.spans.push({ text: 'Date', region: { x: 4, y: 59.5, width: 20, height: 10.5 }, method: 'local-ocr' });
+	if (label === 'Date') {
+		page.spans.push({ text: label, region: { x: 4, y: 59.5, width: 20, height: 10.5 }, method: 'local-ocr' });
+	} else {
+		page.spans[1].region.width = date.evidence[0].region.width = 95;
+		page.spans.push(
+			{ text: 'SUBTOTAL', region: { x: 30, y: 20, width: 77, height: 12 }, method: 'local-ocr' },
+			{ text: label, region: { x: 35, y: 38, width: 65, height: 12 }, method: 'local-ocr' },
+			{ text: '20:26', region: { x: 138, y: 58, width: 40, height: 12 }, method: 'local-ocr' },
+		);
+	}
 	assert.equal(date.role, 'unknown');
 	await createWorkspace(file, newMetadata(), [bank], [documentRun(root, [receipt])]);
 	const savedBytes = await readFile(file);
@@ -126,7 +135,7 @@ test('recovers a split OCR date in match suggestions for an already imported rec
 	assert.equal(candidate?.documentId, receipt.id);
 	assert.equal(candidate?.date?.documentDate, '2032-02-27');
 	assert.equal(candidate?.date?.daysApart, 1);
-	assert.ok(candidate?.documentEvidence.some(item => item.text === 'Date'));
+	assert.ok(candidate?.documentEvidence.some(item => item.text === label));
 	assert.deepEqual(await readFile(file), savedBytes);
 });
 
