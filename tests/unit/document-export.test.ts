@@ -104,6 +104,29 @@ test('rejects original directories and linked destinations, and leaves existing 
 	assert.deepEqual(await fs.readdir(directory), ['Original.pdf']);
 });
 
+test('protects imported and relocated originals from use as a document export directory', async context => {
+	const { root, originals, destination } = await fixture(context);
+	const original = path.join(originals, 'original.pdf');
+	const movedDirectory = path.join(destination, 'documents');
+	const relocatedPath = path.join(movedDirectory, 'renamed.pdf');
+	await fs.mkdir(movedDirectory);
+	await fs.writeFile(relocatedPath, 'original');
+	const item = approved(original, 'original', 'Relocated');
+	item.source!.relocatedPath = relocatedPath;
+	await assert.rejects(copyApprovedDocuments(originals, '{counterparty}', [item], []), /separate from the originals/);
+	await assert.rejects(copyApprovedDocuments(movedDirectory, '{counterparty}', [item], []), /separate from the originals/);
+	await assert.rejects(copyApprovedDocuments(path.dirname(originals), '{counterparty}', [item], []), /separate from the originals/);
+	await assert.rejects(copyApprovedDocuments(destination, '{counterparty}', [item], []), /separate from the originals/);
+
+	const permitted = path.join(root, 'permitted');
+	await fs.mkdir(permitted);
+	const result = await copyApprovedDocuments(permitted, '{counterparty}', [item], []);
+	assert.equal(result.outcomes[0].sourcePath, relocatedPath);
+	assert.equal(result.outcomes[0].status, 'copied');
+	assert.equal(await fs.readFile(path.join(result.directory!, 'Relocated.pdf'), 'utf8'), 'original');
+	assert.deepEqual(await fs.readdir(movedDirectory), ['renamed.pdf']);
+});
+
 test('removes an incomplete copy and keeps exporting after a write failure', async context => {
 	const { originals, destination } = await fixture(context);
 	const broken = approved(path.join(originals, 'broken.pdf'), 'broken', 'Broken');

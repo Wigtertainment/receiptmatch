@@ -17,14 +17,16 @@ export interface ApprovedExportDocument {
 	date: string;
 	counterparty: string | null;
 	amount: Money;
-	source: OriginalSource | null;
+	source: (OriginalSource & { relocatedPath?: string }) | null;
 }
 
 export function approvedExportDocuments(
 	imports: readonly StoredBankImport[], documentImports: readonly StoredDocumentImport[], approvals: ReadonlyMap<string, MatchApproval>,
+	relocations?: ReadonlyMap<string, string>,
 ): ApprovedExportDocument[] {
 	const originals = new Map(documentImports.flatMap(record => record.files.flatMap(file => file.status === 'imported' ? [[file.record.id, {
 		filePath: file.record.filePath, format: file.record.format, sha256: file.record.result.input!.source.sha256,
+		relocatedPath: relocations?.get(file.record.result.input!.source.sourceId),
 	}] as const] : [])));
 	const documents: ApprovedExportDocument[] = [];
 	for (const record of imports) {
@@ -103,7 +105,7 @@ export async function openExportDirectory(destination: string, sourcePaths: read
 }
 
 async function prepareDirectory(destination: string | ExportDirectory, sourcePaths: readonly string[]) {
-	const root = typeof destination === 'string' ? await openExportDirectory(destination) : destination;
+	const root = typeof destination === 'string' ? await openExportDirectory(destination, sourcePaths) : destination;
 	const directory = path.join(root.path, 'documents');
 	const sourceParents = await originalDirectoryIdentities(directory, sourcePaths);
 	await root.verify();
@@ -182,15 +184,16 @@ async function exportDocument(
 	document: ApprovedExportDocument, directory: ExportDirectory, pattern: string,
 ): Promise<DocumentExportOutcome> {
 	const { transactionId, documentId, source } = document;
-	const item = { transactionId, documentId, sourceName: source ? path.basename(source.filePath) : null, sourcePath: source?.filePath ?? null };
-	if (!source) return { ...item, status: 'failed', filename: null, reason: 'source-missing' };
+	const sourcePath = source?.relocatedPath ?? source?.filePath ?? null;
+	const item = { transactionId, documentId, sourceName: sourcePath ? path.basename(sourcePath) : null, sourcePath };
+	if (!source || !sourcePath) return { ...item, status: 'failed', filename: null, reason: 'source-missing' };
 	const ext = path.extname(source.filePath).toLowerCase();
 	if (!(extensions[source.format] as readonly string[]).includes(ext)) return { ...item, status: 'failed', filename: null, reason: 'source-unreadable' };
 	const name = renderExportFilename(pattern, { ...document, extension: filenames[ext as keyof typeof filenames] });
 	if (!name.filename) return { ...item, status: 'failed', filename: null, reason: 'invalid-filename' };
 	const { filename } = name;
 	let bytes: Uint8Array;
-	try { bytes = await readSourceSnapshot(source.filePath, extensions[source.format]); }
+	try { bytes = await readSourceSnapshot(sourcePath, extensions[source.format]); }
 	catch (error) {
 		const code = errorCode(error);
 		return { ...item, status: 'failed', filename, reason: code === 'ENOENT' || code === 'ENOTDIR' ? 'source-missing' :
@@ -210,7 +213,8 @@ export async function copyApprovedDocuments(
 	destination: string | ExportDirectory, pattern: string, documents: readonly ApprovedExportDocument[], sourcePaths: readonly string[],
 ): Promise<DocumentExportReport> {
 	if (!documents.length) return { directory: null, outcomes: [] };
-	const originalPaths = [...sourcePaths, ...documents.flatMap(document => document.source ? [document.source.filePath] : [])];
+	const originalPaths = [...sourcePaths, ...documents.flatMap(({ source }) =>
+		source ? [source.filePath, ...(source.relocatedPath ? [source.relocatedPath] : [])] : [])];
 	const directory = await prepareDirectory(destination, originalPaths).catch(error => {
 		if (error instanceof ExportDestinationError) throw error;
 		throw new ExportDestinationError('The export folder could not be created or accessed.');

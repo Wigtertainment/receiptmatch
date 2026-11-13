@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { commandSchema, documentExportRequestSchema, exportSettingsRequestSchema, matchRequestSchema, type WorkspaceState } from '../src/shared/protocol.js';
 import type { DocumentExportResponse } from '../src/shared/document-export.js';
-import { originalPreviewRequestSchema } from '../src/shared/original-preview.js';
+import { originalAdoptionRequestSchema, originalPreviewRequestSchema, originalSourceExtensions } from '../src/shared/original-preview.js';
 import { WorkspaceSession } from './workspace-session.js';
 import { StatementImportService } from './import/service.js';
 import { FolderDocumentImportService } from './documents/service.js';
@@ -67,6 +67,16 @@ async function launch() {
       const selected = await dialog.showSaveDialog(window, { title: 'Save workspace', defaultPath: `${safeName}.receiptmatch`, filters: [{ name: 'ReceiptMatch workspace', extensions: ['receiptmatch'] }], properties: ['showOverwriteConfirmation'] });
       return selected.canceled ? null : selected.filePath ?? null;
     },
+    relinkOriginal: async source => {
+      const selected = await dialog.showOpenDialog(window, { title: 'Locate the original file', defaultPath: path.dirname(source.filePath),
+        properties: ['openFile'], filters: [{ name: 'Original document', extensions: originalSourceExtensions[source.format].map(extension => extension.slice(1)) }] });
+      return selected.canceled ? null : selected.filePaths[0] ?? null;
+    },
+    analyzeOriginal: async source => {
+      const selected = await dialog.showOpenDialog(window, { title: 'Choose a changed source to analyze', defaultPath: path.dirname(source.filePath),
+        properties: ['openFile'], filters: [{ name: 'Original document', extensions: originalSourceExtensions[source.format].map(extension => extension.slice(1)) }] });
+      return selected.canceled ? null : selected.filePaths[0] ?? null;
+    },
     unsaved: async name => {
       const selected = await dialog.showMessageBox(window, { type: 'question', title: 'Unsaved changes', message: `Save changes to “${name || 'Untitled workspace'}”?`, detail: 'Your unsaved changes will be lost if you discard them.', buttons: ['Save', 'Discard', 'Cancel'], defaultId: 0, cancelId: 2, noLink: true });
       return (['save', 'discard', 'cancel'] as const)[selected.response] ?? 'cancel';
@@ -83,7 +93,7 @@ async function launch() {
       return selected.canceled ? null : selected.filePaths[0] ?? null;
     },
     extract: extractDocumentBytes
-  }));
+  }), extractDocumentBytes);
   const authorized = (event: Electron.IpcMainInvokeEvent) => event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && event.senderFrame.url === appUrl;
   const exportSettingsFile = path.join(app.getPath('userData'), 'export-settings.json');
   let exportSettingsWrite: Promise<string> | null = null;
@@ -130,7 +140,25 @@ async function launch() {
     const request = originalPreviewRequestSchema.safeParse(payload[0]);
     if (!request.success) return { error: 'This preview request is not supported.' };
     const source = workspace.originalSource(request.data);
-    return source ? previews.open(`${request.data.kind}:${request.data.id}`, source) : { error: 'The original is not available in this workspace.' };
+    return source ? previews.open(JSON.stringify([request.data.kind, request.data.id, source.filePath]), source) : { error: 'The original is not available in this workspace.' };
+  });
+  ipcMain.handle('workspace:relink-original', (event, ...payload: unknown[]) => {
+    if (!authorized(event) || payload.length !== 1) throw new Error('Workspace request denied.');
+    const request = originalPreviewRequestSchema.safeParse(payload[0]);
+    if (!request.success) throw new Error('Workspace request denied.');
+    return workspace.relinkOriginal(request.data);
+  });
+  ipcMain.handle('workspace:analyze-original', (event, ...payload: unknown[]) => {
+    if (!authorized(event) || payload.length !== 1) throw new Error('Workspace request denied.');
+    const request = originalPreviewRequestSchema.safeParse(payload[0]);
+    if (!request.success) throw new Error('Workspace request denied.');
+    return workspace.analyzeOriginal(request.data);
+  });
+  ipcMain.handle('workspace:accept-original-analysis', (event, ...payload: unknown[]) => {
+    if (!authorized(event) || payload.length !== 1) throw new Error('Workspace request denied.');
+    const request = originalAdoptionRequestSchema.safeParse(payload[0]);
+    if (!request.success) throw new Error('Workspace request denied.');
+    return workspace.acceptOriginalAnalysis(request.data);
   });
   let exportRequested = false;
   let closeRequested = false;
