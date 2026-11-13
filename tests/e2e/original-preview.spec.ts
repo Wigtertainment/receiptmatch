@@ -81,8 +81,21 @@ test('opens local originals independently from statements, documents and match s
         const statement = await openPreview(main, path.basename(bank.filePath));
         await expect(statement.getByText('Page 1 of 2', { exact: true })).toBeVisible();
         await expect(statement.locator('canvas')).toBeVisible();
-        await statement.getByRole('button', { name: 'Next page' }).click();
+        const previous = statement.locator('wig-button').getByRole('button', { name: 'Previous page' });
+        const next = statement.locator('wig-button').getByRole('button', { name: 'Next page' });
+        await expect(previous).toBeDisabled();
+        await expect(next).toHaveCSS('align-items', 'center');
+        await next.press('Enter');
         await expect(statement.getByRole('img', { name: 'Page 2 of 2', exact: true })).toBeVisible();
+        await expect(next).toBeDisabled();
+        await previous.press('Enter');
+        await expect(statement.getByRole('img', { name: 'Page 1 of 2', exact: true })).toBeVisible();
+        expect(await statement.evaluate(async () => {
+            const root = document.querySelector('app-preview-controls');
+            const styles = [...document.querySelectorAll('style')].filter(style => style.textContent?.includes('wig-button-min-height'));
+            const offline = await fetch('https://example.invalid/').then(() => false, () => true);
+            return { stylesAllowed: styles.some(style => style.nonce === root?.getAttribute('ngCspNonce') && !!style.sheet), offline };
+        })).toEqual({ stylesAllowed: true, offline: true });
         const independent = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()
             .filter(window => window.webContents.getURL() === 'receiptmatch-extraction://preview/index.html')
             .every(window => !window.isModal() && window.getParentWindow() === null && window.isResizable()));
@@ -100,6 +113,13 @@ test('opens local originals independently from statements, documents and match s
         await expect.poll(() => png.url()).toBe('receiptmatch-extraction://preview/index.html');
         await expect(png.getByRole('img')).toBeVisible();
         await expect.poll(() => png.getByRole('img').evaluate(image => (image as HTMLImageElement).naturalWidth)).toBe(600);
+        const zoom = png.getByRole('combobox', { name: 'Zoom' });
+        await zoom.press('Enter');
+        await png.getByRole('option', { name: '200%', exact: true }).click();
+        await expect(png.getByRole('img')).toHaveAttribute('width', '1200');
+        await zoom.click();
+        await png.getByRole('option', { name: 'Fit to window', exact: true }).click();
+        await expect(png.getByRole('img')).not.toHaveAttribute('width', '1200');
         const columns = () => files.getByRole('columnheader').evaluateAll(headers => headers.map(header => header.getBoundingClientRect().width));
         const widthsBeforeError = await columns();
         await rename(path.join(root, 'receipt.png'), movedPng);
@@ -113,11 +133,11 @@ test('opens local originals independently from statements, documents and match s
         await expect(previewButton).toBeFocused();
         await main.getByRole('button', { name: 'Match suggestions', exact: true }).click();
         const matches = main.getByRole('region', { name: 'Match suggestions', exact: true });
-        await expect(matches.getByRole('heading', { name: 'receipt.pdf' })).toBeVisible();
+        await expect(matches.getByRole('heading', { name: 'receipt.pdf', exact: true })).toBeVisible();
         const candidate = await openPreview(main, 'receipt.pdf');
         await expect(candidate.locator('canvas')).toBeVisible();
-        const picker = matches.getByLabel('Supporting document');
-        await picker.selectOption({ label: 'receipt.jpeg' });
+        await matches.getByRole('combobox', { name: 'Supporting document' }).click();
+        await main.getByRole('option', { name: 'receipt.jpeg', exact: true }).click();
         const jpeg = await openPreview(main, 'receipt.jpeg');
         await expect.poll(() => jpeg.getByRole('img').evaluate(image => (image as HTMLImageElement).naturalWidth)).toBe(600);
         await matches.getByRole('button', { name: 'Assign document', exact: true }).click();

@@ -1,4 +1,7 @@
 import { Component, DestroyRef, computed, effect, inject, input, output, signal, untracked } from '@angular/core';
+import { type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDropdownComponent, WigInputComponent, WigTableComponent,
+    WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
+import { InputLength } from './app/input-length.js';
 import { OriginalPreviewButton } from './app/original-preview-button.js';
 import { amountEntryExample, formatAmountEntry, parseAmountEntry } from './shared/amount-entry.js';
 import { applyBankCorrections } from './shared/bank-corrections.js';
@@ -23,11 +26,11 @@ function filename(value: string) { return value.split(/[\\/]/).at(-1) || value; 
 function directionLabel(value: ImportRow['direction']) { return value === 'incoming' ? 'Incoming' : value === 'outgoing' ? 'Outgoing' : 'Unknown'; }
 
 @Component({
-    selector: 'app-row-source', standalone: true,
+    selector: 'app-row-source', standalone: true, imports: [WigAccordionComponent, WigTemplateDirective],
     template: `
-      <details class="source-details" (toggle)="toggle($event)">
-        <summary>Source details</summary>
-        @if (opened()) {
+      <wig-accordion #source class="source-details" [items]="sourceItems" [value]="null">
+        <ng-template wigTemplate="source">
+        @if (source.value()) {
           <div class="source-detail-body">
             <dl class="source-facts">
               <div><dt>Full description</dt><dd class="raw-text">{{ row().description?.value || 'Unknown' }}</dd></div>
@@ -61,13 +64,14 @@ function directionLabel(value: ImportRow['direction']) { return value === 'incom
             }
           </div>
         }
-      </details>
+        </ng-template>
+      </wig-accordion>
     `
 })
 class RowSource {
     readonly row = input.required<ImportRow>();
     readonly record = input.required<StoredBankImport>();
-    readonly opened = signal(false);
+    readonly sourceItems = [{ id: 'source', header: 'Source details', template: 'source' }];
     readonly date = formatCalendarDate;
     readonly money = formatMoney;
     readonly direction = directionLabel;
@@ -89,7 +93,6 @@ class RowSource {
         ];
         return values.filter(field => field.evidence.length);
     });
-    toggle(event: Event) { this.opened.set((event.target as HTMLDetailsElement).open); }
     pageNumber(pageId: string) { return this.record().result.sourceProvenance?.pages.find(page => page.pageId === pageId)?.pageNumber ?? 'Unknown'; }
     region(evidence: SourceEvidence) {
         const formatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
@@ -98,7 +101,10 @@ class RowSource {
     }
 }
 
-@Component({ selector: 'app-statement-imports', standalone: true, imports: [RowSource, OriginalPreviewButton], templateUrl: './app/statement-imports.html' })
+@Component({ selector: 'app-statement-imports', standalone: true,
+    imports: [RowSource, OriginalPreviewButton, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDropdownComponent, WigInputComponent,
+        WigTableComponent, WigTemplateDirective, InputLength],
+    templateUrl: './app/statement-imports.html' })
 export class StatementImports {
     readonly state = input.required<WorkspaceState>();
     readonly workspaceCommand = output<WorkspaceCommand>();
@@ -107,8 +113,14 @@ export class StatementImports {
     readonly detailsError = signal<string | null>(null);
     readonly selectedId = signal<string | null>(null);
     readonly selected = computed(() => this.records().find(record => record.id === this.selectedId()) ?? null);
+    readonly statementInfo = [{ id: 'statement', header: 'Statement details', template: 'statement' }];
     readonly corrections = computed(() => new Map((this.state().workspace?.bankCorrections ?? []).map(correction => [correction.rowId, correction])));
     readonly statementCounts = computed(() => new Map((this.state().workspace?.imports ?? []).map(record => [record.id, record.transactions])));
+    readonly statementOptions = computed(() => this.records().map(record => {
+        const status = this.state().workspace?.supersededStatements?.includes(record.id) ? 'Archived analysis' :
+            record.result.status === 'partial' ? 'Partial import' : 'Complete import';
+        return { id: record.id, label: `${filename(record.filePath)} · ${this.statementCounts().get(record.id) ?? record.result.transactions.length} transactions · ${status}` };
+    }));
     private readonly effectiveRecords = computed(() => {
         const records = this.records();
         const allCorrections = this.corrections();
@@ -192,6 +204,18 @@ export class StatementImports {
     });
     readonly hasOriginalTransactions = computed(() => this.displayed()?.result.transactions.some(row => row.reportedOriginalAmount !== null) ?? false);
     readonly hasOriginalDrafts = computed(() => this.displayed()?.result.unresolvedDrafts.some(row => row.reportedOriginalAmount !== null) ?? false);
+    readonly transactionColumns = computed(() => this.bookingColumns('Description', this.hasOriginalTransactions()));
+    readonly draftColumns = computed(() => this.bookingColumns('Description and issues', this.hasOriginalDrafts()));
+    private bookingColumns(description: string, originalAmount: boolean): TableConfig<ImportRow> {
+        const columns: TableConfig<ImportRow>['columns'] = [
+            { field: 'bookingDate', text: 'Booking date', type: 'custom', template: 'booking-date' },
+            { field: 'description', text: description, type: 'custom', template: 'description' },
+            { field: 'accountAmount', text: 'Account amount', type: 'custom', template: 'account-amount' },
+            { field: 'direction', text: 'Direction', type: 'custom', template: 'direction' }
+        ];
+        if (originalAmount) columns.push({ field: 'reportedOriginalAmount', text: 'Reported original amount', type: 'custom', template: 'original-amount' });
+        return { columns };
+    }
     private readonly edit = signal<{ loadRevision: number; recordId: string; rowId: string; originalRevision: number } | null>(null);
     readonly editing = computed(() => {
         const edit = this.edit();
@@ -264,8 +288,7 @@ export class StatementImports {
         });
     }
     retryDetails() { this.loadRecords(this.state(), this.key(this.state())); }
-    select(event: Event) {
-        const id = (event.target as HTMLSelectElement).value;
+    select(id: string | null) {
         if (this.records().some(record => record.id === id)) {
             this.edit.set(null); this.expandedOverlapRows.set(new Set()); this.exclusion.set(null); this.selectedId.set(id);
         }
@@ -312,7 +335,7 @@ export class StatementImports {
     cancelExclusion() {
         const pending = this.pendingExclusion();
         this.exclusion.set(null);
-        if (pending) requestAnimationFrame(() => document.getElementById('duplicate-' + pending.transactionId + '-' + pending.otherTransactionId + '-' + pending.action)?.focus());
+        if (pending) requestAnimationFrame(() => document.getElementById('duplicate-' + pending.transactionId + '-' + pending.otherTransactionId + '-' + pending.action)?.querySelector('button')?.focus());
     }
     startCorrection(rowId: string) {
         const record = this.selected();
@@ -328,14 +351,17 @@ export class StatementImports {
     closeCorrection() {
         const id = this.editing()?.id;
         this.edit.set(null);
-        if (id) document.getElementById('bank-correction-' + id)?.focus();
+        if (id) document.getElementById('bank-correction-' + id)?.querySelector('button')?.focus();
     }
-    applyCorrection(event: Event) {
-        event.preventDefault();
+    submitFromField(form: HTMLFormElement, event: Event) {
+        if (event instanceof KeyboardEvent && !event.isComposing && event.target instanceof HTMLInputElement) this.applyCorrection(form, event);
+    }
+    applyCorrection(form: HTMLFormElement, event?: Event) {
+        event?.preventDefault();
         const editing = this.editing();
         const workspace = this.state().workspace;
         if (!editing || !workspace || this.state().busy) return;
-        const fields = new FormData(event.currentTarget as HTMLFormElement);
+        const fields = new FormData(form);
         const dateText = String(fields.get('booking-date') ?? '');
         const amountText = String(fields.get('account-amount') ?? '').trim();
         const date = dateText ? calendarDateSchema.safeParse(dateText) : null;

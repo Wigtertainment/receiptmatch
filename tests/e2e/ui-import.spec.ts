@@ -4,14 +4,14 @@ import { copyFile, mkdir, mkdtemp, readFile, rename, writeFile } from 'node:fs/p
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
-import { test as base, type ElectronApplication, type Locator, type Page, type PlaywrightWorkerArgs } from '@playwright/test';
+import { expect, test as base, type ElectronApplication, type Locator, type Page, type PlaywrightWorkerArgs } from '@playwright/test';
 import type { IpcMain, IpcMainInvokeEvent, Rectangle } from 'electron';
 import Database from 'better-sqlite3';
 import { statement, row } from '../unit/bank-fixtures.js';
 import { airwallexStatement } from '../unit/airwallex-fixtures.js';
 import { parseBankStatement } from '../../electron/import/registry.js';
 import { createWorkspace, newMetadata } from '../../electron/store.js';
-import { storedBankImportSchema, type StoredBankImport } from '../../src/shared/workspace-import.js';
+import { storedBankImportSchema } from '../../src/shared/workspace-import.js';
 import type { ImportIssue } from '../../src/shared/bank-import.js';
 import type { ImportOutcome, WorkspaceCommand, WorkspaceState, WorkspaceView } from '../../src/shared/protocol.js';
 
@@ -153,8 +153,8 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		createHash('sha256')
 			.update(await readFile(file))
 			.digest('hex');
-	const transactions = () => page.getByRole('table', { name: 'Transactions', exact: true });
-	const drafts = () => page.getByRole('table', { name: 'Unresolved drafts', exact: true });
+	const transactions = () => page.getByRole('table', { name: 'Transactions table, horizontally scrollable', exact: true });
+	const drafts = () => page.getByRole('table', { name: 'Unresolved drafts table, horizontally scrollable', exact: true });
 
 	async function bounded<Result>(label: string, operation: Promise<Result>, milliseconds = 20000) {
 		let timer: ReturnType<typeof setTimeout> | undefined;
@@ -339,8 +339,11 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 			assert.equal(completion.importId, result.importOutcome.importId);
 			if (issueCode) assert.ok(result.importOutcome.issues.some((issue) => issue.code === issueCode));
 			await page.getByTestId('import-outcome').waitFor();
-			if (status === 'imported')
-				await page.waitForFunction((id) => document.querySelector<HTMLSelectElement>('#statement-select')?.value === id, result.importOutcome.importId);
+			if (status === 'imported') {
+				const imported = result.workspace.imports.find(record => record.id === result.importOutcome?.importId);
+				assert.ok(imported);
+				await page.getByRole('combobox', { name: 'Statement', exact: true }).getByText(path.basename(imported.filePath) + ' ·', { exact: false }).waitFor();
+			}
 			return { ...result, workspace: result.workspace, importOutcome: result.importOutcome };
 		} finally {
 			await page.evaluate((attempt) => {
@@ -487,12 +490,14 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		const values = await page.evaluate(() => window.receiptmatch.bankImports());
 		return values.map((value) => storedBankImportSchema.parse(value));
 	}
-	async function selectStatement(record: StoredBankImport) {
-		await page.getByLabel('Statement', { exact: true }).selectOption(record.id);
+	async function selectStatement(record: { filePath: string }) {
+		const filename = path.basename(record.filePath);
+		const picker = page.getByRole('combobox', { name: 'Statement', exact: true });
+		await picker.click();
+		await page.getByRole('option').filter({ hasText: filename + ' ·' }).click();
 		await page.waitForFunction(
-			({ id, filename }) =>
-				document.querySelector<HTMLSelectElement>('#statement-select')?.value === id && document.querySelector('.statement-summary h3')?.textContent?.trim() === filename,
-			{ id: record.id, filename: path.basename(record.filePath) }
+			filename => document.querySelector('.statement-summary h3')?.textContent?.trim() === filename,
+			filename
 		);
 		await transactions().waitFor();
 	}
@@ -684,10 +689,10 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		assert.equal(imported.workspace.imports.length, 2);
 		assert.equal(await transactions().locator('tbody > tr').count(), 2);
 		assert.equal(await drafts().locator('tbody > tr').count(), 1);
-		assert.equal((await drafts().locator('tbody td.amount-cell').textContent())?.trim(), 'Unknown');
+		assert.equal((await drafts().locator('tbody .amount-cell').textContent())?.trim(), 'Unknown');
 		assert.ok((await drafts().locator('.row-issues li').count()) > 0);
 		await page.getByTestId('statement-warnings').waitFor();
-		assert.match((await page.getByLabel('Statement', { exact: true }).locator('option:checked').textContent()) ?? '', /synthetic-partial\.pdf.*Partial import/);
+		assert.match((await page.getByRole('combobox', { name: 'Statement', exact: true }).textContent()) ?? '', /synthetic-partial\.pdf.*Partial import/);
 		await stage('partial: before Save');
 		await clickCommand(page.getByRole('button', { name: 'Save', exact: true }), 'save');
 		await waitState({ dirty: false });
@@ -771,9 +776,9 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		await transactions().waitFor();
 		const first = transactions().locator('tbody > tr').nth(0);
 		const second = transactions().locator('tbody > tr').nth(1);
-		assert.equal(normalized(await first.locator('td.amount-cell').first().textContent()), '-900.719.925.474.099.312,345678901234567890 EUR');
-		assert.equal(normalized(await second.locator('td.amount-cell').first().textContent()), '0,000000000000000001 EUR');
-		assert.equal((await first.locator('td.date-cell').textContent())?.trim(), '28.02.2032');
+		assert.equal(normalized(await first.locator('.amount-cell').first().textContent()), '-900.719.925.474.099.312,345678901234567890 EUR');
+		assert.equal(normalized(await second.locator('.amount-cell').first().textContent()), '0,000000000000000001 EUR');
+		assert.equal((await first.locator('.date-cell').textContent())?.trim(), '28.02.2032');
 		assert.equal((await first.locator('.row-description').textContent())?.trim(), payload);
 		await first.getByText('Source details', { exact: true }).click();
 		await first.getByText('Printed date basis', { exact: true }).waitFor();
@@ -808,7 +813,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 			await releaseHook();
 			assert.equal(await page.getByLabel('Workspace name', { exact: true }).inputValue(), 'Presentation-only exact values');
 			assert.equal((await transactions().locator('.row-description').first().textContent())?.trim(), payload);
-			assert.equal(await page.getByLabel('Statement', { exact: true }).inputValue(), presentationRecord.id);
+			assert.equal(await page.locator('wig-dropdown[data-statement-id]').getAttribute('data-statement-id'), presentationRecord.id);
 		} finally {
 			await restoreHook();
 		}
@@ -868,14 +873,14 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		const imports = (await state()).workspace.imports;
 		const partialImport = imports.find((record) => path.basename(record.filePath) === path.basename(partial));
 		assert.ok(partialImport);
-		await page.getByLabel('Statement', { exact: true }).selectOption(partialImport.id);
+		await selectStatement(partialImport);
 		await drafts().waitFor();
-		const summary = transactions().locator('tbody > tr').first().getByText('Source details', { exact: true });
+		const summary = transactions().locator('tbody > tr').first().getByRole('button', { name: 'Source details', exact: true });
 		await summary.focus();
 		await page.keyboard.press('Enter');
-		await page.waitForFunction(() => document.querySelector<HTMLDetailsElement>('[data-testid="transactions-table"] tbody details')?.open);
+		await expect(summary).toHaveAttribute('aria-expanded', 'true');
 		await page.keyboard.press('Space');
-		await page.waitForFunction(() => !document.querySelector<HTMLDetailsElement>('[data-testid="transactions-table"] tbody details')?.open);
+		await expect(summary).toHaveAttribute('aria-expanded', 'false');
 		await currentApplication().evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(680, 800));
 		await settle();
 		const region = page.getByRole('region', { name: 'Transactions table, horizontally scrollable', exact: true });
@@ -944,13 +949,14 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 			[2, '03.03.2032', '4,19 EUR', 'Incoming'],
 			[3, '04.03.2032', '27,53 EUR', 'Incoming']
 		] as const) {
-			assert.equal(normalized(await rows.nth(index).locator('td.date-cell').textContent()), date);
-			assert.equal(normalized(await rows.nth(index).locator('td.amount-cell').first().textContent()), amount);
+			assert.equal(normalized(await rows.nth(index).locator('.date-cell').textContent()), date);
+			assert.equal(normalized(await rows.nth(index).locator('.amount-cell').first().textContent()), amount);
 			assert.equal(normalized(await rows.nth(index).locator('td').nth(3).textContent()), direction);
 		}
-		assert.equal(normalized(await rows.nth(0).locator('td.amount-cell').nth(1).textContent()), '-18,07 USD');
-		assert.equal(normalized(await rows.nth(1).locator('td.amount-cell').nth(1).textContent()), 'Unknown');
-		assert.equal(normalized(await rows.nth(2).locator('td.amount-cell').nth(1).textContent()), '4,19 EUR');
+		assert.equal(normalized(await rows.nth(0).locator('.amount-cell').nth(1).textContent()), '-18,07 USD');
+		assert.equal(normalized(await rows.nth(1).locator('.amount-cell').nth(1).textContent()), 'Unknown');
+		assert.equal(normalized(await rows.nth(2).locator('.amount-cell').nth(1).textContent()), '4,19 EUR');
+		await page.getByRole('button', { name: 'Statement details', exact: true }).click();
 		assert.equal(normalized(await page.locator('.account-list dd').textContent()), 'Unknown account reference');
 		await rows.first().getByText('Source details', { exact: true }).click();
 		await sourceFact(rows.first(), 'Printed date basis').waitFor();
@@ -998,7 +1004,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		assert.equal(skipped.importOutcome.importId, record.id);
 		assert.deepEqual(await bankRecords(), retained);
 		assert.equal(await fingerprint(workspaceFile), savedAfterRestart);
-		assert.equal(await page.getByLabel('Statement', { exact: true }).inputValue(), record.id);
+		assert.equal(await page.locator('wig-dropdown[data-statement-id]').getAttribute('data-statement-id'), record.id);
 		assert.equal(await fingerprint(airwallex), airwallexOriginalHash);
 		return { screenshot: wide, retainedBanks: [...new Set(retained.map((record) => record.result.adapter?.bankId))] };
 	});
@@ -1023,7 +1029,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		);
 		assert.equal(await transactions().locator('tbody > tr').count(), 3);
 		assert.equal(await drafts().locator('tbody > tr').count(), 1);
-		assert.equal(normalized(await drafts().locator('td.amount-cell').first().textContent()), 'Unknown');
+		assert.equal(normalized(await drafts().locator('.amount-cell').first().textContent()), 'Unknown');
 		assert.ok((await drafts().locator('.row-issues li').count()) > 0);
 		await page.getByTestId('statement-warnings').waitFor();
 		await clickCommand(page.getByRole('button', { name: 'Save', exact: true }), 'save');
@@ -1040,7 +1046,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		await drafts().waitFor();
 		assert.equal(await transactions().locator('tbody > tr').count(), 3);
 		assert.equal(await drafts().locator('tbody > tr').count(), 1);
-		assert.equal(normalized(await drafts().locator('td.amount-cell').first().textContent()), 'Unknown');
+		assert.equal(normalized(await drafts().locator('.amount-cell').first().textContent()), 'Unknown');
 		await currentApplication().evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(680, 800));
 		await settle();
 		const region = page.getByRole('region', { name: 'Transactions table, horizontally scrollable', exact: true });
@@ -1053,7 +1059,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 	await check('airwallex-records-and-selected-partial-view-survive-failed-inputs-and-native-chooser-cancellation', async () => {
 		const before = await bankRecords();
 		const savedHash = await fingerprint(workspaceFile);
-		const selected = await page.getByLabel('Statement', { exact: true }).inputValue();
+		const selected = await page.locator('wig-dropdown[data-statement-id]').getAttribute('data-statement-id');
 		for (const [file, status, code] of [
 			[unknown, 'unsupported'],
 			[malformed, 'failed', 'pdf-invalid'],
@@ -1064,10 +1070,10 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 			assert.equal(result.workspace.dirty, false);
 			assert.deepEqual(await bankRecords(), before);
 			assert.equal(await fingerprint(workspaceFile), savedHash);
-			assert.equal(await page.getByLabel('Statement', { exact: true }).inputValue(), selected);
+			assert.equal(await page.locator('wig-dropdown[data-statement-id]').getAttribute('data-statement-id'), selected);
 			assert.equal(await transactions().locator('tbody > tr').count(), 3);
 			assert.equal(await drafts().locator('tbody > tr').count(), 1);
-			assert.equal(normalized(await drafts().locator('td.amount-cell').first().textContent()), 'Unknown');
+			assert.equal(normalized(await drafts().locator('.amount-cell').first().textContent()), 'Unknown');
 		}
 	});
 	await check('airwallex-uncertain-real-ocr-retains-visible-drafts-without-inventing-financial-values-through-save-and-restart', async () => {

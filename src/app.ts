@@ -1,8 +1,10 @@
-import { Component, computed, DestroyRef, inject, signal } from '@angular/core';
+import { Component, computed, DestroyRef, inject, signal, viewChild } from '@angular/core';
 import { bootstrapApplication } from '@angular/platform-browser';
+import { WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigInputComponent } from '@wigtertainment-ltd/comp-lib';
 import { DocumentImports } from './app/document-imports.js';
 import { ExportSettings } from './app/export-settings.js';
 import { LocalOcrSettings } from './app/local-ocr-settings.js';
+import { InputLength } from './app/input-length.js';
 import { MatchSuggestions } from './app/match-suggestions.js';
 import type { WorkspaceBridge, WorkspaceCommand, WorkspaceState } from './shared/protocol.js';
 import { StatementImports } from './statement-imports.js';
@@ -12,13 +14,16 @@ declare global { interface Window { receiptmatch: WorkspaceBridge; } }
 type WorkspaceSection = 'sources' | 'matches' | 'export-settings' | 'settings';
 
 @Component({
-  selector: 'app-root', standalone: true, imports: [StatementImports, DocumentImports, MatchSuggestions, ExportSettings, LocalOcrSettings],
+  selector: 'app-root', standalone: true,
+  imports: [StatementImports, DocumentImports, MatchSuggestions, ExportSettings, LocalOcrSettings, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigInputComponent, InputLength],
   templateUrl: './app/workspace-shell.html'
 })
 class ReceiptMatchApp {
   readonly state = signal<WorkspaceState>({ workspace: null, busy: true, error: null, statementImport: null, importOutcome: null, documentImport: null, documentOutcome: null });
   readonly commandError = signal<string | null>(null);
   readonly welcomeSettings = signal(false);
+  private readonly welcomeSettingsButton = viewChild<WigButtonComponent>('welcomeSettingsButton');
+  readonly fileLocation = computed(() => [{ id: 'location', header: 'File location', content: this.state().workspace?.filePath ?? undefined }]);
   private readonly navigation = signal<{ loadRevision: number; section: WorkspaceSection } | null>(null);
   readonly section = computed(() => {
     const navigation = this.navigation();
@@ -66,11 +71,12 @@ class ReceiptMatchApp {
     this.welcomeSettings.set(open);
     requestAnimationFrame(() => {
       if (!this.disposed && !this.state().workspace && this.welcomeSettings() === open) {
-        document.getElementById(open ? 'settings-heading' : 'welcome-settings-button')?.focus();
+        if (open) document.getElementById('settings-heading')?.focus();
+        else this.welcomeSettingsButton()?.nativeButton.focus();
       }
     });
   }
-  rename(event: Event) { void this.run({ type: 'rename', name: (event.target as HTMLInputElement).value }); }
+  rename(name: string) { void this.run({ type: 'rename', name }); }
 }
 
 void bootstrapApplication(ReceiptMatchApp);

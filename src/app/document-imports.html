@@ -4,7 +4,7 @@
 			<h2 id="documents-heading">Supporting documents</h2>
 			<p class="source-panel-count">{{ summaries().length }} {{ summaries().length === 1 ? 'folder analysis' : 'folder analyses' }}</p>
 		</div>
-		<button type="button" class="button-primary compact" (click)="workspaceCommand.emit({ type: 'import-documents' })" [disabled]="state().busy">Choose folder</button>
+		<wig-button label="Choose folder" (click)="workspaceCommand.emit({ type: 'import-documents' })" [disabled]="state().busy" />
 	</div>
 	@if (state().documentImport; as active) {
 		<div class="import-progress">
@@ -14,7 +14,7 @@
 					<p class="muted">{{ progress.completedFiles }} {{ progress.completedFiles === 1 ? 'file' : 'files' }} processed</p>
 				}
 			</div>
-			<button class="button-secondary" (click)="workspaceCommand.emit({ type: 'cancel-import' })" [disabled]="active.cancelling">Cancel analysis</button>
+			<wig-button label="Cancel analysis" severity="secondary" (click)="workspaceCommand.emit({ type: 'cancel-import' })" [disabled]="active.cancelling" />
 		</div>
 	}
 	@if (state().documentOutcome; as outcome) {
@@ -42,13 +42,10 @@
 	@if (summaries().length) {
 		<div class="analysis-history">
 			<h3>Analysis history</h3>
-			@for (report of summaries(); track workspaceKey() + report.id) {
-				<details class="report-details" [open]="isReportOpen(report.id)" (toggle)="toggleReport(report.id, $event)">
-					<summary>
-						<span class="summary-name">{{ basename(report.folderPath) }}</span>
-						<span class="summary-status muted">&nbsp;· {{ report.status === 'cancelled' ? 'Cancelled' : 'Finished' }} · {{ reportCounts(report) }}</span>
-					</summary>
-					@if (isReportOpen(report.id)) {
+			@for (entry of reportItems(); track workspaceKey() + entry.id) {
+				<wig-accordion #reportAccordion class="report-details" [items]="[entry]" [value]="entry.id">
+					<ng-template wigTemplate="report" let-item="item">
+						@let report = item.data;
 						<div class="report-body">
 							<p class="file-location">{{ report.folderPath }}</p>
 							@if (records()?.get(report.id); as record) {
@@ -88,15 +85,15 @@
 													@let expanded = openFileIds().has(fileKey);
 													<tr>
 														<th scope="row">
-															<button
-																type="button"
-																class="document-file-button"
-																[attr.aria-expanded]="expanded"
-																[attr.aria-controls]="fileKey"
+															<wig-button
+																[link]="true"
+																styleClass="document-file-button"
+																[ariaExpanded]="expanded"
+																[ariaControls]="fileKey"
 																(click)="toggleFile(fileKey)"
 															>
 																{{ basename(filePath(file)) }}
-															</button>
+															</wig-button>
 														</th>
 														<td class="document-amount">
 															@if (row.total; as total) {
@@ -171,14 +168,14 @@
 									<p class="muted">No file results were recorded.</p>
 								}
 							} @else if (detailsError()) {
-								<p role="alert">Document details could not be loaded.</p>
-								<button class="button-secondary" (click)="retryDetails()">Retry details</button>
+								<wig-alert type="error" text="Document details could not be loaded." />
+								<wig-button label="Retry details" severity="secondary" (click)="retryDetails()" />
 							} @else {
 								<p role="status">Loading document details…</p>
 							}
 						</div>
-					}
-				</details>
+					</ng-template>
+				</wig-accordion>
 			}
 		</div>
 	} @else {

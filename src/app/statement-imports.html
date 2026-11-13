@@ -5,7 +5,7 @@
 			@let count = state().workspace?.imports?.length ?? 0;
 			<p class="source-panel-count">{{ count }} {{ count === 1 ? 'statement' : 'statements' }}</p>
 		</div>
-		<button type="button" class="button-primary compact" (click)="workspaceCommand.emit({ type: 'import-statement' })" [disabled]="state().busy">Import statement</button>
+		<wig-button label="Import statement" (click)="workspaceCommand.emit({ type: 'import-statement' })" [disabled]="state().busy" />
 	</div>
 	@if (state().statementImport; as active) {
 		<div class="import-progress" data-testid="import-progress" role="status" aria-live="polite">
@@ -15,7 +15,7 @@
 					<p class="muted">{{ active.progress!.completedPages }} of {{ active.progress!.pageCount }} pages completed</p>
 				}
 			</div>
-			<button class="button-secondary" (click)="workspaceCommand.emit({type:'cancel-import'})" [disabled]="active.cancelling">Cancel import</button>
+			<wig-button label="Cancel import" severity="secondary" (click)="workspaceCommand.emit({type:'cancel-import'})" [disabled]="active.cancelling" />
 		</div>
 	}
 	@if (state().importOutcome; as outcome) {
@@ -59,21 +59,23 @@
 	} @else if (loading()) {
 		<p class="details-loading" role="status">Loading statement details…</p>
 	} @else if (detailsError()) {
-		<div class="details-error" role="alert">
-			<p>{{ detailsError() }}</p>
-			<button class="button-secondary" (click)="retryDetails()" [disabled]="state().busy">Retry details</button>
-		</div>
+		<wig-alert class="details-error" type="error" [text]="detailsError() ?? undefined">
+			<wig-button actions label="Retry details" severity="secondary" (click)="retryDetails()" [disabled]="state().busy" />
+		</wig-alert>
 	} @else {
 		<div class="statement-picker">
-			<label for="statement-select">Statement</label
-			><select id="statement-select" (change)="select($event)" [disabled]="state().busy">
-				@for (record of records(); track record.id) {
-					<option [value]="record.id" [selected]="record.id === selectedId()">
-						{{ filename(record.filePath) }} · {{ statementCounts().get(record.id) ?? record.result.transactions.length }} transactions ·
-						{{ state().workspace?.supersededStatements?.includes(record.id) ? 'Archived analysis' : record.result.status === 'partial' ? 'Partial import' : 'Complete import' }}
-					</option>
-				}
-			</select>
+			<label for="statement-select">Statement</label>
+			<wig-dropdown
+				inputId="statement-select"
+				ariaLabel="Statement"
+				[options]="statementOptions()"
+				optionLabel="label"
+				optionValue="id"
+				[selectedOption]="selectedId()"
+				[attr.data-statement-id]="selectedId()"
+				(selectedOptionChange)="select($event)"
+				[disabled]="state().busy"
+			/>
 		</div>
 		@for (record of displayedStatements(); track record.id) {
 			@let archived = state().workspace?.supersededStatements?.includes(record.id);
@@ -92,21 +94,22 @@
 						[loadRevision]="state().workspace?.loadRevision"
 					/>
 				</div>
-				<details class="source-location">
-					<summary>Statement details</summary>
-					@if (record.result.adapter; as adapter) {
-						<p>Bank · {{ adapter.bankId === 'revolut' ? 'Revolut' : adapter.bankId === 'airwallex' ? 'Airwallex' : adapter.bankId }}</p>
-					}
-					<p class="file-location">{{ record.filePath }}</p>
-					<dl class="account-list">
-						@for (account of record.result.accountSections; track account.sectionId) {
-							<div>
-								<dt>Account · {{ account.currency.value }}</dt>
-								<dd>{{ account.accountReference?.value || 'Unknown account reference' }}</dd>
-							</div>
+				<wig-accordion class="source-location" [items]="statementInfo" [value]="null">
+					<ng-template wigTemplate="statement">
+						@if (record.result.adapter; as adapter) {
+							<p>Bank · {{ adapter.bankId === 'revolut' ? 'Revolut' : adapter.bankId === 'airwallex' ? 'Airwallex' : adapter.bankId }}</p>
 						}
-					</dl>
-				</details>
+						<p class="file-location">{{ record.filePath }}</p>
+						<dl class="account-list">
+							@for (account of record.result.accountSections; track account.sectionId) {
+								<div>
+									<dt>Account · {{ account.currency.value }}</dt>
+									<dd>{{ account.accountReference?.value || 'Unknown account reference' }}</dd>
+								</div>
+							}
+						</dl>
+					</ng-template>
+				</wig-accordion>
 			</div>
 			@if (record.result.unresolvedDrafts.length || generalIssues().length) {
 				<aside class="statement-warnings" aria-labelledby="statement-notes-heading" data-testid="statement-warnings">
@@ -140,29 +143,29 @@
 							<dd>{{ money(correction.original.accountAmount?.value ?? null) }}</dd>
 						</div>
 					</dl>
-					<form (submit)="applyCorrection($event)">
+					<form #correctionFields (submit)="applyCorrection(correctionFields, $event)" (keydown.enter)="submitFromField(correctionFields, $event)">
 						<div class="bank-correction-fields">
 							<label for="bank-correction-date">Booking date</label>
 							<input id="bank-correction-date" name="booking-date" type="date" [value]="correction.row.bookingDate?.value ?? ''" [disabled]="state().busy" />
 							<label for="bank-correction-amount">Account amount ({{ correction.currency }})</label>
-							<input
-								id="bank-correction-amount"
+							<wig-input
+								inputId="bank-correction-amount"
 								name="account-amount"
 								type="text"
-								inputmode="decimal"
-								maxlength="130"
-								aria-describedby="bank-correction-amount-hint"
+								inputMode="decimal"
+								[appInputLength]="130"
+								ariaDescribedBy="bank-correction-amount-hint"
 								[value]="amountInput(correction.row.accountAmount?.value)"
 								[disabled]="state().busy"
 							/>
 							<p id="bank-correction-amount-hint" class="muted">Use {{ decimalExample }} for money in and −{{ decimalExample }} for money out.</p>
 						</div>
 						@if (correctionError(); as error) {
-							<p class="bank-correction-error" role="alert">{{ error }}</p>
+							<wig-alert class="bank-correction-error" type="error" [text]="error" />
 						}
 						<div class="bank-correction-actions">
-							<button type="submit" class="button-primary compact" [disabled]="state().busy">Apply correction</button>
-							<button type="button" class="button-secondary compact" (click)="closeCorrection()" [disabled]="state().busy">Close</button>
+							<wig-button label="Apply correction" [disabled]="state().busy" (click)="applyCorrection(correctionFields)" />
+							<wig-button label="Close" severity="secondary" (click)="closeCorrection()" [disabled]="state().busy" />
 						</div>
 					</form>
 					@if (correctionApplied() && !correctionError() && !state().error) {
@@ -174,230 +177,192 @@
 				<h3>Transactions</h3>
 				<span>{{ record.result.transactions.length }}</span>
 			</div>
-			<div class="table-scroll" tabindex="0" role="region" aria-label="Transactions table, horizontally scrollable">
-				<table data-testid="transactions-table">
-					<caption class="sr-only">
-						Transactions
-					</caption>
-					<thead>
-						<tr>
-							<th scope="col">Booking date</th>
-							<th scope="col">Description</th>
-							<th scope="col" class="amount-cell">Account amount</th>
-							<th scope="col">Direction</th>
-							@if (hasOriginalTransactions()) {
-								<th scope="col" class="amount-cell">Reported original amount</th>
+			@if (record.result.transactions.length) {
+				<wig-table
+					class="statement-data"
+					data-testid="transactions-table"
+					ariaLabel="Transactions table, horizontally scrollable"
+					[data]="record.result.transactions"
+					[config]="transactionColumns()"
+					[insideCard]="false"
+				>
+					<ng-template wigTemplate="booking-date" let-row="item">
+						<span class="date-cell" [class.missing-value]="!row.bookingDate">{{ date(row.bookingDate?.value ?? null) }}</span>
+					</ng-template>
+					<ng-template wigTemplate="description" let-row="item">
+						@let correctionId = rowIds().get(row.rowId);
+						<div class="description-cell">
+							<p class="row-description" [id]="'bank-description-' + correctionId" tabindex="-1">{{ row.description.value }}</p>
+							@if (correctionId && corrections().has(correctionId)) {
+								<span class="source-status">Corrected</span>
 							}
-						</tr>
-					</thead>
-					<tbody>
-						@for (row of record.result.transactions; track row.rowId) {
-							@let correctionId = rowIds().get(row.rowId);
-							<tr>
-								<td class="date-cell">{{ date(row.bookingDate.value) }}</td>
-								<td class="description-cell">
-									<p class="row-description" [id]="'bank-description-' + correctionId" tabindex="-1">{{ row.description.value }}</p>
-									@if (correctionId && corrections().has(correctionId)) {
-										<span class="source-status">Corrected</span>
-									}
-									@if (correctionId && (overlaps().has(correctionId) || duplicateStatus().has(correctionId))) {
-										<details class="source-details" (toggle)="toggleOverlap(correctionId, $event)">
-											<summary [attr.aria-describedby]="'bank-description-' + correctionId">
-												<span class="source-status source-status-warning">{{ duplicateStatus().get(correctionId) ?? 'Possible duplicate' }}</span>
-											</summary>
-											<ul class="source-detail-body evidence-list">
-												@for (pair of expandedDuplicates().get(correctionId); track pair.other.transactionId) {
-													<li>
-														@let other = pair.other;
-														<button
-															type="button"
-															class="button-secondary compact"
-															[title]="other.filePath"
-															[disabled]="state().busy"
-															(click)="openOverlap(other)"
-														>
-															{{ filename(other.filePath) }} · Transaction {{ other.transactionNumber }}
-														</button>
-														@if (pair.evidence; as overlap) {
-															<p>{{ overlap.basis === 'transaction-id' ? 'Same transaction ID' : 'Same booking date, amount and description' }}</p>
-															@if (!overlap.accountConfirmed) {
-																<p class="muted">Account could not be confirmed.</p>
-															}
-														}
-														@if (pair.decision; as decision) {
-															<p>
-																<strong
-																	>{{ !decision.primaryId ? 'Both bookings kept' : decision.primaryId === correctionId ? 'This is the leading booking' : 'This booking is excluded' }}</strong
-																>
-															</p>
-															@if (decision.archivedReview; as review) {
-																<p>
-																	{{ review.documentId ? 'The excluded booking’s document assignment was retained.' : 'The excluded booking’s review completion was retained.' }}
-																</p>
-															}
-															@if (decision.primaryId) {
-																<p class="muted">
-																	Undo restores the excluded booking for matching and CSV export. Any previous approval must be renewed.
-																</p>
-															}
-															<button
-																type="button"
-																class="button-secondary compact"
-																[disabled]="state().busy"
-																(click)="chooseDuplicate(correctionId, other.transactionId, 'clear')"
-															>
-																Undo decision
-															</button>
-														} @else if (excludedBookings().has(correctionId) || excludedBookings().has(other.transactionId)) {
-															<p class="muted">Undo the existing exclusion before deciding on this pair.</p>
-														} @else {
-															@let pending = pendingExclusion();
-															@if (pending && pending.transactionId === correctionId && pending.otherTransactionId === other.transactionId) {
-																<p id="duplicate-exclusion" tabindex="-1">
-																	{{ pending.action === 'keep-first' ? 'The other booking' : 'This booking' }} will be excluded from matching and
-																	CSV export. Its review and document assignment stay with that booking. Any approval on it is revoked.
-																</p>
-																<div class="bank-correction-actions">
-																	<button type="button" class="button-primary compact" [disabled]="state().busy" (click)="confirmExclusion()">
-																		Confirm exclusion
-																	</button>
-																	<button type="button" class="button-secondary compact" (click)="cancelExclusion()">Cancel</button>
-																</div>
-															} @else {
-																<div class="bank-correction-actions">
-																	<button
-																		type="button"
-																		class="button-secondary compact"
-																		[disabled]="state().busy"
-																		(click)="chooseDuplicate(correctionId, other.transactionId, 'separate')"
-																	>
-																		Keep both
-																	</button>
-																	<button
-																		type="button"
-																		class="button-secondary compact"
-																		[id]="'duplicate-' + correctionId + '-' + other.transactionId + '-keep-first'"
-																		[disabled]="state().busy || leadingBookings().has(other.transactionId)"
-																		(click)="chooseDuplicate(correctionId, other.transactionId, 'keep-first')"
-																	>
-																		Keep this booking
-																	</button>
-																	<button
-																		type="button"
-																		class="button-secondary compact"
-																		[id]="'duplicate-' + correctionId + '-' + other.transactionId + '-keep-second'"
-																		[disabled]="state().busy || leadingBookings().has(correctionId)"
-																		(click)="chooseDuplicate(correctionId, other.transactionId, 'keep-second')"
-																	>
-																		Keep the other booking
-																	</button>
-																</div>
-																@if (leadingBookings().has(correctionId) || leadingBookings().has(other.transactionId)) {
-																	<p class="muted">To exclude a leading booking, undo its other duplicate decisions first.</p>
-																}
-															}
-														}
-													</li>
+							@if (correctionId && (overlaps().has(correctionId) || duplicateStatus().has(correctionId))) {
+								<details class="source-details" (toggle)="toggleOverlap(correctionId, $event)">
+									<summary [attr.aria-describedby]="'bank-description-' + correctionId">
+										<span class="source-status source-status-warning">{{ duplicateStatus().get(correctionId) ?? 'Possible duplicate' }}</span>
+									</summary>
+									<ul class="source-detail-body evidence-list">
+										@for (pair of expandedDuplicates().get(correctionId); track pair.other.transactionId) {
+											<li>
+												@let other = pair.other;
+												<wig-button severity="secondary" [buttonTitle]="other.filePath" [disabled]="state().busy" (click)="openOverlap(other)">
+													{{ filename(other.filePath) }} · Transaction {{ other.transactionNumber }}
+												</wig-button>
+												@if (pair.evidence; as overlap) {
+													<p>{{ overlap.basis === 'transaction-id' ? 'Same transaction ID' : 'Same booking date, amount and description' }}</p>
+													@if (!overlap.accountConfirmed) {
+														<p class="muted">Account could not be confirmed.</p>
+													}
 												}
-											</ul>
-										</details>
-									}
-									<app-row-source [row]="originalRows().get(row.rowId) ?? row" [record]="record" />
-									<button
-										type="button"
-										class="bank-correction-link"
-										[id]="'bank-correction-' + correctionId"
-										[attr.aria-describedby]="'bank-description-' + correctionId"
-										[attr.aria-controls]="editing()?.id === correctionId ? 'bank-correction-editor' : null"
-										[attr.aria-expanded]="editing()?.id === correctionId"
-										[disabled]="state().busy"
-										(click)="startCorrection(row.rowId)"
-									>
-										Correct booking details
-									</button>
-								</td>
-								<td class="amount-cell">{{ money(row.accountAmount.value) }}</td>
-								<td>{{ direction(row.direction) }}</td>
-								@if (hasOriginalTransactions()) {
-									<td class="amount-cell">{{ money(row.reportedOriginalAmount?.value ?? null) }}</td>
-								}
-							</tr>
-						} @empty {
-							<tr>
-								<td [attr.colspan]="hasOriginalTransactions() ? 5 : 4" class="empty-table">No transactions reported in this statement.</td>
-							</tr>
-						}
-					</tbody>
-				</table>
-			</div>
+												@if (pair.decision; as decision) {
+													<p>
+														<strong
+															>{{ !decision.primaryId ? 'Both bookings kept' : decision.primaryId === correctionId ? 'This is the leading booking' : 'This booking is excluded' }}</strong
+														>
+													</p>
+													@if (decision.archivedReview; as review) {
+														<p>
+															{{ review.documentId ? 'The excluded booking’s document assignment was retained.' : 'The excluded booking’s review completion was retained.' }}
+														</p>
+													}
+													@if (decision.primaryId) {
+														<p class="muted">Undo restores the excluded booking for matching and CSV export. Any previous approval must be renewed.</p>
+													}
+													<wig-button
+														label="Undo decision"
+														severity="secondary"
+														[disabled]="state().busy"
+														(click)="chooseDuplicate(correctionId, other.transactionId, 'clear')"
+													/>
+												} @else if (excludedBookings().has(correctionId) || excludedBookings().has(other.transactionId)) {
+													<p class="muted">Undo the existing exclusion before deciding on this pair.</p>
+												} @else {
+													@let pending = pendingExclusion();
+													@if (pending && pending.transactionId === correctionId && pending.otherTransactionId === other.transactionId) {
+														<p id="duplicate-exclusion" tabindex="-1">
+															{{ pending.action === 'keep-first' ? 'The other booking' : 'This booking' }} will be excluded from matching and CSV
+															export. Its review and document assignment stay with that booking. Any approval on it is revoked.
+														</p>
+														<div class="bank-correction-actions">
+															<wig-button label="Confirm exclusion" [disabled]="state().busy" (click)="confirmExclusion()" />
+															<wig-button label="Cancel" severity="secondary" (click)="cancelExclusion()" />
+														</div>
+													} @else {
+														<div class="bank-correction-actions">
+															<wig-button
+																label="Keep both"
+																severity="secondary"
+																[disabled]="state().busy"
+																(click)="chooseDuplicate(correctionId, other.transactionId, 'separate')"
+															/>
+															<wig-button
+																label="Keep this booking"
+																severity="secondary"
+																[id]="'duplicate-' + correctionId + '-' + other.transactionId + '-keep-first'"
+																[disabled]="state().busy || leadingBookings().has(other.transactionId)"
+																(click)="chooseDuplicate(correctionId, other.transactionId, 'keep-first')"
+															/>
+															<wig-button
+																label="Keep the other booking"
+																severity="secondary"
+																[id]="'duplicate-' + correctionId + '-' + other.transactionId + '-keep-second'"
+																[disabled]="state().busy || leadingBookings().has(correctionId)"
+																(click)="chooseDuplicate(correctionId, other.transactionId, 'keep-second')"
+															/>
+														</div>
+														@if (leadingBookings().has(correctionId) || leadingBookings().has(other.transactionId)) {
+															<p class="muted">To exclude a leading booking, undo its other duplicate decisions first.</p>
+														}
+													}
+												}
+											</li>
+										}
+									</ul>
+								</details>
+							}
+							<app-row-source [row]="originalRows().get(row.rowId) ?? row" [record]="record" />
+							<wig-button
+								label="Correct booking details"
+								[link]="true"
+								styleClass="bank-correction-link"
+								[id]="'bank-correction-' + correctionId"
+								[ariaDescribedBy]="'bank-description-' + correctionId"
+								[ariaControls]="editing()?.id === correctionId ? 'bank-correction-editor' : null"
+								[ariaExpanded]="editing()?.id === correctionId"
+								[disabled]="state().busy"
+								(click)="startCorrection(row.rowId)"
+							/>
+						</div>
+					</ng-template>
+					<ng-template wigTemplate="account-amount" let-row="item">
+						<span class="amount-cell" [class.missing-value]="!row.accountAmount">{{ money(row.accountAmount?.value ?? null) }}</span>
+					</ng-template>
+					<ng-template wigTemplate="direction" let-row="item">{{ direction(row.direction) }}</ng-template>
+					<ng-template wigTemplate="original-amount" let-row="item">
+						<span class="amount-cell">{{ money(row.reportedOriginalAmount?.value ?? null) }}</span>
+					</ng-template>
+				</wig-table>
+			} @else {
+				<p class="empty-table">No transactions reported in this statement.</p>
+			}
 			<div class="table-heading">
 				<h3>Unresolved drafts</h3>
 				<span>{{ record.result.unresolvedDrafts.length }}</span>
 			</div>
-			<div class="table-scroll" tabindex="0" role="region" aria-label="Unresolved drafts table, horizontally scrollable">
-				<table data-testid="drafts-table">
-					<caption class="sr-only">
-						Unresolved drafts
-					</caption>
-					<thead>
-						<tr>
-							<th scope="col">Booking date</th>
-							<th scope="col">Description and issues</th>
-							<th scope="col" class="amount-cell">Account amount</th>
-							<th scope="col">Direction</th>
-							@if (hasOriginalDrafts()) {
-								<th scope="col" class="amount-cell">Reported original amount</th>
+			@if (record.result.unresolvedDrafts.length) {
+				<wig-table
+					class="statement-data"
+					data-testid="drafts-table"
+					ariaLabel="Unresolved drafts table, horizontally scrollable"
+					[data]="record.result.unresolvedDrafts"
+					[config]="draftColumns()"
+					[insideCard]="false"
+				>
+					<ng-template wigTemplate="booking-date" let-row="item">
+						<span class="date-cell" [class.missing-value]="!row.bookingDate">{{ date(row.bookingDate?.value ?? null) }}</span>
+					</ng-template>
+					<ng-template wigTemplate="description" let-row="item">
+						@let correctionId = rowIds().get(row.rowId);
+						<div class="description-cell">
+							<p class="row-description" [id]="'bank-description-' + correctionId">{{ row.description?.value || 'Unknown' }}</p>
+							@if (correctionId && corrections().has(correctionId)) {
+								<span class="source-status">Corrected</span>
 							}
-						</tr>
-					</thead>
-					<tbody>
-						@for (row of record.result.unresolvedDrafts; track row.rowId) {
-							@let correctionId = rowIds().get(row.rowId);
-							<tr>
-								<td class="date-cell" [class.missing-value]="!row.bookingDate">{{ date(row.bookingDate?.value ?? null) }}</td>
-								<td class="description-cell">
-									<p class="row-description" [id]="'bank-description-' + correctionId">{{ row.description?.value || 'Unknown' }}</p>
-									@if (correctionId && corrections().has(correctionId)) {
-										<span class="source-status">Corrected</span>
-									}
-									<ul class="row-issues">
-										@for (issue of unresolvedIssues(row); track $index) {
-											<li>
-												@if (issueContext(record, issue); as context) {
-													<strong>{{ context }}: </strong>
-												}
-												{{ issue.message }}
-											</li>
+							<ul class="row-issues">
+								@for (issue of unresolvedIssues(row); track $index) {
+									<li>
+										@if (issueContext(record, issue); as context) {
+											<strong>{{ context }}: </strong>
 										}
-									</ul>
-									<app-row-source [row]="originalRows().get(row.rowId) ?? row" [record]="record" />
-									<button
-										type="button"
-										class="bank-correction-link"
-										[id]="'bank-correction-' + correctionId"
-										[attr.aria-describedby]="'bank-description-' + correctionId"
-										[attr.aria-controls]="editing()?.id === correctionId ? 'bank-correction-editor' : null"
-										[attr.aria-expanded]="editing()?.id === correctionId"
-										[disabled]="state().busy"
-										(click)="startCorrection(row.rowId)"
-									>
-										Correct booking details
-									</button>
-								</td>
-								<td class="amount-cell" [class.missing-value]="!row.accountAmount">{{ money(row.accountAmount?.value ?? null) }}</td>
-								<td>{{ direction(row.direction) }}</td>
-								@if (hasOriginalDrafts()) {
-									<td class="amount-cell">{{ money(row.reportedOriginalAmount?.value ?? null) }}</td>
+										{{ issue.message }}
+									</li>
 								}
-							</tr>
-						} @empty {
-							<tr>
-								<td [attr.colspan]="hasOriginalDrafts() ? 5 : 4" class="empty-table">No unresolved drafts in this statement.</td>
-							</tr>
-						}
-					</tbody>
-				</table>
-			</div>
+							</ul>
+							<app-row-source [row]="originalRows().get(row.rowId) ?? row" [record]="record" />
+							<wig-button
+								label="Correct booking details"
+								[link]="true"
+								styleClass="bank-correction-link"
+								[id]="'bank-correction-' + correctionId"
+								[ariaDescribedBy]="'bank-description-' + correctionId"
+								[ariaControls]="editing()?.id === correctionId ? 'bank-correction-editor' : null"
+								[ariaExpanded]="editing()?.id === correctionId"
+								[disabled]="state().busy"
+								(click)="startCorrection(row.rowId)"
+							/>
+						</div>
+					</ng-template>
+					<ng-template wigTemplate="account-amount" let-row="item">
+						<span class="amount-cell" [class.missing-value]="!row.accountAmount">{{ money(row.accountAmount?.value ?? null) }}</span>
+					</ng-template>
+					<ng-template wigTemplate="direction" let-row="item">{{ direction(row.direction) }}</ng-template>
+					<ng-template wigTemplate="original-amount" let-row="item">
+						<span class="amount-cell">{{ money(row.reportedOriginalAmount?.value ?? null) }}</span>
+					</ng-template>
+				</wig-table>
+			} @else {
+				<p class="empty-table">No unresolved drafts in this statement.</p>
+			}
 		}
 	}
 </section>

@@ -1,5 +1,7 @@
 import { Component, computed, effect, input, signal, untracked } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
+import { WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigCheckboxComponent, WigDropdownComponent, WigTagComponent,
+	WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
 import { formatCalendarDate, formatMoney } from '../shared/display.js';
 import { formatDocumentTotal } from '../shared/document-display.js';
 import { applyDocumentCorrections, documentCorrectionKey } from '../shared/document-corrections.js';
@@ -9,13 +11,16 @@ import type { MatchCandidateView, MatchDetails, MatchReview, MatchSummary } from
 import type { StoredSupportingDocument } from '../shared/workspace-documents.js';
 import { DocumentAnalysis } from './document-imports.js';
 import { OriginalPreviewButton } from './original-preview-button.js';
+import { ButtonPressed } from './button-pressed.js';
 
 type MatchStatus = MatchSummary['status'];
 type Filter = 'all' | MatchStatus;
 interface ReviewDocument { id: string; name: string; path: string; total: string | null; record: StoredSupportingDocument; }
 
 @Component({
-	selector: 'app-match-suggestions', standalone: true, imports: [NgTemplateOutlet, DocumentAnalysis, OriginalPreviewButton], templateUrl: './match-suggestions.html',
+	selector: 'app-match-suggestions', standalone: true, templateUrl: './match-suggestions.html',
+	imports: [NgTemplateOutlet, DocumentAnalysis, OriginalPreviewButton, ButtonPressed, WigAccordionComponent, WigAlertComponent, WigButtonComponent,
+		WigCheckboxComponent, WigDropdownComponent, WigTagComponent, WigTemplateDirective],
 })
 export class MatchSuggestions {
 	readonly workspace = input.required<WorkspaceView>();
@@ -132,6 +137,15 @@ export class MatchSuggestions {
 		return duplicates;
 	});
 	readonly owners = computed(() => new Map((this.rows() ?? []).flatMap(row => row.review.status === 'assigned' ? [[row.review.documentId, row] as const] : [])));
+	readonly documentOptions = computed(() => {
+		const transaction = this.selectedRow()?.transactionId;
+		const owners = this.owners();
+		return (this.documents() ?? []).map(item => {
+			const owner = owners.get(item.id);
+			const unavailable = owner && owner.transactionId !== transaction;
+			return { id: item.id, label: this.documentLabel(item, unavailable ? owner : undefined), disabled: !!unavailable };
+		});
+	});
 	readonly assignedDocument = computed(() => {
 		const review = this.selectedRow()?.review;
 		return review?.status === 'assigned' ? this.documents()?.find(item => item.id === review.documentId) : null;
@@ -142,7 +156,6 @@ export class MatchSuggestions {
 		return this.assignedDocument()?.id ?? '';
 	});
 	readonly selectedDocument = computed(() => this.documents()?.find(item => item.id === this.selectedDocumentId()));
-	readonly previewDocumentId = signal<string | null>(null);
 	private readonly candidateTransactionId = computed(() => {
 		const row = this.selectedRow();
 		return row?.candidateCount ? row.transactionId : null;
@@ -210,41 +223,36 @@ export class MatchSuggestions {
 		this.filterState.set({ filter, loadRevision: this.workspace().loadRevision });
 		if (previous !== this.selectedRow()?.transactionId) this.resetDetail();
 	}
-	selectTransaction(transactionId: string, event: MouseEvent) {
+	selectTransaction(transactionId: string, event: Event) {
 		const { loadRevision } = this.workspace();
 		if (transactionId !== this.selectedRow()?.transactionId) this.resetDetail();
 		this.selected.set({ transactionId, loadRevision });
 		const stacked = window.matchMedia('(width < 1000px)').matches;
-		if (event.detail === 0 || stacked) requestAnimationFrame(() => {
+		if ((event instanceof MouseEvent && event.detail === 0) || stacked) requestAnimationFrame(() => {
 			if (this.active() && this.workspace().loadRevision === loadRevision && this.selectedRow()?.transactionId === transactionId) {
 				document.getElementById('match-detail-heading')?.focus({ preventScroll: !stacked });
 			}
 		});
 	}
 	private resetDetail() {
-		this.previewDocumentId.set(null);
 		const panel = document.getElementById('match-detail-panel');
 		if (panel) panel.scrollTop = 0;
 	}
-	focusSelectedTransaction(transactionId: string) { document.getElementById('match-transaction-' + transactionId)?.focus(); }
+	focusSelectedTransaction(transactionId: string) { document.getElementById('match-transaction-' + transactionId)?.querySelector('button')?.focus(); }
 	documentLabel(item: ReviewDocument, owner?: MatchSummary) {
 		const parts = [this.duplicateDocumentNames().has(item.name) ? item.path : item.name];
 		if (item.total) parts.push(item.total);
 		if (owner) parts.push('Assigned to ' + this.transactionName(owner.description));
 		return parts.join(' · ');
 	}
-	chooseDocument(event: Event) {
+	chooseDocument(id: string | null) {
 		const row = this.selectedRow();
-		this.previewDocumentId.set(null);
-		if (row) this.documentDraft.set({ loadRevision: this.workspace().loadRevision, transactionId: row.transactionId, id: (event.target as HTMLSelectElement).value });
+		if (row) this.documentDraft.set({ loadRevision: this.workspace().loadRevision, transactionId: row.transactionId, id: id ?? '' });
 	}
-	toggleDocumentPreview(documentId: string, event: Event) {
-		if (this.selectedDocumentId() === documentId) this.previewDocumentId.set((event.target as HTMLDetailsElement).open ? documentId : null);
-	}
-	selectForApproval(row: MatchSummary, event: Event) {
+	selectForApproval(row: MatchSummary, checked: boolean) {
 		if (this.reviewDisabled()) return;
 		const rows = new Map(this.approvalSelections());
-		if (!(event.target as HTMLInputElement).checked) rows.delete(row.transactionId);
+		if (!checked) rows.delete(row.transactionId);
 		else if (row.approvalSelection && !row.approval) rows.set(row.transactionId, row.approvalSelection);
 		this.batchSelection.set({ loadRevision: this.workspace().loadRevision, rows });
 		this.batchFeedback.set(null);
@@ -289,7 +297,8 @@ export class MatchSuggestions {
 			this.pending.set(false);
 			requestAnimationFrame(() => {
 				if (!this.active() || this.workspace().loadRevision !== loadRevision || (document.activeElement !== trigger && document.activeElement !== document.body)) return;
-				const target = document.getElementById(focusId);
+				const element = document.getElementById(focusId);
+				const target = focusId === 'match-batch-result' ? element : element?.querySelector('button');
 				target?.focus({ preventScroll: true });
 				if (focusId !== 'match-batch-result') target?.scrollIntoView({ block: 'center', inline: 'nearest' });
 			});

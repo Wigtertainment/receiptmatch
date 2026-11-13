@@ -1,5 +1,5 @@
 import { BrowserWindow, ipcMain, session, type Session, type WebContents } from 'electron';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { originalSourceExtensions, type OriginalPreviewData, type OriginalPreviewResult } from '../src/shared/original-preview.js';
@@ -9,7 +9,7 @@ import { readSourceSnapshot } from './import/source.js';
 const origin = 'receiptmatch-extraction://preview';
 const previewUrl = `${origin}/index.html`;
 const types: Record<string, string> = { '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.mjs': 'application/javascript', '.wasm': 'application/wasm' };
-const policy = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; style-src 'self'; img-src 'self' blob: data:; font-src 'self' blob:; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'";
+const policy = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; style-src 'self'__STYLE_NONCE__; img-src 'self' blob: data:; font-src 'self' blob:; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'";
 
 export interface OriginalSource {
     filePath: string;
@@ -18,17 +18,19 @@ export interface OriginalSource {
 }
 
 async function createPreviewSession(): Promise<Session> {
-    const root = path.join(__dirname, 'preview');
+    const root = path.join(__dirname, 'preview', 'browser');
     const pdf = path.join(__dirname, 'extraction', 'pdf');
-    const files = new Map(['index.html', 'viewer.css', 'viewer.js'].map(name => [`${origin}/${name}`, path.join(root, name)]));
-    async function collect(directory: string) {
+    const files = new Map<string, string>();
+    async function collect(directory: string, prefix: string) {
         for (const entry of await readdir(directory, { withFileTypes: true })) {
             const file = path.join(directory, entry.name);
-            if (entry.isDirectory()) await collect(file);
-            else if (entry.isFile()) files.set(`${origin}/pdf/${path.relative(pdf, file).split(path.sep).map(encodeURIComponent).join('/')}`, file);
+            const url = `${prefix}/${encodeURIComponent(entry.name)}`;
+            if (entry.isDirectory()) await collect(file, url);
+            else if (entry.isFile()) files.set(url, file);
         }
     }
-    await collect(pdf);
+    await collect(root, origin);
+    await collect(pdf, `${origin}/pdf`);
     const isolated = session.fromPartition('receiptmatch-preview', { cache: false });
     isolated.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     isolated.setPermissionCheckHandler(() => false);
@@ -37,8 +39,11 @@ async function createPreviewSession(): Promise<Session> {
         const file = request.method === 'GET' ? files.get(request.url) : undefined;
         if (!file) return new Response('Not found', { status: 404 });
         try {
-            return new Response(await readFile(file), { headers: { 'Content-Type': types[path.extname(file)] ?? 'application/octet-stream',
-                'Content-Security-Policy': policy, 'X-Content-Type-Options': 'nosniff' } });
+            const nonce = request.url === previewUrl ? randomBytes(18).toString('base64') : null;
+            const body = nonce ? (await readFile(file, 'utf8')).replaceAll('__RECEIPTMATCH_STYLE_NONCE__', nonce) : await readFile(file);
+            return new Response(body, { headers: { 'Content-Type': types[path.extname(file)] ?? 'application/octet-stream',
+                'Content-Security-Policy': policy.replace('__STYLE_NONCE__', nonce ? ` 'nonce-${nonce}'` : ''), 'X-Content-Type-Options': 'nosniff',
+                ...(nonce && { 'Cache-Control': 'no-store' }) } });
         } catch {
             return new Response('Preview resource unavailable', { status: 404 });
         }

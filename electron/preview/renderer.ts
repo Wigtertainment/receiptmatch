@@ -1,3 +1,6 @@
+import { Component, signal } from '@angular/core';
+import { bootstrapApplication } from '@angular/platform-browser';
+import { WigButtonComponent, WigDropdownComponent } from '@wigtertainment-ltd/comp-lib';
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type RenderTask } from 'pdfjs-dist';
 import type { OriginalPreviewData } from '../../src/shared/original-preview.js';
 import { PDF_EXTRACTION_LIMITS } from '../../src/shared/pdf-extraction.js';
@@ -11,11 +14,6 @@ declare global {
 const name = document.querySelector<HTMLHeadingElement>('#document-name')!;
 const loading = document.querySelector<HTMLParagraphElement>('#loading')!;
 const error = document.querySelector<HTMLParagraphElement>('#error')!;
-const pagination = document.querySelector<HTMLElement>('#pagination')!;
-const pageNumber = document.querySelector<HTMLOutputElement>('#page-number')!;
-const previous = document.querySelector<HTMLButtonElement>('#previous-page')!;
-const next = document.querySelector<HTMLButtonElement>('#next-page')!;
-const zoom = document.querySelector<HTMLSelectElement>('#zoom')!;
 const viewport = document.querySelector<HTMLElement>('#viewport')!;
 const canvas = document.querySelector<HTMLCanvasElement>('#pdf-page')!;
 const image = document.querySelector<HTMLImageElement>('#source-image')!;
@@ -25,10 +23,51 @@ GlobalWorkerOptions.workerSrc = asset('pdf.worker.min.mjs');
 
 let pdf: PDFDocumentProxy | undefined;
 let loadingTask: ReturnType<typeof getDocument> | undefined;
-let selectedPage = 1;
+const selectedPage = signal(1);
+const pageCount = signal(0);
+const ready = signal(false);
+const zoom = signal('fit');
 let renderTask: RenderTask | undefined;
 let renderQueue = Promise.resolve();
 let revision = 0;
+
+@Component({
+    selector: 'app-preview-controls', imports: [WigButtonComponent, WigDropdownComponent],
+    template: `
+        <div class="controls">
+            @if (pageCount()) {
+                <div id="pagination" class="controls" role="group" aria-label="PDF pages">
+                    <wig-button label="Previous page" severity="secondary" [disabled]="page() <= 1" (click)="movePage(-1)" />
+                    <output id="page-number" aria-live="polite">Page {{ page() }} of {{ pageCount() }}</output>
+                    <wig-button label="Next page" severity="secondary" [disabled]="page() >= pageCount()" (click)="movePage(1)" />
+                </div>
+            }
+            <label for="zoom">Zoom</label>
+            <wig-dropdown class="zoom-control" inputId="zoom" ariaLabel="Zoom" [options]="zoomOptions" optionLabel="label" optionValue="value"
+                [disabled]="!ready()" [selectedOption]="zoom()" (selectedOptionChange)="changeZoom($event)" />
+        </div>
+    `
+})
+class PreviewControls {
+    readonly page = selectedPage;
+    readonly pageCount = pageCount;
+    readonly ready = ready;
+    readonly zoom = zoom;
+    readonly zoomOptions = [{ value: 'fit', label: 'Fit to window' }, ...[75, 100, 125, 150, 200].map(percent => ({ value: String(percent / 100), label: `${percent}%` }))];
+
+    movePage(offset: number) {
+        const page = selectedPage() + offset;
+        if (page < 1 || page > pageCount()) return;
+        selectedPage.set(page);
+        showPage(true);
+    }
+
+    changeZoom(value: string | null) {
+        zoom.set(value ?? 'fit');
+        if (pdf) showPage();
+        else resizeImage();
+    }
+}
 
 function setError(message: string) {
     error.textContent = message;
@@ -36,7 +75,7 @@ function setError(message: string) {
 }
 
 function displayScale(width: number, height: number) {
-    if (zoom.value !== 'fit') return Number(zoom.value);
+    if (zoom() !== 'fit') return Number(zoom());
     const { paddingInlineStart, paddingInlineEnd, paddingBlockStart, paddingBlockEnd } = getComputedStyle(viewport);
     const availableWidth = viewport.clientWidth - parseFloat(paddingInlineStart) - parseFloat(paddingInlineEnd);
     const availableHeight = viewport.clientHeight - parseFloat(paddingBlockStart) - parseFloat(paddingBlockEnd);
@@ -46,11 +85,8 @@ function displayScale(width: number, height: number) {
 function showPage(resetScroll = false) {
     const document = pdf;
     if (!document) return;
-    const page = selectedPage;
+    const page = selectedPage();
     const current = ++revision;
-    previous.disabled = page === 1;
-    next.disabled = page === document.numPages;
-    pageNumber.textContent = `Page ${page} of ${document.numPages}`;
     if (resetScroll) viewport.scrollTo(0, 0);
     setError('');
     renderTask?.cancel();
@@ -100,8 +136,8 @@ async function openDocument() {
         });
         const document = await loadingTask.promise;
         pdf = document;
-        pagination.hidden = false;
-        zoom.disabled = false;
+        pageCount.set(document.numPages);
+        ready.set(true);
         showPage();
         return;
     }
@@ -113,16 +149,13 @@ async function openDocument() {
         await image.decode();
         resizeImage();
         image.hidden = false;
-        zoom.disabled = false;
+        ready.set(true);
         loading.hidden = true;
     } finally { URL.revokeObjectURL(url); }
 }
 
-previous.addEventListener('click', () => { if (selectedPage > 1) { selectedPage--; showPage(true); } });
-next.addEventListener('click', () => { if (pdf && selectedPage < pdf.numPages) { selectedPage++; showPage(true); } });
-zoom.addEventListener('change', () => { if (pdf) showPage(); else resizeImage(); });
 const observer = new ResizeObserver(() => {
-    if (zoom.value !== 'fit' || !error.hidden) return;
+    if (zoom() !== 'fit' || !error.hidden) return;
     if (pdf) showPage(); else resizeImage();
 });
 observer.observe(viewport);
@@ -132,7 +165,7 @@ window.addEventListener('pagehide', () => {
     renderTask?.cancel();
     void loadingTask?.destroy().catch(() => undefined);
 }, { once: true });
-void openDocument().catch(() => {
+void bootstrapApplication(PreviewControls).then(() => openDocument()).catch(() => {
     loading.hidden = true;
     setError('The original document could not be displayed.');
 });

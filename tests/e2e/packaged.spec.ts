@@ -157,7 +157,8 @@ test('packaged Electron workspace smoke test', async ({ smoke: { root, report, c
 		});
 		assert.deepEqual(preferences, { sandbox: true, contextIsolation: true, nodeIntegration: false });
 		assert.deepEqual(await page.evaluate(() => Object.keys(window.receiptmatch)), [
-			'command', 'bankImports', 'documentImports', 'matchSummaries', 'matchDetails', 'openOriginal', 'exportSettings', 'localOcr', 'exportDocuments', 'exportReconciliation', 'subscribe',
+			'command', 'bankImports', 'documentImports', 'matchSummaries', 'matchDetails', 'openOriginal', 'relinkOriginal', 'analyzeOriginal', 'acceptOriginalAnalysis',
+			'exportSettings', 'localOcr', 'exportDocuments', 'exportReconciliation', 'subscribe',
 		]);
 		assert.equal(await page.evaluate(() => typeof Reflect.get(window, 'require')), 'undefined');
 		assert.equal(
@@ -177,7 +178,15 @@ test('packaged Electron workspace smoke test', async ({ smoke: { root, report, c
 	});
 	const file = path.join(root, 'November.receiptmatch');
 	await check('new-workspace-real-keyboard-entry-and-cancelled-first-save', async () => {
-		await page.getByRole('button', { name: 'Create workspace', exact: true }).click();
+		const create = page.locator('wig-button').getByRole('button', { name: 'Create workspace', exact: true });
+		assert.equal(await create.evaluate(button => getComputedStyle(button).alignItems), 'center');
+		assert.equal(await create.locator('svg').count(), 1);
+		const styles = await page.evaluate(() => {
+			const componentStyle = [...document.querySelectorAll('style')].find(style => style.textContent.includes('wig-button-min-height'));
+			return { nonceApplied: !!componentStyle?.nonce && !!componentStyle.sheet, tokensLoaded: !!getComputedStyle(document.documentElement).getPropertyValue('--wig-color-action').trim() };
+		});
+		assert.deepEqual(styles, { nonceApplied: true, tokensLoaded: true });
+		await create.press('Enter');
 		await waitState({ dirty: true, filePath: null });
 		const input = page.getByLabel('Workspace name', { exact: true });
 		await input.fill('');

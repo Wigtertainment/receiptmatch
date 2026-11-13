@@ -96,7 +96,7 @@ test('packaged match suggestions from import through keyboard review and reopeni
 			const [bank, receipts] = await Promise.all([statements.boundingBox(), documents.boundingBox()]);
 			return { leftToRight: bank!.x + bank!.width < receipts!.x && bank!.y === receipts!.y, topToBottom: bank!.y + bank!.height < receipts!.y };
 		};
-		await resize(1120);
+		await resize(1440);
 		await expect.poll(async () => (await importBounds()).leftToRight).toBe(true);
 		await expect.poll(() => statements.getByRole('region', { name: 'Transactions table, horizontally scrollable' }).evaluate(table => table.scrollWidth <= table.clientWidth)).toBe(true);
 		await resize(1020);
@@ -110,7 +110,7 @@ test('packaged match suggestions from import through keyboard review and reopeni
 		await orchard.press('Enter');
 		await expect(orchard).toHaveAttribute('aria-pressed', 'true');
 		await expect(detail.getByRole('heading', { name: /Orchard Workshop/ })).toBeFocused();
-		await expect(detail.getByRole('heading', { name: 'Orchard_Workshop_invoice.pdf' })).toBeVisible();
+		await expect(detail.getByRole('heading', { name: 'Orchard_Workshop_invoice.pdf', exact: true })).toBeVisible();
 		await expect(detail.getByText('Receipt filename', { exact: true })).toBeVisible();
 		await expect(detail.getByText('Orchard_Workshop_invoice.pdf · Bank Orchard Workshop')).toBeVisible();
 		await expect.poll(async () => {
@@ -118,7 +118,7 @@ test('packaged match suggestions from import through keyboard review and reopeni
 			return transactions!.x + transactions!.width < evidence!.x && transactions!.y === evidence!.y;
 		}).toBe(true);
 		await expect(matches.getByText('7 days apart (within 7 days)', { exact: false })).toBeVisible();
-		await matches.locator('summary').filter({ hasText: 'Source evidence' }).press('Enter');
+		await matches.getByRole('button', { name: /^Source evidence for / }).press('Enter');
 		await expect(matches.getByText('Invoice Number: SYNTHETIC-A')).toBeVisible();
 
 		await sourcesNav.click();
@@ -139,26 +139,27 @@ test('packaged match suggestions from import through keyboard review and reopeni
 		await detail.getByRole('button', { name: 'Back to transactions' }).press('Enter');
 		await expect(river).toBeFocused();
 		await filters.getByRole('button', { name: 'Uncertain 1' }).click();
-		await expect(matches.getByRole('heading', { name: 'original-invoice.pdf' })).toBeVisible();
+		await expect(matches.getByRole('heading', { name: 'original-invoice.pdf', exact: true })).toBeVisible();
 		await expect(matches.getByText('Reported original payment amount', { exact: true })).toBeVisible();
 		await expect(matches.getByText('Another possible match is supported by a reference.')).toHaveCount(2);
 		await test.step('review, replace and remove assignments through the interface', async () => {
 			const manual = detail.getByRole('region', { name: 'Manual review' });
-			const picker = manual.getByLabel('Supporting document');
+			const picker = manual.getByRole('combobox', { name: 'Supporting document' });
 			async function choose(filename: string) {
-				const option = picker.getByRole('option', { name: new RegExp('^' + filename) });
-				await expect(option).toBeAttached();
-				await picker.selectOption({ value: (await option.getAttribute('value'))! });
+				await picker.click();
+				await page.getByRole('option', { name: new RegExp('^' + filename) }).click();
 			}
 			await filters.getByRole('button', { name: 'Unmatched 1' }).click();
 			await choose('restaurant-receipt');
 			await expect(detail.getByText(/256[.,]20/)).toBeVisible();
 			await expect(manual.getByText(/Document total.*142[.,]00/)).toBeVisible();
 			await manual.getByRole('button', { name: 'Assign document', exact: true }).press('Enter');
-			await expect(manual.getByRole('heading')).toBeFocused();
+			await expect(manual.getByRole('heading', { name: 'Manual review', exact: true })).toBeFocused();
 			await expect(manual.getByText('Document assigned · restaurant-receipt.pdf')).toBeVisible();
 			await filters.getByRole('button', { name: 'Uncertain 1' }).click();
-			await expect(picker.getByRole('option', { name: /restaurant-receipt.*Assigned to.*River Studio/ })).toBeDisabled();
+			await picker.click();
+			await expect(page.getByRole('option', { name: /restaurant-receipt.*Assigned to.*River Studio/ })).toBeDisabled();
+			await picker.press('Escape');
 			const originalCandidate = detail.getByRole('article').filter({ has: page.getByRole('heading', { name: 'original-invoice.pdf', exact: true }) });
 			await originalCandidate.getByRole('button', { name: /^Assign this document/ }).press('Enter');
 			await expect(originalCandidate.getByText('Assigned to this transaction', { exact: true })).toBeVisible();
@@ -195,7 +196,7 @@ test('packaged match suggestions from import through keyboard review and reopeni
 		await restoredNav.getByRole('button', { name: 'Match suggestions' }).click();
 		const restored = reopened.getByRole('region', { name: 'Match suggestions' });
 		await restored.getByRole('group', { name: 'Filter match results' }).getByRole('button', { name: 'Uncertain 1' }).click();
-		await expect(restored.getByRole('heading', { name: 'original-invoice.pdf' })).toBeVisible();
+		await expect(restored.getByRole('heading', { name: 'original-invoice.pdf', exact: true })).toBeVisible();
 		await expect(restored.getByText('Matching reference', { exact: true })).toHaveCount(2);
 		await expect(restored.getByRole('region', { name: 'Manual review' }).getByText('Completed without document', { exact: true })).toBeVisible();
 		await restored.getByRole('group', { name: 'Filter match results' }).getByRole('button', { name: 'Unmatched 1' }).click();
@@ -210,7 +211,7 @@ test('packaged match suggestions from import through keyboard review and reopeni
 		await test.step('correct original receipt fields, recalculate suggestions and reopen with the assignment intact', async () => {
 			await restoredNav.getByRole('button', { name: 'Sources' }).click();
 			const documents = reopened.getByRole('region', { name: 'Supporting documents' });
-			await documents.getByText('documents', { exact: true }).click();
+			await expect(documents.getByRole('button', { name: /^documents ·/ })).toHaveAttribute('aria-expanded', 'true');
 			const receipt = documents.getByRole('button', { name: 'restaurant-receipt.pdf', exact: true });
 			await receipt.click();
 			const analysis = documents.locator('#' + (await receipt.getAttribute('aria-controls')));
@@ -236,7 +237,7 @@ test('packaged match suggestions from import through keyboard review and reopeni
 			await restoredNav.getByRole('button', { name: 'Match suggestions' }).click();
 			await restored.getByRole('group', { name: 'Filter match results' }).getByRole('button', { name: 'Uncertain 2' }).click();
 			await restored.getByRole('button', { name: /River Studio/ }).click();
-			await expect(restored.getByRole('heading', { name: 'restaurant-receipt.pdf' })).toBeVisible();
+			await expect(restored.getByRole('heading', { name: 'restaurant-receipt.pdf', exact: true })).toBeVisible();
 			await expect(restored.getByText('3 days apart (within 7 days)', { exact: false })).toBeVisible();
 			await expect(restored.getByText('This section contains corrected values.', { exact: false })).toBeVisible();
 			await expect(restored.getByRole('region', { name: 'Manual review' }).getByText('Document assigned · restaurant-receipt.pdf')).toBeVisible();
@@ -249,7 +250,7 @@ test('packaged match suggestions from import through keyboard review and reopeni
 			await saved.getByRole('button', { name: 'Open workspace', exact: false }).click();
 			await saved.getByRole('button', { name: 'Match suggestions', exact: true }).click();
 			await saved.getByRole('button', { name: /River Studio/ }).click();
-			await expect(saved.getByRole('heading', { name: 'restaurant-receipt.pdf' })).toBeVisible();
+			await expect(saved.getByRole('heading', { name: 'restaurant-receipt.pdf', exact: true })).toBeVisible();
 			await expect(saved.getByText('3 days apart (within 7 days)', { exact: false })).toBeVisible();
 			await expect(saved.getByRole('region', { name: 'Manual review' }).getByText('Document assigned · restaurant-receipt.pdf')).toBeVisible();
 		});
@@ -307,15 +308,16 @@ test('keeps the assignment panel in view and previews a document without a total
 		expect(await page.evaluate(() => scrollY)).toBeCloseTo(position, 0);
 		await expect.poll(() => detail.evaluate(panel => Math.round(panel.getBoundingClientRect().top))).toBe(16);
 		const manual = detail.getByRole('region', { name: 'Manual review' });
-		const picker = manual.getByLabel('Supporting document');
-		await picker.selectOption({ label: 'without-total.pdf' });
+		const picker = manual.getByRole('combobox', { name: 'Supporting document' });
+		await picker.press('Enter');
+		await page.getByRole('option', { name: 'without-total.pdf', exact: true }).click();
 		await expect(manual.getByText('Document total unavailable', { exact: true })).toBeVisible();
-		await manual.locator('summary').filter({ hasText: 'Document details' }).press('Enter');
+		await manual.getByRole('button', { name: 'Document details for without-total.pdf' }).press('Enter');
 		await expect(manual.getByRole('heading', { name: 'Document fields' })).toBeVisible();
 		await expect(manual.getByText('Corner Cafe', { exact: false })).toBeVisible();
 		await manual.locator('summary').filter({ hasText: 'Source text' }).press('Enter');
 		await expect(manual.getByText('Receipt Number: WITHOUT-TOTAL', { exact: true })).toBeVisible();
-		await picker.selectOption('');
+		await manual.getByRole('button', { name: 'Clear supporting document selection' }).click();
 		await expect(manual.getByRole('heading', { name: 'Document fields' })).toHaveCount(0);
 		await page.getByRole('group', { name: 'Filter match results' }).getByRole('button', { name: 'Uncertain 1' }).click();
 		await expect(list.getByRole('button', { name: 'Vela Restaurant New' })).toBeVisible();
