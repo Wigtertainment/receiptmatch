@@ -1,5 +1,6 @@
 import { NgTemplateOutlet } from '@angular/common';
 import { Component, DestroyRef, ElementRef, TemplateRef, computed, inject, input, signal, viewChild } from '@angular/core';
+import { WigButtonComponent, WigCheckboxComponent, WigIconButtonComponent } from '@wigtertainment-ltd/comp-lib';
 import type { OriginalAnalysisComparison, OriginalPreviewRequest, OriginalPreviewResult } from '../shared/original-preview.js';
 
 interface PreviewFeedback extends OriginalPreviewResult {
@@ -13,7 +14,7 @@ interface PreviewFeedback extends OriginalPreviewResult {
 @Component({
     selector: 'app-original-preview-button',
     standalone: true,
-    imports: [NgTemplateOutlet],
+    imports: [NgTemplateOutlet, WigButtonComponent, WigCheckboxComponent, WigIconButtonComponent],
     styles: [`
       .analysis-dialog { width: min(48rem, calc(100vw - 2rem)); max-height: calc(100vh - 2rem); border: 1px solid var(--outline); border-radius: 8px; padding: 1.25rem; color: var(--ink); }
       .analysis-dialog::backdrop { background: #172d2a80; }
@@ -31,18 +32,20 @@ interface PreviewFeedback extends OriginalPreviewResult {
       @let current = feedback();
       @let canRelink = current?.status === 'missing' || current?.status === 'changed';
       @if (sourceId()) {
-      <button #openButton type="button" [class]="iconOnly() ? 'preview-icon' : 'button-secondary compact'" [attr.aria-label]="'Open original ' + sourceName()"
-        [attr.title]="iconOnly() ? (current?.pending === 'open' ? 'Opening…' : 'Open original') : null"
-        [attr.aria-busy]="current?.pending === 'open' ? 'true' : null"
-        [attr.aria-disabled]="current?.pending || loadRevision() === undefined ? 'true' : null" (click)="open()">
-        @if (iconOnly()) {
-          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <circle cx="10.5" cy="10.5" r="6.5" /><path d="m15.1 15.1 4.9 4.9" />
-          </svg>
-        } @else {
-          {{ current?.pending === 'open' ? 'Opening…' : 'Open original' }}
-        }
-      </button>
+      @if (iconTooltip(); as tooltip) {
+        <wig-icon-button #openButton [iconTemplate]="externalIcon" [text]="true" [ariaLabel]="'Open original ' + sourceName()"
+          [tooltip]="tooltip" tooltipPosition="top" [loading]="current?.pending === 'open'" [disabled]="!!current?.pending || loadRevision() === undefined" (click)="open()" />
+      } @else {
+      <wig-button #openButton [buttonStyle]="iconOnly() ? iconButtonStyle : undefined" [label]="iconOnly() ? '' : current?.pending === 'open' ? 'Opening…' : 'Open original'"
+        [iconTemplate]="iconOnly() ? externalIcon : undefined" [text]="iconOnly()" [severity]="iconOnly() ? 'primary' : 'secondary'"
+        [ariaLabel]="'Open original ' + sourceName()" [buttonTitle]="iconOnly() ? 'Open original' : undefined"
+        [loading]="current?.pending === 'open'" [disabled]="!!current?.pending || loadRevision() === undefined" (click)="open()" />
+      }
+      <ng-template #externalIcon>
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13 5h6v6m0-6-9 9M10 5H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3" />
+        </svg>
+      </ng-template>
       <ng-template #feedbackContent>
       @if (current?.error; as error) {
         <p class="original-preview-error" role="alert">
@@ -52,22 +55,16 @@ interface PreviewFeedback extends OriginalPreviewResult {
         </p>
       }
       @if (canRelink) {
-        <button type="button" class="button-secondary compact" [attr.aria-label]="'Relink original ' + sourceName()"
-          [attr.aria-busy]="current?.pending === 'relink' ? 'true' : null"
-          [attr.aria-disabled]="current?.pending ? 'true' : null" (click)="relink(openButton)">
-          {{ current?.pending === 'relink' ? 'Relinking…' : 'Relink original' }}
-        </button>
-        <button type="button" class="button-secondary compact" [attr.aria-label]="'Analyze changed file for ' + sourceName()"
-          [attr.aria-busy]="current?.pending === 'analyze' ? 'true' : null"
-          [attr.aria-disabled]="current?.pending ? 'true' : null" (click)="analyze()">
-          {{ current?.pending === 'analyze' ? 'Analyzing…' : 'Analyze changed file' }}
-        </button>
+        <wig-button severity="secondary" [label]="current?.pending === 'relink' ? 'Relinking…' : 'Relink original'" [ariaLabel]="'Relink original ' + sourceName()"
+          [loading]="current?.pending === 'relink'" [disabled]="!!current?.pending" (click)="relink()" />
+        <wig-button severity="secondary" [label]="current?.pending === 'analyze' ? 'Analyzing…' : 'Analyze changed file'" [ariaLabel]="'Analyze changed file for ' + sourceName()"
+          [loading]="current?.pending === 'analyze'" [disabled]="!!current?.pending" (click)="analyze()" />
       }
       @if (current?.notice; as notice) {
         <p class="muted" role="status">{{ notice }}</p>
       }
       </ng-template>
-      @if (!iconOnly()) {
+      @if (!iconOnly() || iconTooltip()) {
         <ng-container [ngTemplateOutlet]="feedbackContent" />
       }
       @if (current?.comparison; as comparison) {
@@ -94,18 +91,15 @@ interface PreviewFeedback extends OriginalPreviewResult {
             <div class="analysis-conflicts">
               <h4>Conflicts requiring review</h4>
               <ul>@for (conflict of comparison.conflicts; track $index) { <li>{{ conflict }}</li> }</ul>
-              <label>
-                <input #acknowledgement type="checkbox" [checked]="acknowledgeConflicts()" [disabled]="current?.pending === 'adopt'"
-                  (change)="acknowledgeConflicts.set(acknowledgement.checked)" />
-                I understand that ambiguous items stay in the previous analysis and newly extracted items need review.
-              </label>
+              <wig-checkbox label="I understand that ambiguous items stay in the previous analysis and newly extracted items need review."
+                [checked]="acknowledgeConflicts()" [disabled]="current?.pending === 'adopt'" (checkedChange)="acknowledgeConflicts.set($event)" />
             </div>
           }
           @if (current?.actionError; as error) { <p class="original-preview-error" role="alert">{{ error }}</p> }
           <div class="analysis-actions">
-            <button type="button" class="button-primary compact" [disabled]="!!current?.pending || (comparison.conflicts.length > 0 && !acknowledgeConflicts())"
-              (click)="applyAnalysis(analysisDialog, openButton)">{{ current?.pending === 'adopt' ? 'Applying…' : 'Apply analyzed file' }}</button>
-            <button type="button" class="button-secondary compact" [disabled]="current?.pending === 'adopt'" (click)="closeAnalysis(analysisDialog)">Cancel</button>
+            <wig-button [label]="current?.pending === 'adopt' ? 'Applying…' : 'Apply analyzed file'" [loading]="current?.pending === 'adopt'"
+              [disabled]="!!current?.pending || (comparison.conflicts.length > 0 && !acknowledgeConflicts())" (click)="applyAnalysis(analysisDialog)" />
+            <wig-button label="Cancel" severity="secondary" [disabled]="current?.pending === 'adopt'" (click)="closeAnalysis(analysisDialog)" />
           </div>
         </dialog>
       }
@@ -118,9 +112,12 @@ export class OriginalPreviewButton {
     readonly sourceName = input.required<string>();
     readonly loadRevision = input.required<number | undefined>();
     readonly iconOnly = input(false);
+    readonly iconTooltip = input<string>();
+    readonly iconButtonStyle = { width: '44px', 'min-width': '44px', 'min-height': '44px', padding: '0' };
     readonly acknowledgeConflicts = signal(false);
     private readonly request = signal<PreviewFeedback | null>(null);
     private readonly destroyed = inject(DestroyRef);
+    private readonly openButton = viewChild('openButton', { read: ElementRef<HTMLElement> });
     private readonly analysisDialog = viewChild<ElementRef<HTMLDialogElement>>('analysisDialog');
     readonly feedbackContent = viewChild<TemplateRef<unknown>>('feedbackContent');
     readonly feedback = computed(() => {
@@ -145,7 +142,7 @@ export class OriginalPreviewButton {
         }
     }
 
-    async relink(openButton: HTMLButtonElement) {
+    async relink() {
         const current = this.feedback();
         if (!current || current.pending || (current.status !== 'missing' && current.status !== 'changed')) return;
         const request: PreviewFeedback = { ...current, pending: 'relink', actionError: undefined };
@@ -155,8 +152,8 @@ export class OriginalPreviewButton {
             const result = await window.receiptmatch.relinkOriginal(request.source);
             if (this.request() !== request) return;
             if (result.status === 'linked') {
-                if (this.feedback() === request && openButton.isConnected) openButton.focus();
                 this.request.set({ source: request.source, pending: null, error: null, notice: 'Original relinked. You can open it again.' });
+                this.restoreOpenFocus(request.source);
             } else {
                 this.request.set({ ...request, pending: null, actionError: result.status === 'failed' ? result.error ?? failure : undefined });
             }
@@ -189,7 +186,7 @@ export class OriginalPreviewButton {
         }
     }
 
-    async applyAnalysis(dialog: HTMLDialogElement, openButton: HTMLButtonElement) {
+    async applyAnalysis(dialog: HTMLDialogElement) {
         const current = this.feedback();
         const acknowledgeConflicts = this.acknowledgeConflicts();
         if (!current?.comparison || current.pending || (current.comparison.conflicts.length && !acknowledgeConflicts)) return;
@@ -201,13 +198,19 @@ export class OriginalPreviewButton {
             if (result.status === 'adopted') {
                 if (dialog.open) dialog.close();
                 this.request.set({ source: request.source, pending: null, error: null, notice: 'Analyzed file applied.' });
-                if (this.feedback() && openButton.isConnected) openButton.focus();
+                this.restoreOpenFocus(request.source);
             } else {
                 this.request.set({ ...request, pending: null, actionError: result.error });
             }
         } catch {
             if (this.request() === request) this.request.set({ ...request, pending: null, actionError: 'The analyzed file could not be applied. Try again.' });
         }
+    }
+
+    private restoreOpenFocus(source: OriginalPreviewRequest) {
+        requestAnimationFrame(() => {
+            if (!this.destroyed.destroyed && this.feedback()?.source === source) this.openButton()?.nativeElement.querySelector('button')?.focus();
+        });
     }
 
     closeAnalysis(dialog: HTMLDialogElement, event?: Event) {

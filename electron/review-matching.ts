@@ -29,7 +29,7 @@ const genericWords = new Set([
 ]);
 
 function namedText(text: string, matchText = text): NamedText {
-	const words = matchText.normalize('NFD').replace(/(\p{Script=Latin})\p{M}+/gu, '$1').toLowerCase().normalize('NFC').match(/[\p{L}\p{M}\p{N}]+/gu) ?? [];
+	const words = matchText.normalize('NFD').replace(/(\p{Script=Latin})\p{M}+/gu, '$1').toLowerCase().normalize('NFC').replace(/(?<=[\p{L}\p{M}])['’](?=\p{L})/gu, '').match(/[\p{L}\p{M}\p{N}]+/gu) ?? [];
 	return { text, words: words.filter(word => /\p{L}/u.test(word) && !genericWords.has(word) && !/^(?:img|dscn?|pxl|scan|screenshot)[0-9]*$/.test(word)) };
 }
 

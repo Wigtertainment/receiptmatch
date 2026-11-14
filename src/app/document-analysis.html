@@ -14,35 +14,35 @@
 	<section class="document-correction-editor" [id]="editorId()" [attr.aria-labelledby]="editorId() + '-heading'">
 		<h6 [id]="editorId() + '-heading'" tabindex="-1">Correct document field</h6>
 		<p>{{ editor.role }}</p>
-		<form (submit)="applyCorrection($event)" novalidate>
+		<form #correctionFields (submit)="applyCorrection(correctionFields, $event)" (keydown.enter)="submitFromField(correctionFields, $event)" novalidate>
 			<div class="bank-correction-fields">
 				@if (editor.kind === 'amount') {
 					<label [for]="editorId() + '-amount'">Amount</label>
-					<input
-						[id]="editorId() + '-amount'"
+					<wig-input
+						[inputId]="editorId() + '-amount'"
 						name="value"
 						type="text"
-						inputmode="decimal"
-						maxlength="130"
+						inputMode="decimal"
+						[appInputLength]="130"
 						[value]="editor.inputValue"
 						[disabled]="busy()"
-						[attr.aria-describedby]="editorId() + '-amount-hint'"
-						required
+						[ariaDescribedBy]="editorId() + '-amount-hint'"
+						[required]="true"
 					/>
 					<p class="muted" [id]="editorId() + '-amount-hint'">Use {{ amountExample }} without grouping separators.</p>
 					<label [for]="editorId() + '-currency'">Currency</label>
-					<input [id]="editorId() + '-currency'" name="currency" type="text" maxlength="3" [value]="editor.currency" [disabled]="busy()" required />
+					<wig-input [inputId]="editorId() + '-currency'" name="currency" [appInputLength]="3" [value]="editor.currency" [disabled]="busy()" [required]="true" />
 				} @else {
 					<label [for]="editorId() + '-date'">Date</label>
 					<input [id]="editorId() + '-date'" name="value" type="date" [value]="editor.inputValue" [disabled]="busy()" required />
 				}
 			</div>
 			@if (correctionError(); as error) {
-				<p class="bank-correction-error" role="alert">{{ error }}</p>
+				<wig-alert class="bank-correction-error" type="error" [text]="error" />
 			}
 			<div class="bank-correction-actions">
-				<button type="submit" class="button-primary compact" [disabled]="busy()">Apply correction</button>
-				<button type="button" class="button-secondary compact" (click)="closeCorrection()" [disabled]="busy()">Close</button>
+				<wig-button label="Apply correction" [disabled]="busy()" (click)="applyCorrection(correctionFields)" />
+				<wig-button label="Close" severity="secondary" (click)="closeCorrection()" [disabled]="busy()" />
 			</div>
 		</form>
 		@if (editor.applied && !correctionError() && !workspaceError()) {
@@ -126,16 +126,15 @@
 							<p class="field-warning">{{ message }}</p>
 						}
 						@if (field.correction; as correction) {
-							<button
-								type="button"
-								class="button-secondary compact"
+							<wig-button
+								#correctButton
+								label="Correct value"
+								severity="secondary"
 								[disabled]="busy()"
-								[attr.aria-expanded]="editing()?.key === correction.key"
-								[attr.aria-controls]="editing()?.key === correction.key ? editorId() : null"
-								(click)="startCorrection(correction, $event)"
-							>
-								Correct value
-							</button>
+								[ariaExpanded]="editing()?.key === correction.key"
+								[ariaControls]="editing()?.key === correction.key ? editorId() : null"
+								(click)="startCorrection(correction, correctButton)"
+							/>
 							@if (editing(); as editor) {
 								@if (editor.key === correction.key) {
 									<ng-container [ngTemplateOutlet]="correctionForm" [ngTemplateOutletContext]="{ $implicit: editor }" />
@@ -171,16 +170,16 @@
 				@if (missing.corrected; as corrected) {
 					<p>{{ missing.role }} · {{ correctedValue(corrected.change) }} <span class="source-status">Corrected</span></p>
 				}
-				<button
-					type="button"
-					class="button-secondary compact"
+				<wig-button
+					#missingButton
+					severity="secondary"
 					[disabled]="busy()"
-					[attr.aria-expanded]="editing()?.key === missing.key"
-					[attr.aria-controls]="editing()?.key === missing.key ? editorId() : null"
-					(click)="startCorrection(missing, $event)"
+					[ariaExpanded]="editing()?.key === missing.key"
+					[ariaControls]="editing()?.key === missing.key ? editorId() : null"
+					(click)="startCorrection(missing, missingButton)"
 				>
 					{{ missing.corrected ? 'Edit ' : 'Add ' }}{{ missing.role.toLowerCase() }}
-				</button>
+				</wig-button>
 				@if (editing(); as editor) {
 					@if (editor.key === missing.key) {
 						<ng-container [ngTemplateOutlet]="correctionForm" [ngTemplateOutletContext]="{ $implicit: editor }" />

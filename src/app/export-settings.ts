@@ -1,10 +1,13 @@
 import { Component, computed, input, signal } from '@angular/core';
+import { type TableConfig, WigAlertComponent, WigButtonComponent, WigInputComponent, WigTableComponent, WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
+import { InputLength } from './input-length.js';
 import { defaultExportFilenamePattern, exportFilenameExample, exportFilenamePatternLimit, renderExportFilename } from '../shared/export-filename.js';
-import type { DocumentExportFailure, DocumentExportResponse } from '../shared/document-export.js';
+import type { DocumentExportFailure, DocumentExportOutcome, DocumentExportResponse } from '../shared/document-export.js';
 import type { WorkspaceView } from '../shared/protocol.js';
 
 @Component({
 	selector: 'app-export-settings', standalone: true, templateUrl: './export-settings.html',
+	imports: [WigAlertComponent, WigButtonComponent, WigInputComponent, WigTableComponent, WigTemplateDirective, InputLength],
 })
 export class ExportSettings {
 	readonly workspace = input.required<WorkspaceView>();
@@ -48,12 +51,19 @@ export class ExportSettings {
 	};
 	readonly defaultPattern = defaultExportFilenamePattern;
 	readonly patternLimit = exportFilenamePatternLimit;
+	readonly outcomeColumns: TableConfig<DocumentExportOutcome> = { columns: [
+		{ field: 'sourceName', text: 'Original', type: 'custom', template: 'original' },
+		{ field: 'filename', text: 'Export filename', type: 'custom', template: 'filename' },
+		{ field: 'status', text: 'Result', type: 'custom', template: 'result' },
+	] };
 	readonly placeholders = [
 		{ token: '{date}', label: 'Booking date' }, { token: '{counterparty}', label: 'Counterparty' },
 		{ token: '{currency}', label: 'Currency' }, { token: '{amount}', label: 'Booking amount' },
 	];
 
 	constructor() { void this.load(); }
+
+	failureLabel(outcome: Extract<DocumentExportOutcome, { status: 'failed' }>) { return this.failureLabels[outcome.reason]; }
 
 	private async load() {
 		try {
@@ -73,8 +83,8 @@ export class ExportSettings {
 		this.error.set(null);
 	}
 
-	async save(event: Event) {
-		event.preventDefault();
+	async save(event?: Event) {
+		event?.preventDefault();
 		if (this.busy() || this.exporting() || !this.preview().filename || this.savedPattern() === this.pattern().trim()) return;
 		this.busy.set(true);
 		this.error.set(null);

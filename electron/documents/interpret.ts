@@ -67,7 +67,14 @@ function heading(raw: string): DocumentSection['kind'] | null {
 	if (/^(?:payment instructions?|exchange rate|exchange rate information|payment information)$/.test(value)) return 'payment-information';
 	return null;
 }
+function taxRegistration(raw: string) {
+	const value = raw.trim();
+	if (/^(?:(?:VAT|Tax)(?:\s+registration)?\s*(?:ID\b|number\b|no\b|#)|(?:USt[-.]?IdNr|Steuernummer|TIC)\b)/i.test(value)) return true;
+	return /^(?:VAT|Tax)(?:\s*[:;]\s*|\s+)(?:(?:[A-Z]{2})?\d{6,}[A-Z]?|\d{1,3}(?:[., ]\d{3})+[A-Z]?)\s*$/i.test(value);
+}
+
 function amountRole(raw: string, kind: DocumentSection['kind'], paymentBlock: boolean, informationalFx: boolean): AmountRole | null {
+	if (taxRegistration(raw)) return null;
 	if (/exchange rate|pricing currency|informational (?:fx|amount)/i.test(raw) || informationalFx) return 'informational-fx';
 	if (explicitRefund.test(raw)) return 'refund-payment';
 	const totalRole = kind === 'credit-note' ? 'credit-note-component' : 'billed-total';
@@ -216,6 +223,89 @@ function receiptVatTotal(section: DocumentSection, lines: Line[], declared: stri
 	const amounts = [netValue, taxValue, sum].map(value => ({ coefficient: value.toString(), scale: 2, currency }));
 	const evidence = source({ ...line, spans: breakdown });
 	return { originalFields, amounts, evidence, reconstructed, totalEvidence: [...source({ ...line, spans: [total, ...totalRow] }), ...evidence] };
+}
+
+function receiptItemTotal(section: DocumentSection, lines: Line[], currency: string | null) {
+	if (section.kind !== 'receipt' && section.kind !== 'unknown') return null;
+	const totals = section.amounts.filter(field => field.role === 'billed-total');
+	if (totals.length > 1 || section.amounts.some(field => ['subtotal', 'payment', 'balance-due', 'refund-payment'].includes(field.role))) return null;
+	const printed = lines.filter(line => /^(?:\d{1,2}:\d{2}\s+)?(?:grand\s+)?total\b/i.test(line.text));
+	if (printed.length !== 1) return null;
+	const [line] = printed;
+	const spans = lines.filter(other => other.page === line.page).flatMap(other => other.spans);
+	const label = line.spans.find(span => /^(?:grand\s+)?total:?$/i.test(span.text.trim()));
+	if (!label || label.method !== 'local-ocr') return null;
+	const visualRow = (anchor: PositionedSpan) => spans.filter(span => span.method === 'local-ocr' && sameVisualRow(span.region, anchor.region))
+		.sort((a, b) => a.region.x - b.region.x);
+	const decimal = /^\d{1,18}[.,]\d{2}$/;
+	const totalRow = visualRow(label);
+	const totalAmounts = totalRow.filter(span => decimal.test(span.text.trim()) && span.region.x > label.region.x + label.region.width);
+	if (totalAmounts.length !== 1) return null;
+	const [amount] = totalAmounts;
+	const suffix = amount.text.trim().replace(/[.,]/, '');
+	const rowText = totalRow.map(span => span.text.trim()).join(' ');
+	const codes = currencies(rowText);
+	if (/[$£¥−-]/.test(rowText) || codes.length > 1 || (codes[0] && currency && codes[0] !== currency)) return null;
+	const established = codes[0] ?? currency;
+	if (!established) return null;
+	const existing = totals[0];
+	if (existing && (existing.candidates.length !== 1 || existing.candidates[0].coefficient !== BigInt(suffix).toString() ||
+		existing.candidates[0].scale !== 2 || existing.candidates[0].currency !== established ||
+		!existing.evidence.some(item => item.pageId === line.page.pageId && sameVisualRow(item.region, amount.region)))) return null;
+
+	const rightEdge = amount.region.x + amount.region.width;
+	const itemAmounts = spans.filter(span => span.method === 'local-ocr' && span.region.y < label.region.y &&
+		decimal.test(span.text.trim()) && Math.abs(span.region.x + span.region.width - rightEdge) <= label.region.height)
+		.sort(order);
+	const items: PositionedSpan[][] = [];
+	let sum = 0n;
+	let previous = label;
+	for (const price of itemAmounts.reverse()) {
+		if (previous.region.y - price.region.y > Math.max(previous.region.height, price.region.height) * 4) break;
+		const item = visualRow(price);
+		if (item.filter(span => /\d+[.,]\d/.test(span.text)).length !== 1 || item.some(span => /[$£¥%]|^[-−+(]$/.test(span.text.trim()))) return null;
+		const description = item.filter(span => span.region.x < price.region.x).map(span => span.text.trim()).join(' ');
+		if (!/^\d{1,3}\s+\p{L}/u.test(description) || /\b(?:subtotal|total|tax|vat|tip|discount|service charge|change|refund)\b/i.test(description)) return null;
+		const itemCurrency = currencies(item.map(span => span.text).join(' '));
+		if (itemCurrency.some(code => code !== established)) return null;
+		sum += BigInt(price.text.trim().replace(/[.,]/, ''));
+		items.push(item);
+		previous = price;
+	}
+	const cents = sum.toString();
+	if (items.length < 2 || items.length > 120 || cents.length !== suffix.length + 1 || !cents.endsWith(suffix)) return null;
+	// Reject extra meaningful text between the counted rows and the total.
+	const counted = new Set([...items.flat(), ...totalRow]);
+	if (spans.some(span => span.region.y >= previous.region.y && span.region.y < label.region.y &&
+		/[\p{L}\d]/u.test(span.text) && !counted.has(span))) return null;
+	return { existing, amount: { coefficient: cents, scale: 2, currency: established },
+		evidence: [...source({ ...line, spans: totalRow }), ...items.reverse().flatMap(item => source({ ...line, spans: item }))] };
+}
+
+function receiptCategoryTaxes(section: DocumentSection, lines: Line[], currency: string | null): Omit<DocumentSection['amounts'][number], 'id'>[] {
+	if (section.kind !== 'receipt' && section.kind !== 'unknown') return [];
+	const totals = lines.filter(line => /^(?:\d{1,2}:\d{2}\s+)?(?:grand\s+)?total\s*:?\s*(?=[\d€$£]|[A-Z]{3}\s+\d|$)/i.test(line.text));
+	if (totals.length !== 1) return [];
+	const [total] = totals;
+	const samePage = lines.filter(line => line.page === total.page);
+	const below = samePage.slice(samePage.indexOf(total) + 1);
+	if (!below.some(line => /\b(?:tax(?:es)?|vat)\s+(?:are\s+)?included\b/i.test(line.text))) return [];
+	const candidates: Omit<DocumentSection['amounts'][number], 'id'>[] = [];
+	for (const [index, line] of below.entries()) {
+		if (line.spans[0].region.y - total.spans[0].region.y > total.spans[0].region.height * 6) break;
+		const next = below[index + 1];
+		const separate = next && sameVisualRow(line.spans[0].region, next.spans[0].region) &&
+			next.spans[0].region.x > line.spans.at(-1)!.region.x + line.spans.at(-1)!.region.width;
+		const split = separate && /%\s*$/.test(line.text);
+		const text = split ? line.text + ' ' + next.text : line.text;
+		const match = /^([\p{L}][\p{L} ./&-]{0,39}\s*\d{1,2}(?:[.,]\d{1,2})?\s*%)\s*(?:([A-Z]{3}|€)\s*)?(\d+[.,]\d{2})(?:\s*([A-Z]{3}|€))?$/u.exec(text);
+		if (!match || amountRole(match[1], section.kind, false, false)) continue;
+		const codes = currencies(text);
+		if ((match[2] || match[4]) && codes.length !== 1) continue;
+		const evidence = [...source(line), ...(split ? source(next) : [])];
+		candidates.push({ role: 'tax', label: match[1], candidates: numberCandidates(match[3]).map(value => ({ ...value, currency: codes[0] ?? currency })), evidence });
+	}
+	return candidates;
 }
 
 function dateCandidates(raw: string): string[] {
@@ -423,6 +513,7 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 			if (/\0|\(cid:\d+\)|�/.test(line.text)) addIssue('uncertain-text', 'Source text contains unreadable glyphs; retain the printed evidence for correction.', current, null, null, evidence);
 			if (appliedTransactions.test(line.text)) paymentBlock = evidence;
 			else if (endPaymentBlock.test(line.text)) paymentBlock = [];
+			if (taxRegistration(line.text)) continue;
 			const ownCurrencies = currencies(line.text);
 			if (ownCurrencies.length && (/\bcurrency\b|betrag in|\(EUR\)|\(USD\)|\(GBP\)/i.test(line.text) || current.kind === 'payment-information' && fxPage)) {
 				current.currencies.push({ id: nextId(), role: current.kind === 'payment-information' && fxPage || /pricing currency|exchange rate/i.test(line.text) ? 'informational-fx' : 'settlement',
@@ -517,6 +608,17 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 			if (reconstructed) addIssue('reconstructed-total', 'The total was reconstructed from the printed net amount and VAT because the OCR missed a leading digit.',
 				section, total.id, total.role, totalEvidence);
 		}
+		const itemTotal = !breakdown && declared.length <= 1 ? receiptItemTotal(section, lines, currency) : null;
+		if (itemTotal) {
+			const { existing, amount, evidence } = itemTotal;
+			const total = { id: existing?.id ?? nextId(), role: 'billed-total' as const, label: 'Total reconstructed from receipt items', candidates: [amount], evidence };
+			if (existing) Object.assign(existing, total);
+			else section.amounts.push(total);
+			addIssue('reconstructed-total', 'The total was reconstructed from the printed item amounts because the OCR missed a leading digit.', section, total.id, total.role, evidence);
+		}
+		const totalCurrencies = unique(section.amounts.filter(field => field.role === 'billed-total').flatMap(field => field.candidates.map(value => value.currency)).filter(value => value !== null));
+		const taxCurrency = currency ?? (totalCurrencies.length === 1 ? totalCurrencies[0] : null);
+		for (const tax of receiptCategoryTaxes(section, lines, taxCurrency)) section.amounts.push({ ...tax, id: nextId() });
 		for (const field of [...section.amounts, ...section.dates, ...section.merchants, ...section.references, ...section.currencies]) {
 			if (field.candidates.length !== 1) addIssue(field.candidates.length ? 'ambiguous-field' : 'unresolved-field', 'The printed field has no single established interpretation.', section, field.id, field.role, field.evidence);
 		}

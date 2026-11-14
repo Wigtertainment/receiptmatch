@@ -8,7 +8,7 @@ files:
   - .build/*.cjs
   - .build/ui/browser/**/*
   - .build/extraction/**/*
-  - .build/preview/**/*
+  - .build/preview/browser/**/*
   - package.json
   - LICENSE
 extraResources:

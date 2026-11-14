@@ -8,10 +8,10 @@
 			</p>
 			<div class="match-filters" role="group" aria-label="Filter match results">
 				@for (option of filters; track option) {
-					<button type="button" [attr.aria-pressed]="filter() === option" (click)="setFilter(option)">
+					<wig-button severity="secondary" [class.active-filter]="filter() === option" [appButtonPressed]="filter() === option" (click)="setFilter(option)">
 						{{ option === 'all' ? 'All' : statusLabels[option] }}
 						<span class="filter-count">{{ option === 'all' ? results.length : counts()[option] }}</span>
-					</button>
+					</wig-button>
 				}
 			</div>
 			<div class="match-workbench">
@@ -21,7 +21,7 @@
 						<p class="match-list-count" role="status">{{ filteredRows().length }} {{ filteredRows().length === 1 ? 'transaction' : 'transactions' }}</p>
 						<div class="match-batch-actions" role="group" aria-label="Batch approval">
 							@let count = approvalSelections()?.size ?? 0;
-							<button type="button" class="button-primary compact" [disabled]="reviewDisabled() || !count" (click)="approveSelected()">Approve selected</button>
+							<wig-button label="Approve selected" [disabled]="reviewDisabled() || !count" (click)="approveSelected()" />
 							<p role="status">
 								{{ count }} selected for approval
 								@if (hiddenApprovalCount(); as hidden) {
@@ -29,7 +29,7 @@
 								}
 							</p>
 							@if (count) {
-								<button type="button" class="button-secondary compact" [disabled]="reviewDisabled()" (click)="clearApprovalSelection()">Clear selection</button>
+								<wig-button label="Clear selection" severity="secondary" [disabled]="reviewDisabled()" (click)="clearApprovalSelection()" />
 							}
 						</div>
 						@if (approvalFeedback(); as feedback) {
@@ -45,67 +45,60 @@
 						}
 					</header>
 					@if (filteredRows().length) {
-						<div class="table-scroll match-table" role="region" aria-label="Transaction match results" tabindex="0">
-							<table>
-								<caption class="sr-only">
-									Transaction match results
-								</caption>
-								<thead>
-									<tr>
-										<th scope="col" class="match-batch-column"><span class="sr-only">Approval selection</span></th>
-										<th scope="col" class="match-date-column">Booking date</th>
-										<th scope="col">Transaction</th>
-										<th scope="col" class="match-amount-column">Account amount</th>
-										<th scope="col" class="match-result-column">Review / suggestion</th>
-									</tr>
-								</thead>
-								<tbody>
-									@for (row of filteredRows(); track row.transactionId) {
-										@let isSelected = selectedRow()?.transactionId === row.transactionId;
-										@let checked = approvalSelections()?.has(row.transactionId) ?? false;
-										@let approvalIssue = approvalFeedback()?.transactionId === row.transactionId;
-										<tr [class.match-selected]="isSelected">
-											<td class="match-batch-cell">
-												@if ((row.approvalSelection && !row.approval) || checked) {
-													<label class="match-batch-checkbox">
-														<input type="checkbox" [checked]="checked" [disabled]="reviewDisabled()" (change)="selectForApproval(row, $event)" />
-														<span class="sr-only">Select {{ row.description.trim() || 'Transaction' }} for approval</span>
-													</label>
-												}
-											</td>
-											<td class="match-booking-date">{{ date(row.bookingDate) }}</td>
-											<th scope="row">
-												<button
-													type="button"
-													class="match-transaction"
-													[id]="'match-transaction-' + row.transactionId"
-													[attr.aria-pressed]="isSelected"
-													[attr.aria-describedby]="approvalIssue ? 'match-batch-result' : null"
-													aria-controls="match-detail-panel"
-													(click)="selectTransaction(row.transactionId, $event)"
-												>
-													{{ row.description.trim() || 'Transaction' }}
-												</button>
-											</th>
-											<td class="match-account-amount">{{ money(row.accountAmount) }}</td>
-											<td>
-												<span class="match-row-review">{{ reviewLabels[row.review.status] }}</span>
-												@let approval = row.approvalStatus.status;
-												@if (approval !== 'none') {
-													<span class="match-row-approval" [class.match-approval-changed]="approval !== 'approved'">{{ approvalLabels[approval] }}</span>
-												}
-												<span class="match-status" [class.match-reliable]="row.status === 'reliable'" [class.match-uncertain]="row.status === 'uncertain'">
-													{{ statusLabels[row.status] }}
-												</span>
-												@if (row.candidateCount) {
-													<span class="match-candidate-count">{{ row.candidateCount }} {{ row.candidateCount === 1 ? 'candidate' : 'candidates' }}</span>
-												}
-											</td>
-										</tr>
-									}
-								</tbody>
-							</table>
-						</div>
+						<wig-table
+							class="match-table"
+							ariaLabel="Transaction match results"
+							[data]="filteredRows()"
+							[config]="transactionColumns"
+							[insideCard]="false"
+							(click)="selectTransaction($event)"
+						>
+							<ng-template wigTemplate="approval" let-row="item">
+								@let checked = approvalSelections()?.has(row.transactionId) ?? false;
+								@if ((row.approvalSelection && !row.approval) || checked) {
+									<wig-checkbox
+										class="match-batch-checkbox"
+										[checked]="checked"
+										[disabled]="reviewDisabled()"
+										[ariaLabel]="'Select ' + (row.description.trim() || 'Transaction') + ' for approval'"
+										(checkedChange)="selectForApproval(row, $event)"
+									/>
+								}
+							</ng-template>
+							<ng-template wigTemplate="date" let-row="item">
+								<span class="match-booking-date">{{ date(row.bookingDate) }}</span>
+							</ng-template>
+							<ng-template wigTemplate="transaction" let-row="item">
+								<span
+									class="match-transaction"
+									[id]="'match-transaction-' + row.transactionId"
+									[attr.data-transaction-id]="row.transactionId"
+									[attr.aria-current]="selectedRow()?.transactionId === row.transactionId ? 'true' : null"
+									[attr.aria-describedby]="approvalFeedback()?.transactionId === row.transactionId ? 'match-batch-result' : null"
+								>
+									{{ row.description.trim() || 'Transaction' }}
+								</span>
+							</ng-template>
+							<ng-template wigTemplate="amount" let-row="item">
+								<span class="match-account-amount">{{ money(row.accountAmount) }}</span>
+							</ng-template>
+							<ng-template wigTemplate="review" let-item="item">
+								@let row = tableRow(item);
+								<span class="match-row-review">{{ reviewLabels[row.review.status] }}</span>
+								@let approval = row.approvalStatus.status;
+								@if (approval !== 'none') {
+									<span class="match-row-approval" [class.match-approval-changed]="approval !== 'approved'">{{ approvalLabels[approval] }}</span>
+								}
+								<wig-tag
+									class="match-status"
+									[label]="statusLabels[row.status]"
+									[severity]="row.status === 'reliable' ? 'success' : row.status === 'uncertain' ? 'warn' : 'secondary'"
+								/>
+								@if (row.candidateCount) {
+									<span class="match-candidate-count">{{ row.candidateCount }} {{ row.candidateCount === 1 ? 'candidate' : 'candidates' }}</span>
+								}
+							</ng-template>
+						</wig-table>
 					} @else {
 						<p class="match-panel-message" role="status">No transactions with this result.</p>
 					}
@@ -115,21 +108,34 @@
 						<header class="match-panel-heading match-detail-header">
 							<div class="match-detail-title">
 								<h2 id="match-detail-heading" tabindex="-1">{{ transactionName(selected.description) }}</h2>
-								<span class="match-status" [class.match-reliable]="selected.status === 'reliable'" [class.match-uncertain]="selected.status === 'uncertain'">
-									{{ statusLabels[selected.status] }}
-								</span>
+								<wig-tag
+									class="match-status"
+									[label]="statusLabels[selected.status]"
+									[severity]="selected.status === 'reliable' ? 'success' : selected.status === 'uncertain' ? 'warn' : 'secondary'"
+								/>
 							</div>
 							<p>Booked {{ date(selected.bookingDate) }} · {{ money(selected.accountAmount) }}</p>
 							@if (selected.bankValuesCorrected) {
 								<p>Uses corrected bank values. Source evidence shows the original statement.</p>
 							}
 							@if (transactionName(selected.description) !== selected.description.trim()) {
-								<details class="source-details match-description">
-									<summary>Transaction description</summary>
-									<p class="raw-text">{{ selected.description }}</p>
-								</details>
+								<wig-accordion
+									class="match-description"
+									[items]="[{ id: selected.transactionId, header: 'Transaction description', template: 'description' }]"
+									[value]="null"
+								>
+									<ng-template wigTemplate="description"
+										><p class="raw-text">{{ selected.description }}</p></ng-template
+									>
+								</wig-accordion>
 							}
-							<button type="button" class="match-back" (click)="focusSelectedTransaction(selected.transactionId)">Back to transactions</button>
+							<wig-button
+								label="Back to transactions"
+								class="match-back-button"
+								styleClass="match-back"
+								[link]="true"
+								(click)="focusSelectedTransaction(selected.transactionId)"
+							/>
 						</header>
 						<section class="match-review" aria-labelledby="match-review-heading">
 							<div class="match-review-title">
@@ -155,16 +161,19 @@
 							@if (documents(); as available) {
 								@if (available.length) {
 									<label for="match-review-document">Supporting document</label>
-									<select id="match-review-document" [disabled]="reviewDisabled()" (change)="chooseDocument($event)">
-										<option value="" [selected]="!selectedDocumentId()">Choose an imported document</option>
-										@for (item of available; track item.id) {
-											@let owner = owners().get(item.id);
-											@let inUse = owner && owner.transactionId !== selected.transactionId;
-											<option [value]="item.id" [selected]="selectedDocumentId() === item.id" [disabled]="inUse">
-												{{ documentLabel(item, inUse ? owner : undefined) }}
-											</option>
-										}
-									</select>
+									<wig-dropdown
+										inputId="match-review-document"
+										ariaLabel="Supporting document"
+										placeholder="Choose an imported document"
+										[options]="documentOptions()"
+										optionLabel="label"
+										optionValue="id"
+										[showClear]="true"
+										clearLabel="Clear supporting document selection"
+										[selectedOption]="selectedDocumentId() || null"
+										(selectedOptionChange)="chooseDocument($event)"
+										[disabled]="reviewDisabled()"
+									/>
 									@if (selectedDocument(); as document) {
 										<p class="file-location">{{ document.path }}</p>
 										<p>Document total {{ document.total ?? 'unavailable' }}</p>
@@ -173,56 +182,51 @@
 									<p>Import supporting documents in Sources to assign them here.</p>
 								}
 							} @else if (documentsFailed()) {
-								<p role="alert">Imported documents could not be loaded.</p>
-								<button type="button" class="button-secondary compact" (click)="retryDocuments()">Retry loading documents</button>
+								<wig-alert type="error" text="Imported documents could not be loaded." />
+								<wig-button label="Retry loading documents" severity="secondary" (click)="retryDocuments()" />
 							} @else {
 								<p role="status">Loading imported documents…</p>
 							}
 							<div class="match-review-actions">
 								@if (documents()?.length) {
-									<button
-										type="button"
-										class="button-primary compact"
+									<wig-button
 										[disabled]="reviewDisabled() || !selectedDocument() || assignedDocument()?.id === selectedDocumentId()"
 										(click)="applyReview({ status: 'assigned', documentId: selectedDocumentId() })"
 									>
 										{{ selected.review.status === 'assigned' ? 'Replace document' : 'Assign document' }}
-									</button>
+									</wig-button>
 								}
 								@if (selected.review.status === 'open') {
-									<button
-										type="button"
-										class="button-secondary compact"
+									<wig-button
+										label="Complete without document"
+										severity="secondary"
 										[disabled]="reviewDisabled()"
 										(click)="applyReview({ status: 'completed-without-document' })"
-									>
-										Complete without document
-									</button>
+									/>
 								} @else {
-									<button type="button" class="button-secondary compact" [disabled]="reviewDisabled()" (click)="applyReview({ status: 'open' })">
+									<wig-button severity="secondary" [disabled]="reviewDisabled()" (click)="applyReview({ status: 'open' })">
 										{{ selected.review.status === 'assigned' ? 'Remove assignment' : 'Reopen transaction' }}
-									</button>
+									</wig-button>
 								}
 								@if (selectedDocument(); as document) {
 									<app-original-preview-button kind="document" [sourceId]="document.id" [sourceName]="document.name" [loadRevision]="workspace().loadRevision" />
 								}
 							</div>
 							@if (reviewError(); as error) {
-								<p role="alert">{{ error }}</p>
+								<wig-alert type="error" [text]="error" />
 							}
-							@if (selectedDocument(); as document) {
-								<details
-									class="source-details match-document-preview"
-									[open]="previewDocumentId() === document.id"
-									(toggle)="toggleDocumentPreview(document.id, $event)"
-								>
-									<summary>
-										Document details <span class="sr-only">for {{ document.name }}</span>
-									</summary>
-									@if (previewDocumentId() === document.id) {
-										<app-document-analysis [analysis]="document.record.result" [format]="document.record.format" fieldHeading="Document fields" />
-									}
-								</details>
+							@if (selectedDocument(); as previewDocument) {
+								@for (document of [previewDocument]; track selectedRow()?.transactionId + '/' + document.id) {
+									<wig-accordion
+										class="source-details match-document-preview"
+										[items]="[{ id: document.id, header: 'Document details for ' + document.name, template: 'preview' }]"
+										[value]="null"
+									>
+										<ng-template wigTemplate="preview">
+											<app-document-analysis [analysis]="document.record.result" [format]="document.record.format" fieldHeading="Document fields" />
+										</ng-template>
+									</wig-accordion>
+								}
 							}
 						</section>
 						@if (!selected.candidateCount) {
@@ -234,28 +238,31 @@
 								<article class="match-candidate">
 									<div class="match-candidate-heading">
 										<h3>{{ basename(candidate.filePath) }}</h3>
-										<span class="match-status" [class.match-uncertain]="candidate.issues.length" [class.match-reliable]="!candidate.issues.length">
-											{{ candidate.issues.length ? 'Uncertain' : 'Reliable' }}
-										</span>
+										<wig-tag
+											class="match-status"
+											[label]="candidate.issues.length ? 'Uncertain' : 'Reliable'"
+											[severity]="candidate.issues.length ? 'warn' : 'success'"
+										/>
 										@if (owner) {
 											<span
 												class="match-candidate-count"
 												>{{ owner.transactionId === selected.transactionId ? 'Assigned to this transaction' : 'Assigned to ' + transactionName(owner.description) }}</span
 											>
 										} @else {
-											<button
-												type="button"
-												class="button-primary compact"
+											@let assignLabel = selected.review.status === 'assigned' ? 'Replace with this document' : 'Assign this document';
+											<wig-icon-button
+												iconName="plus"
+												[ariaLabel]="assignLabel + ' ' + basename(candidate.filePath)"
+												[tooltip]="assignLabel"
+												tooltipPosition="top"
 												[disabled]="reviewDisabled()"
 												(click)="applyReview({ status: 'assigned', documentId: candidate.documentId })"
-											>
-												{{ selected.review.status === 'assigned' ? 'Replace with this document' : 'Assign this document' }}
-												<span class="sr-only">{{ basename(candidate.filePath) }}</span>
-											</button>
+											/>
 										}
 										<app-original-preview-button
 											kind="document"
 											[sourceId]="candidate.documentId"
+											iconTooltip="Open original"
 											[sourceName]="basename(candidate.filePath)"
 											[loadRevision]="workspace().loadRevision"
 										/>
@@ -328,29 +335,32 @@
 											}
 										</div>
 									</dl>
-									<details class="source-details match-source">
-										<summary>
-											Source evidence <span class="sr-only">for {{ basename(candidate.filePath) }}</span>
-										</summary>
-										<div class="match-source-columns">
-											<div>
-												<h4>Bank statement</h4>
-												<p class="file-location">{{ result.statementPath }}</p>
-												<ng-container *ngTemplateOutlet="excerpts; context: { $implicit: candidate.bankEvidence }" />
+									<wig-accordion
+										class="match-source"
+										[items]="[{ id: 'evidence', header: 'Source evidence for ' + basename(candidate.filePath), template: 'evidence' }]"
+										[value]="null"
+									>
+										<ng-template wigTemplate="evidence">
+											<div class="match-source-columns">
+												<div>
+													<h4>Bank statement</h4>
+													<p class="file-location">{{ result.statementPath }}</p>
+													<ng-container *ngTemplateOutlet="excerpts; context: { $implicit: candidate.bankEvidence }" />
+												</div>
+												<div>
+													<h4>Supporting document</h4>
+													<p class="file-location">{{ candidate.filePath }}</p>
+													<ng-container *ngTemplateOutlet="excerpts; context: { $implicit: candidate.documentEvidence }" />
+												</div>
 											</div>
-											<div>
-												<h4>Supporting document</h4>
-												<p class="file-location">{{ candidate.filePath }}</p>
-												<ng-container *ngTemplateOutlet="excerpts; context: { $implicit: candidate.documentEvidence }" />
-											</div>
-										</div>
-									</details>
+										</ng-template>
+									</wig-accordion>
 								</article>
 							}
 						} @else if (detailsFailed()) {
 							<div class="match-panel-message">
-								<p role="alert">Candidate details could not be loaded.</p>
-								<button type="button" class="button-secondary compact" (click)="retryDetails()">Retry candidate details</button>
+								<wig-alert type="error" text="Candidate details could not be loaded." />
+								<wig-button label="Retry candidate details" severity="secondary" (click)="retryDetails()" />
 							</div>
 						} @else {
 							<p class="match-panel-message" role="status">Loading candidates…</p>
@@ -363,8 +373,8 @@
 		}
 	} @else if (summariesFailed()) {
 		<div class="match-panel match-panel-message">
-			<p role="alert">Match suggestions could not be loaded.</p>
-			<button type="button" class="button-secondary compact" (click)="retrySummaries()">Retry match suggestions</button>
+			<wig-alert type="error" text="Match suggestions could not be loaded." />
+			<wig-button label="Retry match suggestions" severity="secondary" (click)="retrySummaries()" />
 		</div>
 	} @else {
 		<p class="match-panel match-panel-message" role="status">Loading match suggestions…</p>

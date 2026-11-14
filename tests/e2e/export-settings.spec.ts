@@ -23,7 +23,9 @@ test('previews, validates and saves an export filename pattern across Electron r
 				dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [filePath] });
 			}, workspacePath);
 			await page.getByRole('button', { name: 'Open workspace' }).click();
-			await page.getByRole('navigation', { name: 'Workspace views' }).getByRole('button', { name: 'Export', exact: true }).press('Enter');
+			const exportNav = page.getByRole('navigation', { name: 'Workspace views' }).getByRole('button', { name: 'Export', exact: true });
+			await exportNav.press('Enter');
+			await expect(exportNav).toHaveAttribute('aria-current', 'page');
 			await expect(page.getByRole('heading', { name: 'Export', exact: true })).toBeFocused();
 			const input = page.getByRole('textbox', { name: 'Filename pattern' });
 			await expect(input).toBeEnabled();
@@ -42,7 +44,7 @@ test('previews, validates and saves an export filename pattern across Electron r
 		await expect(first.save).toBeDisabled();
 		await first.input.fill('{counterparty} - {date}');
 		await expect(first.preview).toHaveText('Example-Merchant - 2026-10-21.pdf');
-		await first.save.click();
+		await first.input.press('Enter');
 		await expect(first.page.getByText('Pattern saved.', { exact: true })).toBeVisible();
 		await expect(first.page.getByText('All changes saved', { exact: true })).toBeVisible();
 	} finally { await first.app.close(); }

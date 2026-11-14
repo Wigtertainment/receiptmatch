@@ -78,22 +78,5 @@ module.exports = [
 		// Offline OCR requires local workers, WASM and language data beyond web-download budgets.
 		performance: { hints: false },
 		optimization: { minimize: false, splitChunks: false, runtimeChunk: false }
-	},
-	{
-		name: 'preview-renderer',
-		mode: 'production',
-		context: __dirname,
-		target: ['web', 'es2022'],
-		entry: './electron/preview/renderer.ts',
-		output: {
-			path: path.resolve(__dirname, '.build/preview'),
-			filename: 'viewer.js',
-			copy: [{ from: 'electron/preview/index.html', filename: 'index.html' }, { from: 'electron/preview/viewer.css', filename: 'viewer.css' }]
-		},
-		module: { rules: [typescript] },
-		resolve,
-		devtool: false,
-		performance: { hints: false },
-		optimization: { minimize: false, splitChunks: false, runtimeChunk: false }
 	}
 ];

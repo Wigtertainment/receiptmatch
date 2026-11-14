@@ -1,3 +1,6 @@
+import { Component, computed, signal } from '@angular/core';
+import { bootstrapApplication } from '@angular/platform-browser';
+import { WigButtonComponent, WigDropdownComponent } from '@wigtertainment-ltd/comp-lib';
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type RenderTask } from 'pdfjs-dist';
 import type { OriginalPreviewData } from '../../src/shared/original-preview.js';
 import { PDF_EXTRACTION_LIMITS } from '../../src/shared/pdf-extraction.js';
@@ -11,11 +14,6 @@ declare global {
 const name = document.querySelector<HTMLHeadingElement>('#document-name')!;
 const loading = document.querySelector<HTMLParagraphElement>('#loading')!;
 const error = document.querySelector<HTMLParagraphElement>('#error')!;
-const pagination = document.querySelector<HTMLElement>('#pagination')!;
-const pageNumber = document.querySelector<HTMLOutputElement>('#page-number')!;
-const previous = document.querySelector<HTMLButtonElement>('#previous-page')!;
-const next = document.querySelector<HTMLButtonElement>('#next-page')!;
-const zoom = document.querySelector<HTMLSelectElement>('#zoom')!;
 const viewport = document.querySelector<HTMLElement>('#viewport')!;
 const canvas = document.querySelector<HTMLCanvasElement>('#pdf-page')!;
 const image = document.querySelector<HTMLImageElement>('#source-image')!;
@@ -25,10 +23,57 @@ GlobalWorkerOptions.workerSrc = asset('pdf.worker.min.mjs');
 
 let pdf: PDFDocumentProxy | undefined;
 let loadingTask: ReturnType<typeof getDocument> | undefined;
-let selectedPage = 1;
+const selectedPage = signal(1);
+const pageCount = signal(0);
+const ready = signal(false);
+const zoom = signal('fit');
+const zoomPresets = [75, 100, 125, 150, 200];
+const minimumZoom = 25;
+const maximumZoom = 400;
+let renderedScale = 1;
 let renderTask: RenderTask | undefined;
 let renderQueue = Promise.resolve();
 let revision = 0;
+
+@Component({
+    selector: 'app-preview-controls', imports: [WigButtonComponent, WigDropdownComponent],
+    template: `
+        <div class="controls">
+            @if (pageCount()) {
+                <div id="pagination" class="controls" role="group" aria-label="PDF pages">
+                    <wig-button label="Previous page" severity="secondary" [disabled]="page() <= 1" (click)="movePage(-1)" />
+                    <output id="page-number" aria-live="polite">Page {{ page() }} of {{ pageCount() }}</output>
+                    <wig-button label="Next page" severity="secondary" [disabled]="page() >= pageCount()" (click)="movePage(1)" />
+                </div>
+            }
+            <label for="zoom">Zoom</label>
+            <wig-dropdown class="zoom-control" inputId="zoom" ariaLabel="Zoom" [options]="zoomOptions()" optionLabel="label" optionValue="value"
+                [disabled]="!ready()" [selectedOption]="zoom()" (selectedOptionChange)="changeZoom($event)" />
+        </div>
+    `
+})
+class PreviewControls {
+    readonly page = selectedPage;
+    readonly pageCount = pageCount;
+    readonly ready = ready;
+    readonly zoom = zoom;
+    readonly zoomOptions = computed(() => {
+        const current = zoom();
+        const percentages = current === 'fit' ? zoomPresets : [...new Set([...zoomPresets, Math.round(Number(current) * 100)])].sort((a, b) => a - b);
+        return [{ value: 'fit', label: 'Fit to window' }, ...percentages.map(percent => ({ value: String(percent / 100), label: `${percent}%` }))];
+    });
+
+    movePage(offset: number) {
+        const page = selectedPage() + offset;
+        if (page < 1 || page > pageCount()) return;
+        selectedPage.set(page);
+        showPage(true);
+    }
+
+    changeZoom(value: string | null) {
+        changeZoom(value ?? 'fit');
+    }
+}
 
 function setError(message: string) {
     error.textContent = message;
@@ -36,21 +81,47 @@ function setError(message: string) {
 }
 
 function displayScale(width: number, height: number) {
-    if (zoom.value !== 'fit') return Number(zoom.value);
+    if (zoom() !== 'fit') return Number(zoom());
     const { paddingInlineStart, paddingInlineEnd, paddingBlockStart, paddingBlockEnd } = getComputedStyle(viewport);
     const availableWidth = viewport.clientWidth - parseFloat(paddingInlineStart) - parseFloat(paddingInlineEnd);
     const availableHeight = viewport.clientHeight - parseFloat(paddingBlockStart) - parseFloat(paddingBlockEnd);
     return Math.max(0.01, Math.min(availableWidth / width, availableHeight / height));
 }
 
-function showPage(resetScroll = false) {
+function changeZoom(value: string, restorePosition?: () => void) {
+    if (zoom() === value) return;
+    zoom.set(value);
+    if (pdf) showPage(false, restorePosition);
+    else {
+        resizeImage();
+        restorePosition?.();
+    }
+}
+
+function zoomWithWheel(event: WheelEvent) {
+    if (!event.ctrlKey || !event.deltaY) return;
+    event.preventDefault();
+    const page = pdf ? canvas : image;
+    if (!ready() || page.hidden) return;
+    const current = zoom() === 'fit' ? renderedScale : Number(zoom());
+    const percent = Math.round(current * 100);
+    const next = event.deltaY < 0 ? Math.min(maximumZoom, percent + 10) : Math.max(minimumZoom, percent - 10);
+    if (event.deltaY < 0 ? next <= percent : next >= percent) return;
+
+    const before = page.getBoundingClientRect();
+    const x = (event.clientX - before.left) / before.width;
+    const y = (event.clientY - before.top) / before.height;
+    changeZoom(String(next / 100), () => {
+        const after = page.getBoundingClientRect();
+        viewport.scrollBy(after.left + x * after.width - event.clientX, after.top + y * after.height - event.clientY);
+    });
+}
+
+function showPage(resetScroll = false, restorePosition?: () => void) {
     const document = pdf;
     if (!document) return;
-    const page = selectedPage;
+    const page = selectedPage();
     const current = ++revision;
-    previous.disabled = page === 1;
-    next.disabled = page === document.numPages;
-    pageNumber.textContent = `Page ${page} of ${document.numPages}`;
     if (resetScroll) viewport.scrollTo(0, 0);
     setError('');
     renderTask?.cancel();
@@ -62,7 +133,8 @@ function showPage(resetScroll = false) {
             const { width, height } = source.getViewport({ scale: 1 });
             if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new Error('Invalid page dimensions');
             const maxScale = Math.min(Math.sqrt(PDF_EXTRACTION_LIMITS.pixelsPerPage / width / height), 8192 / width, 8192 / height);
-            const pageViewport = source.getViewport({ scale: Math.min(displayScale(width, height), maxScale) });
+            renderedScale = Math.min(displayScale(width, height), maxScale);
+            const pageViewport = source.getViewport({ scale: renderedScale });
             canvas.width = Math.max(1, Math.floor(pageViewport.width));
             canvas.height = Math.max(1, Math.floor(pageViewport.height));
             const task = source.render({ canvas, viewport: pageViewport });
@@ -71,6 +143,7 @@ function showPage(resetScroll = false) {
             if (current !== revision) return;
             canvas.setAttribute('aria-label', `Page ${page} of ${document.numPages}`);
             canvas.hidden = false;
+            restorePosition?.();
         } catch {
             if (current !== revision) return;
             canvas.hidden = true;
@@ -85,6 +158,7 @@ function showPage(resetScroll = false) {
 function resizeImage() {
     if (!image.naturalWidth || !image.naturalHeight) return;
     const scale = displayScale(image.naturalWidth, image.naturalHeight);
+    renderedScale = scale;
     image.width = Math.max(1, Math.floor(image.naturalWidth * scale));
     image.height = Math.max(1, Math.floor(image.naturalHeight * scale));
 }
@@ -100,8 +174,8 @@ async function openDocument() {
         });
         const document = await loadingTask.promise;
         pdf = document;
-        pagination.hidden = false;
-        zoom.disabled = false;
+        pageCount.set(document.numPages);
+        ready.set(true);
         showPage();
         return;
     }
@@ -113,26 +187,24 @@ async function openDocument() {
         await image.decode();
         resizeImage();
         image.hidden = false;
-        zoom.disabled = false;
+        ready.set(true);
         loading.hidden = true;
     } finally { URL.revokeObjectURL(url); }
 }
 
-previous.addEventListener('click', () => { if (selectedPage > 1) { selectedPage--; showPage(true); } });
-next.addEventListener('click', () => { if (pdf && selectedPage < pdf.numPages) { selectedPage++; showPage(true); } });
-zoom.addEventListener('change', () => { if (pdf) showPage(); else resizeImage(); });
 const observer = new ResizeObserver(() => {
-    if (zoom.value !== 'fit' || !error.hidden) return;
+    if (zoom() !== 'fit' || !error.hidden) return;
     if (pdf) showPage(); else resizeImage();
 });
 observer.observe(viewport);
+viewport.addEventListener('wheel', zoomWithWheel, { passive: false });
 window.addEventListener('pagehide', () => {
     observer.disconnect();
     revision++;
     renderTask?.cancel();
     void loadingTask?.destroy().catch(() => undefined);
 }, { once: true });
-void openDocument().catch(() => {
+void bootstrapApplication(PreviewControls).then(() => openDocument()).catch(() => {
     loading.hidden = true;
     setError('The original document could not be displayed.');
 });

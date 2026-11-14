@@ -11,7 +11,7 @@
           "options": {
             "browser": "src/app.ts",
             "index": "src/index.html",
-            "styles": ["src/styles.css"],
+            "styles": ["@wigtertainment-ltd/comp-lib/styles/default.css", "src/styles.css"],
             "tsConfig": "tsconfig.app.json",
             "outputPath": ".build/ui",
             "baseHref": "./",
@@ -30,6 +30,24 @@
             "development": { "buildTarget": "receiptmatch:build:development" }
           },
           "defaultConfiguration": "development"
+        }
+      }
+    },
+    "receiptmatch-preview": {
+      "projectType": "application",
+      "root": "electron/preview",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:application",
+          "options": {
+            "browser": "electron/preview/renderer.ts",
+            "index": "electron/preview/index.html",
+            "styles": ["@wigtertainment-ltd/comp-lib/styles/default.css", "electron/preview/viewer.css"],
+            "tsConfig": "tsconfig.preview.json",
+            "outputPath": ".build/preview",
+            "optimization": { "scripts": true, "styles": { "minify": true, "inlineCritical": false }, "fonts": false },
+            "sourceMap": false
+          }
         }
       }
     }

@@ -4,27 +4,11 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<title>Original document</title>
-		<link rel="stylesheet" href="viewer.css" />
 	</head>
 	<body>
 		<header class="toolbar">
 			<h1 id="document-name">Original document</h1>
-			<div class="controls">
-				<div id="pagination" class="controls" role="group" aria-label="PDF pages" hidden>
-					<button id="previous-page" type="button" disabled>Previous page</button>
-					<output id="page-number" aria-live="polite"></output>
-					<button id="next-page" type="button" disabled>Next page</button>
-				</div>
-				<label for="zoom">Zoom</label>
-				<select id="zoom" disabled>
-					<option value="fit">Fit to window</option>
-					<option value="0.75">75%</option>
-					<option value="1">100%</option>
-					<option value="1.25">125%</option>
-					<option value="1.5">150%</option>
-					<option value="2">200%</option>
-				</select>
-			</div>
+			<app-preview-controls ngCspNonce="__RECEIPTMATCH_STYLE_NONCE__"></app-preview-controls>
 		</header>
 		<p id="loading" class="message" role="status">Opening original document…</p>
 		<p id="error" class="message error" role="alert" hidden></p>
@@ -32,6 +16,5 @@
 			<canvas id="pdf-page" role="img" aria-label="PDF page" hidden>PDF page preview</canvas>
 			<img id="source-image" alt="Original supporting document" hidden />
 		</main>
-		<script type="module" src="viewer.js"></script>
 	</body>
 </html>

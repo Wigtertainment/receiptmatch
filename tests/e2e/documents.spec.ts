@@ -175,11 +175,14 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		return details;
 	}
 	async function openFile(report: Locator, name: string) {
-		const button = report.getByRole("button", { name, exact: true });
-		if ((await button.getAttribute("aria-expanded")) !== "true") await button.click();
-		const details = report.locator(`[id="${await button.getAttribute("aria-controls")}"]`);
-		await details.waitFor();
+		await report.getByRole("button", { name: "Show details for " + name, exact: true }).click();
+		const details = page.getByRole("dialog", { name, exact: true });
+		await expect(details).toBeVisible();
 		return details;
+	}
+	async function closeFile(details: Locator) {
+		await details.getByRole("button", { name: "Close document details", exact: true }).click();
+		await expect(details).toBeHidden();
 	}
 	await check("document-command-is-path-free-and-readonly-data-is-restricted-to-the-active-frame", async () => {
 		assert.equal((await command({ type: "import-documents", path: folder } as unknown as WorkspaceCommand)).workspace, null);
@@ -207,7 +210,7 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		await page.getByRole("button", { name: "Create workspace" }).click();
 		await dialogs([folder]);
 		await chooseFolder().press("Enter");
-		await documents().locator("summary").filter({ hasText: "mixed" }).first().waitFor();
+		await documents().getByRole("button", { name: /^mixed ·/ }).waitFor();
 		await documents().getByRole("table", { name: "Files in mixed", exact: true }).waitFor();
 		assert.deepEqual(await application.evaluate(() => (globalThis as DocumentTestMainGlobals).documentTestDialogProperties), ["openDirectory"]);
 		const state = await command({ type: "get-state" });
@@ -231,8 +234,8 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 	await check("document-results-show-file-statuses-candidates-and-literal-source-text-with-keyboard-access", async () => {
 		await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(680, 860));
 		await page.waitForFunction(() => window.innerWidth <= 700, undefined, { polling: 50 });
-		const report = await openDetails(documents(), /^\s*mixed/i);
-		assert.equal(await report.evaluate((element) => getComputedStyle(element).borderTopStyle), "solid");
+		const report = documents().locator("wig-accordion.report-details");
+		await expect(report.getByRole("button", { name: /^mixed ·/ })).toHaveAttribute("aria-expanded", "true");
 		for (const [file, status] of [
 			["a.PDF", "Imported"],
 			["b.PNG", "Imported"],
@@ -241,12 +244,12 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 			["e-broken.pdf", "Failed"],
 			["notes.txt", "Unsupported"],
 		]) {
-			const row = report.getByRole("row").filter({ has: page.getByRole("button", { name: file, exact: true }) });
+			const row = report.getByRole("row").filter({ has: page.getByRole("cell", { name: file, exact: true }) });
 			await row.getByText(status, { exact: false }).waitFor();
 		}
-		const pdfRow = report.getByRole("row").filter({ has: page.getByRole("button", { name: "a.PDF", exact: true }) });
+		const pdfRow = report.getByRole("row").filter({ has: page.getByRole("cell", { name: "a.PDF", exact: true }) });
 		await pdfRow.getByText(/EUR\s*73[.,]25|73[.,]25\s*EUR/).waitFor();
-		const failedRow = report.getByRole("row").filter({ has: page.getByRole("button", { name: "e-broken.pdf", exact: true }) });
+		const failedRow = report.getByRole("row").filter({ has: page.getByRole("cell", { name: "e-broken.pdf", exact: true }) });
 		await failedRow.getByText("No single billed total", { exact: true }).waitFor();
 		const pdf = await openFile(report, "a.PDF");
 		await pdf.getByRole("heading", { name: "Extracted fields" }).waitFor();
@@ -275,6 +278,7 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		await raw.getByText(rawNote, { exact: false }).first().waitFor();
 		assert.equal(await raw.locator("img, script").count(), 0);
 		assert.equal(await page.evaluate(() => window.documentTestInjection), undefined);
+		await closeFile(pdf);
 		const image = await openFile(report, "b.PNG");
 		const imageSource = await openDetails(image, /^Source text/);
 		await imageSource.getByText("Local OCR", { exact: true }).first().waitFor();
@@ -283,6 +287,7 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 			.first()
 			.waitFor();
 		assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+		await closeFile(image);
 	});
 	await check("explicit-save-and-process-restart-preserve-document-ids-evidence-and-failures", async () => {
 		await dialogs([], [workspaceFile]);
@@ -292,26 +297,35 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		({ application, page } = await launch());
 		await dialogs([workspaceFile]);
 		await page.getByRole("button", { name: "Open workspace", exact: true }).press("Enter");
-		const report = documents().locator(".report-details").filter({ hasText: "mixed" });
-		await expect(report).toHaveAttribute("open", "");
-		const pdfButton = report.getByRole("button", { name: "a.PDF", exact: true });
-		await expect(pdfButton).toHaveAttribute("aria-expanded", "false");
+		const report = documents().locator("wig-accordion.report-details");
+		const summary = report.getByRole("button", { name: /^mixed ·/ });
+		await expect(summary).toHaveAttribute("aria-expanded", "true");
+		const pdfButton = report.getByRole("button", { name: "Show details for a.PDF", exact: true });
+		await expect(report.locator("wig-table")).toHaveCount(1);
+		await expect(report.getByRole("button", { name: "a.PDF", exact: true })).toHaveCount(0);
 		await pdfButton.press("Enter");
-		await expect(pdfButton).toHaveAttribute("aria-expanded", "true");
-		const summary = report.locator(":scope > summary");
+		const drawer = page.getByRole("dialog", { name: "a.PDF", exact: true });
+		await expect(drawer).toBeVisible();
+		const edge = await drawer.evaluate(element => ({ right: element.getBoundingClientRect().right, viewport: document.documentElement.clientWidth }));
+		assert.ok(Math.abs(edge.right - edge.viewport) < 2, JSON.stringify(edge));
+		await page.keyboard.press("Escape");
+		await expect(drawer).toBeHidden();
+		await expect(pdfButton).toBeFocused();
 		await summary.press("Enter");
-		await expect(report).not.toHaveAttribute("open");
-		await expect(report.locator("table")).toHaveCount(0);
+		await expect(summary).toHaveAttribute("aria-expanded", "false");
+		await expect(report.locator("table")).toBeHidden();
 		await summary.press("Enter");
-		await expect(report).toHaveAttribute("open", "");
-		await expect(pdfButton).toHaveAttribute("aria-expanded", "false");
+		await expect(summary).toHaveAttribute("aria-expanded", "true");
+		await expect(drawer).toBeHidden();
 		const broken = await openFile(report, "e-broken.pdf");
 		await broken.getByText(/PDF engine could not open/i).waitFor();
+		await closeFile(broken);
 		const pdf = await openFile(report, "a.PDF");
 		await pdf
 			.locator("summary")
 			.filter({ hasText: /Invoice reference.*SYNTHETIC-PDF/ })
 			.waitFor();
+		await closeFile(pdf);
 		const state = await command({ type: "get-state" });
 		assert.equal(state.workspace?.dirty, false);
 		assert.deepEqual(await records(), expected);
@@ -326,12 +340,17 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		await expect.poll(async () => (await columns()).length).toBe(1);
 	});
 	await check("repeated-folder-skips-successful-bytes-retries-failures-and-can-save-its-new-report", async () => {
+		const originalReport = documents().getByRole("button", { name: /^mixed · Finished · 3 imported/ });
+		await originalReport.press("Enter");
+		await expect(originalReport).toHaveAttribute("aria-expanded", "false");
 		await dialogs([folder]);
 		const state = await command({ type: "import-documents" });
 		const summary = state.workspace?.documentImports.at(-1);
 		assert.equal(summary?.imported, 0);
 		assert.equal(summary?.skipped, 4);
 		assert.equal(summary?.failed, 1);
+		await expect(documents().getByRole("button", { name: /^mixed · Finished · 0 imported/ })).toHaveAttribute("aria-expanded", "true");
+		await expect(originalReport).toHaveAttribute("aria-expanded", "false");
 		await command({ type: "save" });
 		const clean = await command({ type: "get-state" });
 		assert.equal(clean.workspace?.dirty, false);

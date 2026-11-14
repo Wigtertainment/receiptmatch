@@ -415,19 +415,22 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		const before = await fingerprint(file);
 		const draft = page.getByTestId('drafts-table').getByRole('row', { name: /Cedar Tools/ });
 		await draft.getByRole('button', { name: 'Correct booking details' }).press('Enter');
-		const editor = page.getByRole('region', { name: 'Correct booking details' });
-		await expect(editor.getByRole('heading')).toBeFocused();
+		const editor = page.getByRole('dialog', { name: 'Correct booking details' });
+		await expect(editor.getByRole('button', { name: 'Close' })).toBeFocused();
 		await editor.getByLabel('Booking date', { exact: true }).fill('2032-02-25');
 		const decimal = await page.evaluate(() => new Intl.NumberFormat().formatToParts(1.1).find(part => part.type === 'decimal')?.value ?? '.');
 		await editor.getByLabel('Account amount (EUR)').fill(`-256${decimal}20`);
 		await editor.getByRole('button', { name: 'Apply correction' }).click();
 		await expect(editor.getByText('Correction applied to this workspace.')).toBeVisible();
+		await expect(editor.getByText('Unknown', { exact: true })).toBeVisible();
+		assert.equal(await fingerprint(file), before);
+		await editor.getByRole('button', { name: 'Close' }).click();
+		await expect(editor).toBeHidden();
 		await expect(draft).toHaveCount(0);
 		const transaction = page.getByTestId('transactions-table').getByRole('row', { name: /Cedar Tools/ });
 		await expect(transaction.getByText('Corrected', { exact: true })).toBeVisible();
 		await expect(transaction.getByText(/256[.,]20/)).toBeVisible();
-		await expect(editor.getByText('Unknown', { exact: true })).toBeVisible();
-		assert.equal(await fingerprint(file), before);
+		await expect(transaction.getByRole('button', { name: 'Correct booking details' })).toBeFocused();
 		await page.getByRole('button', { name: 'Match suggestions' }).click();
 		await expect(page.getByRole('row', { name: /Cedar Tools/ })).toBeVisible();
 		await command({ type: 'save' });
@@ -464,6 +467,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		await expect(view.getByRole('checkbox', { name: /Synthetic no document/ })).toHaveCount(0);
 		await firstChoice.press('Space');
 		await secondChoice.check();
+		await expect(view.getByRole('row', { name: /Orchard Workshop/ }).locator('.match-transaction')).toHaveAttribute('aria-current', 'true');
 		await expect(view.getByText('2 selected for approval', { exact: true })).toBeVisible();
 		await view.getByRole('button', { name: 'Clear selection' }).click();
 		await expect(approve).toBeDisabled();
@@ -483,7 +487,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		await expect(approve).toBeEnabled();
 		await approve.click();
 		await expect(view.getByRole('alert')).toContainText(/selection for.*River Studio.*changed/);
-		await expect(view.getByRole('button', { name: /River Studio/ })).toBeFocused();
+		await expect(view.getByRole('row', { name: /River Studio/ })).toBeFocused();
 		await expect(firstChoice).toBeChecked();
 		await expect(secondChoice).not.toBeChecked();
 		assert.ok((await summaries(changed.workspace!.matchRevision))?.every(row => row.approval === null));
@@ -508,7 +512,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		await page.getByRole('button', { name: 'Match suggestions', exact: true }).click();
 		const matches = page.getByRole('region', { name: 'Match suggestions', exact: true });
 		const transaction = matches.getByRole('row', { name: /Orchard Workshop/ });
-		await transaction.getByRole('button', { name: /Orchard Workshop/ }).click();
+		await transaction.getByRole('cell').nth(3).click();
 		const manual = matches.getByRole('region', { name: 'Manual review' });
 		await expect(manual.getByText('Approved', { exact: true })).toBeVisible();
 		const corrected = await command({ type: 'correct-bank-row', revision: reopened.workspace!.matchRevision, rowId: assigned.transactionId,

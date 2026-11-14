@@ -4,7 +4,7 @@
 			<h2 id="documents-heading">Supporting documents</h2>
 			<p class="source-panel-count">{{ summaries().length }} {{ summaries().length === 1 ? 'folder analysis' : 'folder analyses' }}</p>
 		</div>
-		<button type="button" class="button-primary compact" (click)="workspaceCommand.emit({ type: 'import-documents' })" [disabled]="state().busy">Choose folder</button>
+		<wig-button label="Choose folder" (click)="workspaceCommand.emit({ type: 'import-documents' })" [disabled]="state().busy" />
 	</div>
 	@if (state().documentImport; as active) {
 		<div class="import-progress">
@@ -14,7 +14,7 @@
 					<p class="muted">{{ progress.completedFiles }} {{ progress.completedFiles === 1 ? 'file' : 'files' }} processed</p>
 				}
 			</div>
-			<button class="button-secondary" (click)="workspaceCommand.emit({ type: 'cancel-import' })" [disabled]="active.cancelling">Cancel analysis</button>
+			<wig-button label="Cancel analysis" severity="secondary" (click)="workspaceCommand.emit({ type: 'cancel-import' })" [disabled]="active.cancelling" />
 		</div>
 	}
 	@if (state().documentOutcome; as outcome) {
@@ -42,13 +42,10 @@
 	@if (summaries().length) {
 		<div class="analysis-history">
 			<h3>Analysis history</h3>
-			@for (report of summaries(); track workspaceKey() + report.id) {
-				<details class="report-details" [open]="isReportOpen(report.id)" (toggle)="toggleReport(report.id, $event)">
-					<summary>
-						<span class="summary-name">{{ basename(report.folderPath) }}</span>
-						<span class="summary-status muted">&nbsp;· {{ report.status === 'cancelled' ? 'Cancelled' : 'Finished' }} · {{ reportCounts(report) }}</span>
-					</summary>
-					@if (isReportOpen(report.id)) {
+			@for (entry of reportItems(); track workspaceKey() + entry.id) {
+				<wig-accordion class="report-details" [items]="[entry]" [value]="entry.id">
+					<ng-template wigTemplate="report" let-item="item">
+						@let report = item.data;
 						<div class="report-body">
 							<p class="file-location">{{ report.folderPath }}</p>
 							@if (records()?.get(report.id); as record) {
@@ -65,120 +62,83 @@
 									</ul>
 								}
 								@if (record.files.length) {
-									<div class="table-scroll document-table" role="region" tabindex="0" [attr.aria-label]="'Files in ' + basename(report.folderPath)">
-										<table>
-											<caption class="sr-only">
-												Files in
-												{{ basename(report.folderPath) }}
-											</caption>
-											<thead>
-												<tr>
-													<th scope="col">Document</th>
-													<th scope="col" class="document-amount">Billed total</th>
-													<th scope="col" class="document-status">Status</th>
-													<th scope="col" class="document-actions">Actions</th>
-												</tr>
-											</thead>
-											<tbody>
-												@for (row of fileRows().get(report.id) ?? []; track $index) {
-													@let file = row.file;
-													@let archived = file.status === 'imported' && state().workspace?.supersededDocuments?.includes(file.record.id);
-													@let reviewNeeded = !!row.projectedIssues?.length;
-													@let fileKey = 'document-file-' + report.id + '-' + $index;
-													@let expanded = openFileIds().has(fileKey);
-													<tr>
-														<th scope="row">
-															<button
-																type="button"
-																class="document-file-button"
-																[attr.aria-expanded]="expanded"
-																[attr.aria-controls]="fileKey"
-																(click)="toggleFile(fileKey)"
-															>
-																{{ basename(filePath(file)) }}
-															</button>
-														</th>
-														<td class="document-amount">
-															@if (row.total; as total) {
-																{{ total }}
-															} @else {
-																<span aria-hidden="true">—</span><span class="sr-only">No single billed total</span>
-															}
-														</td>
-														<td>
-															<span
-																class="source-status"
-																[class.source-status-warning]="archived || file.status === 'failed' || file.status === 'unsupported' || reviewNeeded"
-																>{{ archived ? 'Archived analysis' : fileStatus(file, reviewNeeded) }}</span
-															>
-															@if (file.status === 'imported' && correctionsByDocument().has(file.record.id)) {
-																<span class="source-status">Corrected</span>
-															}
-														</td>
-														<td class="document-actions">
-															<app-original-preview-button
-																#preview
-																kind="document"
-																[sourceId]="file.status === 'imported' ? file.record.id : undefined"
-																[sourceName]="basename(filePath(file))"
-																[loadRevision]="state().workspace?.loadRevision"
-																[iconOnly]="true"
-															/>
-														</td>
-													</tr>
-													@if (preview.hasFeedback()) {
-														<tr class="document-preview-feedback">
-															<td colspan="4">
-																<ng-container [ngTemplateOutlet]="preview.feedbackContent() ?? null" />
-															</td>
-														</tr>
-													}
-													<tr class="document-file-row" [hidden]="!expanded" [id]="fileKey">
-														<td colspan="4">
-															@if (expanded) {
-																<p class="file-location">{{ filePath(file) }}</p>
-																@if (file.status === 'imported') {
-																	<app-document-analysis
-																		[analysis]="file.record.result"
-																		[format]="file.record.format"
-																		[documentId]="file.record.id"
-																		[busy]="state().busy"
-																		[workspaceError]="state().error"
-																		[projectedIssues]="row.projectedIssues"
-																		[corrections]="correctionsByDocument().get(file.record.id) ?? null"
-																		(correction)="correctField($event)"
-																	/>
-																} @else if (file.status === 'skipped') {
-																	<p>Matching file content is already in this workspace.</p>
-																} @else {
-																	<ul>
-																		@for (issue of file.issues; track $index) {
-																			<li>{{ issue.message }}</li>
-																		}
-																	</ul>
-																	@if (file.status === 'failed' && file.analysis) {
-																		<app-document-analysis [analysis]="file.analysis" [format]="file.format" />
-																	}
-																}
-															}
-														</td>
-													</tr>
+									<wig-table
+										class="document-table"
+										[ariaLabel]="'Files in ' + basename(report.folderPath)"
+										[data]="tableRows().reports.get(report.id) ?? []"
+										[config]="fileColumns"
+										[insideCard]="false"
+									>
+										<ng-template wigTemplate="name" let-item="item">
+											@let row = fileRows().get(report.id)![item.index];
+											<span class="document-name">{{ basename(filePath(row.file)) }}</span>
+										</ng-template>
+										<ng-template wigTemplate="total" let-item="item">
+											@let row = fileRows().get(report.id)![item.index];
+											<span class="document-amount">
+												@if (row.total; as total) {
+													{{ total }}
+												} @else {
+													<span aria-hidden="true">—</span><span class="sr-only">No single billed total</span>
 												}
-											</tbody>
-										</table>
-									</div>
+											</span>
+										</ng-template>
+										<ng-template wigTemplate="status" let-item="item">
+											@let row = fileRows().get(report.id)![item.index];
+											@let file = row.file;
+											@let archived = file.status === 'imported' && state().workspace?.supersededDocuments?.includes(file.record.id);
+											@let reviewNeeded = !!row.projectedIssues?.length;
+											<span
+												class="source-status"
+												[class.source-status-warning]="archived || file.status === 'failed' || file.status === 'unsupported' || reviewNeeded"
+											>
+												{{ archived ? 'Archived analysis' : fileStatus(file, reviewNeeded) }}
+											</span>
+											@if (file.status === 'imported' && correctionsByDocument().has(file.record.id)) {
+												<span class="source-status">Corrected</span>
+											}
+										</ng-template>
+										<ng-template wigTemplate="actions" let-item="item">
+											@let row = fileRows().get(report.id)![item.index];
+											@let file = row.file;
+											@let name = basename(filePath(file));
+											<div class="document-actions">
+												<wig-button
+													iconName="search"
+													[buttonStyle]="{ width: '44px', 'min-width': '44px', 'min-height': '44px', padding: '0' }"
+													[text]="true"
+													[ariaLabel]="'Show details for ' + name"
+													buttonTitle="Show document details"
+													(click)="openFile(report.id, item.index)"
+												/>
+												<app-original-preview-button
+													#preview
+													kind="document"
+													[sourceId]="file.status === 'imported' ? file.record.id : undefined"
+													[sourceName]="name"
+													[loadRevision]="state().workspace?.loadRevision"
+													[iconOnly]="true"
+												/>
+											</div>
+											@if (preview.hasFeedback()) {
+												<div class="document-preview-feedback">
+													<ng-container [ngTemplateOutlet]="preview.feedbackContent() ?? null" />
+												</div>
+											}
+										</ng-template>
+									</wig-table>
 								} @else {
 									<p class="muted">No file results were recorded.</p>
 								}
 							} @else if (detailsError()) {
-								<p role="alert">Document details could not be loaded.</p>
-								<button class="button-secondary" (click)="retryDetails()">Retry details</button>
+								<wig-alert type="error" text="Document details could not be loaded." />
+								<wig-button label="Retry details" severity="secondary" (click)="retryDetails()" />
 							} @else {
 								<p role="status">Loading document details…</p>
 							}
 						</div>
-					}
-				</details>
+					</ng-template>
+				</wig-accordion>
 			}
 		</div>
 	} @else {
@@ -186,4 +146,43 @@
 			<p>Choose a folder to analyze PDF, PNG and JPEG files, including files in subfolders.</p>
 		</div>
 	}
+	@let selected = selectedFileRow();
+	<wig-drawer
+		position="right"
+		[size]="detailsDrawerSize"
+		[header]="selected ? basename(filePath(selected.file)) : ''"
+		closeLabel="Close document details"
+		[visible]="!!selected"
+		(visibleChange)="!$event && closeFile()"
+	>
+		@if (selected; as row) {
+			@let file = row.file;
+			<div class="document-details">
+				<p class="file-location">{{ filePath(file) }}</p>
+				@if (file.status === 'imported') {
+					<app-document-analysis
+						[analysis]="file.record.result"
+						[format]="file.record.format"
+						[documentId]="file.record.id"
+						[busy]="state().busy"
+						[workspaceError]="state().error"
+						[projectedIssues]="row.projectedIssues"
+						[corrections]="correctionsByDocument().get(file.record.id) ?? null"
+						(correction)="correctField($event)"
+					/>
+				} @else if (file.status === 'skipped') {
+					<p>Matching file content is already in this workspace.</p>
+				} @else {
+					<ul>
+						@for (issue of file.issues; track $index) {
+							<li>{{ issue.message }}</li>
+						}
+					</ul>
+					@if (file.status === 'failed' && file.analysis) {
+						<app-document-analysis [analysis]="file.analysis" [format]="file.format" />
+					}
+				}
+			</div>
+		}
+	</wig-drawer>
 </section>

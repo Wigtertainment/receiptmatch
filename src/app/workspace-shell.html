@@ -3,51 +3,69 @@
 		<aside class="workspace-rail" aria-label="ReceiptMatch">
 			<div class="identity"><span class="brand-mark" aria-hidden="true">RM</span><strong>ReceiptMatch</strong></div>
 			<nav class="workspace-nav" aria-label="Workspace views">
-				<button type="button" [attr.aria-current]="section() === 'sources' ? 'page' : null" (click)="showSection('sources')">Sources</button>
-				<button type="button" [attr.aria-current]="section() === 'matches' ? 'page' : null" (click)="showSection('matches')">Match suggestions</button>
-				<button type="button" [attr.aria-current]="section() === 'export-settings' ? 'page' : null" (click)="showSection('export-settings')">Export</button>
-				<button type="button" [attr.aria-current]="section() === 'settings' ? 'page' : null" (click)="showSection('settings')">Settings</button>
+				<wig-button
+					label="Sources"
+					[text]="true"
+					[class.current-view]="section() === 'sources'"
+					[ariaCurrent]="section() === 'sources' ? 'page' : null"
+					(click)="showSection('sources')"
+				/>
+				<wig-button
+					label="Match suggestions"
+					[text]="true"
+					[class.current-view]="section() === 'matches'"
+					[ariaCurrent]="section() === 'matches' ? 'page' : null"
+					(click)="showSection('matches')"
+				/>
+				<wig-button
+					label="Export"
+					[text]="true"
+					[class.current-view]="section() === 'export-settings'"
+					[ariaCurrent]="section() === 'export-settings' ? 'page' : null"
+					(click)="showSection('export-settings')"
+				/>
+				<wig-button
+					label="Settings"
+					[text]="true"
+					[class.current-view]="section() === 'settings'"
+					[ariaCurrent]="section() === 'settings' ? 'page' : null"
+					(click)="showSection('settings')"
+				/>
 			</nav>
 		</aside>
 		<div class="workspace-body">
 			<header class="toolbar">
 				<div class="workspace-identity">
 					<label for="workspace-name" class="sr-only">Workspace name</label>
-					<input id="workspace-name" type="text" maxlength="120" autocomplete="off" [value]="workspace.name" (input)="rename($event)" [disabled]="state().busy" />
+					<wig-input
+						inputId="workspace-name"
+						[appInputLength]="120"
+						autocomplete="off"
+						[value]="workspace.name"
+						(valueChange)="rename($event)"
+						[disabled]="state().busy"
+					/>
 					@if (workspace.filePath) {
-						<details class="workspace-location">
-							<summary>File location</summary>
-							<p class="file-location">{{ workspace.filePath }}</p>
-						</details>
+						<span #fileLocation class="workspace-location" (mouseenter)="showFileLocationTooltip(fileLocation)">{{ workspace.filePath }}</span>
 					}
 				</div>
 				<div class="toolbar-end">
 					<p class="toolbar-state" [class.unsaved]="workspace.dirty" role="status">{{ workspace.dirty ? 'Unsaved changes' : 'All changes saved' }}</p>
 					<div class="toolbar-actions" role="group" aria-label="Workspace actions">
-						<button type="button" class="button-secondary compact" (click)="run({ type: 'new' })" [disabled]="state().busy" title="New workspace (Ctrl+N)">New</button>
-						<button type="button" class="button-secondary compact" (click)="run({ type: 'open' })" [disabled]="state().busy" title="Open workspace (Ctrl+O)">
-							Open
-						</button>
-						<button
-							type="button"
-							class="button-primary compact"
-							(click)="run({ type: 'save' })"
-							[disabled]="state().busy || !workspace.dirty"
-							title="Save workspace (Ctrl+S)"
-						>
-							Save
-						</button>
+						<wig-button label="New" severity="secondary" (click)="run({ type: 'new' })" [disabled]="state().busy" buttonTitle="New workspace (Ctrl+N)" />
+						<wig-button label="Open" severity="secondary" (click)="run({ type: 'open' })" [disabled]="state().busy" buttonTitle="Open workspace (Ctrl+O)" />
+						<wig-button label="Save" (click)="run({ type: 'save' })" [disabled]="state().busy || !workspace.dirty" buttonTitle="Save workspace (Ctrl+S)" />
 					</div>
 				</div>
 			</header>
 			<main class="workspace-content">
 				@if ((section() === 'matches' && state().approvalIssue ? null : state().error) || commandError(); as error) {
-					<p class="error" role="alert">{{ error }}</p>
+					<wig-alert class="error" type="error" [text]="error" />
 				}
 				@if (section() === 'matches' && (state().statementImport || state().documentImport)) {
 					<div class="workspace-import-status">
 						<p role="status">{{ state().statementImport ? 'Statement import in progress.' : 'Folder analysis in progress.' }}</p>
-						<button type="button" class="button-secondary compact" (click)="showSection('sources')">View import</button>
+						<wig-button label="View import" severity="secondary" (click)="showSection('sources')" />
 					</div>
 				}
 				<section [hidden]="section() !== 'sources'" aria-labelledby="sources-heading">
@@ -66,7 +84,7 @@
 } @else if (welcomeSettings()) {
 	<main class="welcome" aria-labelledby="settings-heading">
 		<div class="welcome-settings">
-			<button type="button" class="button-secondary compact" (click)="showWelcomeSettings(false)">Back</button>
+			<wig-button label="Back" severity="secondary" (click)="showWelcomeSettings(false)" />
 			<app-local-ocr-settings [active]="true" />
 		</div>
 	</main>
@@ -77,12 +95,12 @@
 			<h1 id="welcome-heading">ReceiptMatch</h1>
 			<p class="welcome-intro">Match bank transactions to supporting documents in a local workspace.</p>
 			<div class="welcome-actions">
-				<button type="button" class="button-primary" (click)="run({ type: 'new' })" [disabled]="state().busy">Create workspace</button>
-				<button type="button" class="button-secondary" (click)="run({ type: 'open' })" [disabled]="state().busy">Open workspace</button>
-				<button type="button" id="welcome-settings-button" class="button-secondary" (click)="showWelcomeSettings(true)" [disabled]="state().busy">Settings</button>
+				<wig-button label="Create workspace" iconName="plus" (click)="run({ type: 'new' })" [disabled]="state().busy" />
+				<wig-button label="Open workspace" severity="secondary" (click)="run({ type: 'open' })" [disabled]="state().busy" />
+				<wig-button #welcomeSettingsButton label="Settings" severity="secondary" (click)="showWelcomeSettings(true)" [disabled]="state().busy" />
 			</div>
 			@if (state().error || commandError(); as error) {
-				<p class="error" role="alert">{{ error }}</p>
+				<wig-alert class="error" type="error" [text]="error" />
 			}
 			<p class="welcome-privacy">Workspaces and documents stay on this computer.</p>
 		</section>

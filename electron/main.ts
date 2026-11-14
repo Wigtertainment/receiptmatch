@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, session } from 'el
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { randomBytes } from 'node:crypto';
 import { commandSchema, documentExportRequestSchema, exportSettingsRequestSchema, matchRequestSchema, type WorkspaceState } from '../src/shared/protocol.js';
 import type { DocumentExportResponse } from '../src/shared/document-export.js';
 import { originalAdoptionRequestSchema, originalPreviewRequestSchema, originalSourceExtensions } from '../src/shared/original-preview.js';
@@ -42,7 +43,13 @@ async function launch() {
     const file = url.hostname === 'app' && !url.search ? assets.get(url.pathname) : undefined;
     if (!file) return new Response('Not found', { status: 404 });
     const types: Record<string, string> = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
-    return new Response(await readFile(file), { headers: { 'Content-Type': types[path.extname(file)] ?? 'application/octet-stream', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'none'", 'X-Content-Type-Options': 'nosniff' } });
+    // Angular attaches this per-document nonce to the component styles it creates.
+    const nonce = url.pathname === '/index.html' ? randomBytes(18).toString('base64') : null;
+    const body = nonce ? (await readFile(file, 'utf8')).replaceAll('__RECEIPTMATCH_STYLE_NONCE__', nonce) : await readFile(file);
+    const styleNonce = nonce ? ` 'nonce-${nonce}'` : '';
+    const policy = `default-src 'self'; script-src 'self'; style-src 'self'${styleNonce}; connect-src 'none'; img-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'none'`;
+    return new Response(body, { headers: { 'Content-Type': types[path.extname(file)] ?? 'application/octet-stream', 'Content-Security-Policy': policy,
+      'X-Content-Type-Options': 'nosniff', ...(nonce && { 'Cache-Control': 'no-store' }) } });
   });
   session.defaultSession.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !isRendererRequestAllowed(appUrl, details.url) }));
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
