@@ -332,7 +332,7 @@ test('direct Electron development and stylesheet HMR', async ({ development: { p
 		assert.deepEqual(preferences, { sandbox: true, contextIsolation: true, nodeIntegration: false });
 		assert.deepEqual(await page.evaluate((): string[] => Object.keys(window.receiptmatch)), [
 			'command', 'bankImports', 'documentImports', 'documentSnapshot', 'matchSummaries', 'matchDetails', 'openOriginal', 'relinkOriginal',
-			'analyzeOriginal', 'acceptOriginalAnalysis', 'exportSettings', 'localOcr', 'exportDocuments', 'exportReconciliation', 'subscribe',
+			'analyzeOriginal', 'acceptOriginalAnalysis', 'exportSettings', 'localOcr', 'exportDocuments', 'exportReconciliation', 'subscribe', 'appVersion',
 		]);
 		assert.equal(await page.evaluate((): "string" | "number" | "bigint" | "boolean" | "symbol" | "undefined" | "object" | "function" => typeof Reflect.get(window, 'require')), 'undefined');
 		const denied: ({ url: string; error: null; } | { url: string; error: string; })[] = await currentApplication().evaluate(

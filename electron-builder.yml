@@ -22,9 +22,19 @@ asarUnpack:
 # better-sqlite3 13 ships Node-API prebuilds shared by Node and Electron.
 npmRebuild: false
 
+publish:
+  provider: github
+  owner: Wigtertainment
+  repo: receiptmatch
+
 win:
   executableName: ReceiptMatch
   signExecutable: false
+  publish:
+    provider: github
+    owner: Wigtertainment
+    repo: receiptmatch
+    publisherName: [Wigtertainment Ltd]
 
 nsis:
   artifactName: ReceiptMatch-Setup-${version}-windows-x64.${ext}

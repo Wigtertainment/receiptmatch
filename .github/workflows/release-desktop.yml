@@ -121,6 +121,11 @@ jobs:
               }
             }
           }
+          foreach ($file in @('release/latest.yml', "$installer.blockmap", 'release/win-unpacked/resources/app-update.yml')) {
+            if (!(Test-Path -LiteralPath $file -PathType Leaf) -or (Get-Item -LiteralPath $file).Length -eq 0) {
+              throw "Missing Windows update metadata: $file"
+            }
+          }
           npm run test:packaged
 
       - name: Upload Windows installer
@@ -129,7 +134,10 @@ jobs:
           name: receiptmatch-windows-x64
           if-no-files-found: error
           compression-level: 0
-          path: release/ReceiptMatch-Setup-*-windows-x64.exe
+          path: |
+            release/ReceiptMatch-Setup-*-windows-x64.exe
+            release/ReceiptMatch-Setup-*-windows-x64.exe.blockmap
+            release/latest.yml
 
   build_linux:
     name: Build Linux x64
@@ -174,11 +182,17 @@ jobs:
           test -x squashfs-root/AppRun
           test -x squashfs-root/resources/local-ocr-runtimes/python/bin/python3.12
           test -x squashfs-root/resources/local-ocr-runtimes/llama/llama-mtmd-cli
+          test -s squashfs-root/resources/app-update.yml
+          test ! -f squashfs-root/resources/package-type
           test "$(dpkg-deb --field "$deb" Architecture)" = amd64
           dpkg-deb --extract "$deb" "$RUNNER_TEMP/receiptmatch-deb"
           test -x "$RUNNER_TEMP/receiptmatch-deb/opt/ReceiptMatch/receiptmatch"
           test -f "$RUNNER_TEMP/receiptmatch-deb/opt/ReceiptMatch/resources/apparmor-profile"
           test -f "$RUNNER_TEMP/receiptmatch-deb/usr/share/applications/receiptmatch.desktop"
+          test "$(cat "$RUNNER_TEMP/receiptmatch-deb/opt/ReceiptMatch/resources/package-type")" = deb
+          test -s "$RUNNER_TEMP/receiptmatch-deb/opt/ReceiptMatch/resources/app-update.yml"
+          grep -Fq "ReceiptMatch-$VERSION-linux-x64.AppImage" release/latest-linux.yml
+          grep -Fq "ReceiptMatch-$VERSION-linux-x64.deb" release/latest-linux.yml
           xvfb-run -a npm run test:packaged
 
       - name: Upload Linux packages
@@ -190,6 +204,7 @@ jobs:
           path: |
             release/ReceiptMatch-*-linux-x64.AppImage
             release/ReceiptMatch-*-linux-x64.deb
+            release/latest-linux.yml
 
   draft:
     name: Create GitHub release draft
@@ -215,8 +230,11 @@ jobs:
         run: |
           files=(
             "ReceiptMatch-Setup-$VERSION-windows-x64.exe"
+            "ReceiptMatch-Setup-$VERSION-windows-x64.exe.blockmap"
             "ReceiptMatch-$VERSION-linux-x64.AppImage"
             "ReceiptMatch-$VERSION-linux-x64.deb"
+            latest.yml
+            latest-linux.yml
           )
           for file in "${files[@]}"; do
             test -s "$file"

@@ -78,6 +78,10 @@
 				<app-match-suggestions [workspace]="workspace" [busy]="state().busy" [active]="section() === 'matches'" [hidden]="section() !== 'matches'" />
 				<app-export-settings [workspace]="workspace" [workspaceBusy]="state().busy" [hidden]="section() !== 'export-settings'" />
 				<app-local-ocr-settings [active]="section() === 'settings'" [hidden]="section() !== 'settings'" />
+				@if (section() === 'settings' && version(); as currentVersion) {
+					<p class="muted">ReceiptMatch {{ currentVersion }}</p>
+					<p class="muted">ReceiptMatch checks GitHub for updates at startup.</p>
+				}
 			</main>
 		</div>
 	</div>
@@ -86,6 +90,10 @@
 		<div class="welcome-settings">
 			<wig-button label="Back" severity="secondary" (click)="showWelcomeSettings(false)" />
 			<app-local-ocr-settings [active]="true" />
+			@if (version(); as currentVersion) {
+				<p class="muted">ReceiptMatch {{ currentVersion }}</p>
+				<p class="muted">ReceiptMatch checks GitHub for updates at startup.</p>
+			}
 		</div>
 	</main>
 } @else {
