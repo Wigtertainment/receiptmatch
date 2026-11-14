@@ -1,76 +1,67 @@
-# ReceiptMatch
+<p align="center">
+  <img src="media/receiptmatch/receiptmatch-logo.png" width="112" height="112" alt="" />
+</p>
 
-Local-first desktop application for matching individual bank transactions with supporting documents. Financial data stays local and original documents remain unchanged.
+<h1 align="center">ReceiptMatch</h1>
 
-Create or open a local workspace, import a supported English Revolut Business EUR statement or Airwallex EUR Account Activity PDF, and analyse supporting documents. Review the results and explicitly save your work. Matching and document export are subsequent work.
+<p align="center"><strong>Match receipts to payments. Know what’s still missing.</strong></p>
 
-## Build and run
+<p align="center">
+  <a href="https://github.com/Wigtertainment/receiptmatch/releases"><strong>Download the latest release</strong></a>
+  · <a href="#what-receiptmatch-can-do">Features</a>
+  · <a href="#read-scans-and-photos-with-local-ai">Local AI</a>
+</p>
 
-Use Node.js 24.15 or newer within the supported Node 24 release line and npm.
+Closing the books is easier when every payment has a document. Give ReceiptMatch a bank statement and the folder where you keep your receipts and invoices. It suggests which documents belong to which payments and shows you where a receipt is still missing.
 
-```sh
-npm ci
-npm start
-```
+ReceiptMatch is a free, open-source desktop app for freelancers and small businesses. It processes your financial files on your computer and keeps your original documents in place.
 
-`npm start` prepares Electron and the local PDF/OCR resources, then runs the Angular development server with HMR and Electron together. Closing Electron also stops the development server. UI templates and styles update while the app is running; restart the command after changing Electron code. The development server listens only on `127.0.0.1:4310`; an occupied port stops startup instead of loading another application.
+![ReceiptMatch showing a list of bank transactions and the suggested Orchard Workshop invoice, with the amount, date, and reference shown as matching evidence.](media/receiptmatch/match-review.png)
 
-The Angular UI uses `angular.json`. Electron, preloads and the isolated extraction renderer use standard targets in `webpack.config.cjs`, TypeScript compilation through `ts-loader` and Webpack's built-in `output.copy` for offline assets. Add code entry points under `entry` and resource mappings under `output.copy`. Runtime packaging is configured in `electron-builder.yml`; startup and readiness use the standard `concurrently`, `cross-env` and `wait-on` commands.
+*The Orchard Workshop invoice matches the payment amount and reference. Two other payments are still missing a document. This example uses fictional data.*
 
-Development enables CSS source maps. JavaScript source maps are disabled because Angular 22.2.6 changes their debug identifier during the first rebuild, causing a full reload instead of CSS HMR.
+## What ReceiptMatch can do
 
-To build and start the compiled application without a development server or distribution package:
+- **Read receipts, invoices, and scans.** Pull details such as merchant names, dates, totals, and invoice numbers from your documents. Use optional local AI to read scans and photos.
+- **See why a match was suggested.** Compare amounts, dates, and references side by side, and open the original document from the review.
+- **Keep track of missing receipts.** See which payments still need a document. Approve a suggestion, choose a different document, or leave a payment open for follow-up.
+- **Hand over reviewed records.** Export copies of approved documents with an optional CSV report for your bookkeeper.
 
-```sh
-npm run start:dist
-```
+## Read scans and photos with local AI
 
-`npm run build` compiles the application without starting it. Packaging builds the application and uses the central `electron-builder.yml` configuration:
+A phone photo of a receipt or a scanned invoice often has no text you can search or copy. ReceiptMatch can read the image on your computer and use the recognized text to find details such as the total or invoice number. Those details can help ReceiptMatch suggest a matching bank transaction for you to review.
 
-```sh
-npm run pack:win
-npm run pack:linux
-```
+Open **Settings → Document recognition** to choose how ReceiptMatch reads scans and photos.
 
-Run each packaging command on its target operating system. Windows x64 output is `release/win-unpacked/ReceiptMatch.exe`; Linux x64 output is `release/linux-unpacked/receiptmatch`. These commands produce application directories; installers, signing and publishing are separate work. Only compiled application files, local PDF/OCR resources, licenses and production dependencies are packaged. SQLite uses the library's bundled Node-API prebuilds.
+| Option | When to use it |
+| --- | --- |
+| **Standard OCR** | Built-in text recognition you can use right away. |
+| **PP-OCRv6 Medium** | A smaller AI model for everyday scans and receipt photos. |
+| **PaddleOCR-VL 1.6** | A larger, slower AI model you can try on difficult scans, photos, and complex layouts. |
 
-Workspaces use the `.receiptmatch` extension. New workspaces and imports remain in memory until saved. Existing unrelated files are never overwritten.
+Download and select an AI model in Settings. Recognition then runs on your computer without uploading your documents. ReceiptMatch reads embedded text directly when it’s available in a PDF.
 
-Choose **Import statement** in a workspace to select a PDF. Processing uses embedded text or bundled local English OCR and can be cancelled. Identical file contents are skipped. Both banks can share a workspace; select a statement to inspect its transactions and evidence. Review warnings and unresolved rows before using the data; dates and exact monetary values follow the system display locale. Original PDFs stay in place. Additional bank layouts and correction actions are subsequent work.
+## How it works
 
-Under **Supporting documents**, choose a folder to analyse PDFs, PNGs and JPEGs in it and its subfolders. Review file results, extracted fields, alternative readings and source text with page locations. Cancelling keeps completed results. Save the workspace to keep the analysis and reopen it later.
+1. **Add your statement and receipts.** Create a workspace and open **Sources**. Use **Import statement** for your bank PDF and **Choose folder** for receipts and invoices.
+2. **Check the suggested matches.** In **Match suggestions**, see what supports each suggestion, such as a shared amount, date, or payment reference. Open the original to check a detail, assign a different document, or leave the payment open for follow-up.
+3. **Send checked records to your bookkeeper.** Select the matches you've checked, click **Approve selected**, then **Save**. In **Export**, choose **Export copies only** or **Export CSV and copies** to include a report with transaction and review details.
 
-## Checks
+## What you can import
 
-```sh
-npm run check
-npm run test:unit
-npm run test:development
-npm run test:electron
-npm run test:packaged
-npm run test:extraction
-npm run test:import
-npm run test:documents
-npm run test:ui-import
-```
+| Source | Supported inputs |
+| --- | --- |
+| Bank statements | English **Revolut Business EUR** statement PDFs and **Airwallex EUR Account Activity** PDFs |
+| Receipts and invoices | **PDF**, **PNG**, and **JPEG** files in a folder and its subfolders |
 
-`npm run check` runs ESLint with zero tolerated warnings and checks HTML formatting. Use `npm run lint:fix` and `npm run format` to apply available fixes. Prettier uses tabs and a 180-character line width; generated outputs and dependencies are excluded.
+You can use both banks in one workspace and pick up later from the same saved review.
 
-`npm run test:development` builds the app and uses Playwright Test to exercise direct Electron execution, SQLite/local OCR and live CSS replacement. It temporarily adds an isolated marker to `src/styles.css` and restores the original bytes afterward. Avoid editing that file during this check.
+## Download
 
-`npm run test:unit` type-checks the unit tests and runs them from TypeScript source with Vitest. Run the packaging command for your platform before running checks against the desktop executable. `npm run test:electron` runs all packaged checks with Playwright Test. Use the individual commands above to run a single suite. Generated results and screenshots go under ignored `artifacts/`. Remove temporary `release/`, `.build/`, `.angular/` and test outputs after successful use.
+Get the latest version from [GitHub Releases](https://github.com/Wigtertainment/receiptmatch/releases). Choose the **Windows x64 installer** or the **Ubuntu x64 `.deb` or AppImage** under **Assets**.
 
-Extraction checks exercise isolated PDF text and local English OCR using synthetic PDF, PNG and JPEG inputs and bundled resources, including image limits, orientation and failures.
+After opening ReceiptMatch, select **Create workspace**. Save it as a `.receiptmatch` file to keep your review and pick up where you left off.
 
-Import checks exercise native file selection, duplicate skipping and explicit workspace persistence through the validated desktop API. UI import checks use the actual controls, inspect financial fields and evidence, and capture synthetic-data screenshots. Native dialog selections are supplied by automation.
+## Support
 
-Document import checks use the packaged app to cover recursive mixed folders, PDF/PNG/JPEG analysis, file results and evidence, keyboard operation, cancellation and saved results across process restart.
-
-For the Ubuntu 24.04 x64 container check:
-
-```sh
-docker build -t receiptmatch-workspace:ubuntu24.04 .
-docker run --rm --init --network none --cap-add SYS_ADMIN --shm-size=512m receiptmatch-workspace:ubuntu24.04
-```
-
-The container uses Xvfb and a non-root user. The namespace capability is needed by the test host; Electron's sandbox remains enabled. This checks a packaged application directory, not an installer or the full Ubuntu desktop release matrix.
+[Report a problem or request a bank format](https://github.com/Wigtertainment/receiptmatch/issues) · [MIT license](LICENSE)
