@@ -26,5 +26,15 @@ win:
   executableName: ReceiptMatch
   signExecutable: false
 
+nsis:
+  artifactName: ReceiptMatch-Setup-${version}-windows-x64.${ext}
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+
 linux:
   executableName: receiptmatch
+  artifactName: ReceiptMatch-${version}-linux-x64.${ext}
+  category: Office
+  maintainer: Wigtertainment
+  syncDesktopName: true

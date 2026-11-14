@@ -1,0 +1,231 @@
+name: Release Desktop
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      sign_windows:
+        description: Sign the Windows test installer (main only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.13.0'
+          cache: npm
+
+      - name: Validate version and tag
+        id: version
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::Expected a stable package.json version"; exit 1; }
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            [[ "$GITHUB_REF_NAME" == "v$version" ]] || { echo "::error::Tag must match v$version"; exit 1; }
+            git merge-base --is-ancestor HEAD origin/main || { echo "::error::Release tag must point to a commit on main"; exit 1; }
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - run: npm ci --ignore-scripts
+      - run: npm run check
+      - run: npm run test:unit
+
+  build_windows:
+    name: Build Windows x64
+    needs: validate
+    runs-on: windows-2025
+    timeout-minutes: 45
+    environment: ${{ (github.ref_type == 'tag' || inputs.sign_windows) && 'windows-release' || 'windows-build' }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.13.0'
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+
+      - name: Sign in to Azure
+        if: github.ref_type == 'tag' || inputs.sign_windows
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Build signed Windows installer
+        if: github.ref_type == 'tag' || inputs.sign_windows
+        shell: pwsh
+        env:
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_CODE_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
+          AZURE_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_CERTIFICATE_PROFILE_NAME }}
+          AZURE_SIGNING_PUBLISHER: ${{ vars.AZURE_SIGNING_PUBLISHER }}
+        run: |
+          $options = @(
+            '--config.win.signExecutable=true'
+            '--config.win.forceCodeSigning=true'
+            "--config.win.azureSignOptions.endpoint=$env:AZURE_TRUSTED_SIGNING_ENDPOINT"
+            "--config.win.azureSignOptions.codeSigningAccountName=$env:AZURE_CODE_SIGNING_ACCOUNT_NAME"
+            "--config.win.azureSignOptions.certificateProfileName=$env:AZURE_CERTIFICATE_PROFILE_NAME"
+            "--config.win.azureSignOptions.publisherName=$env:AZURE_SIGNING_PUBLISHER"
+          )
+          npm run dist:win -- @options
+
+      - name: Build unsigned Windows test installer
+        if: github.ref_type != 'tag' && !inputs.sign_windows
+        run: npm run dist:win
+
+      - name: Verify Windows setup and packaged app
+        shell: pwsh
+        env:
+          REQUIRE_SIGNATURE: ${{ github.ref_type == 'tag' || inputs.sign_windows }}
+        run: |
+          $installer = "release/ReceiptMatch-Setup-$env:VERSION-windows-x64.exe"
+          if (!(Test-Path -LiteralPath $installer -PathType Leaf) -or (Get-Item -LiteralPath $installer).Length -eq 0) {
+            throw "Missing Windows installer: $installer"
+          }
+          if ($env:REQUIRE_SIGNATURE -eq 'true') {
+            foreach ($file in @($installer, 'release/win-unpacked/ReceiptMatch.exe')) {
+              $signature = Get-AuthenticodeSignature -LiteralPath $file
+              if ($signature.Status -ne 'Valid' -or !$signature.TimeStamperCertificate) {
+                throw "Expected a valid, timestamped Authenticode signature on $file, got $($signature.Status)."
+              }
+            }
+          }
+          npm run test:packaged
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: receiptmatch-windows-x64
+          if-no-files-found: error
+          compression-level: 0
+          path: release/ReceiptMatch-Setup-*-windows-x64.exe
+
+  build_linux:
+    name: Build Linux x64
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.13.0'
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+
+      - name: Prepare Linux desktop test environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y apparmor xz-utils xvfb xauth libgtk-3-0t64 libasound2t64 libgbm1 libnss3
+          sudo apparmor_parser -r <<PROFILE
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile receiptmatch-ci "$GITHUB_WORKSPACE/release/linux-unpacked/receiptmatch" flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+
+      - name: Package Linux desktop app
+        run: npm run dist:linux
+
+      - name: Verify Linux packages and bundled runtimes
+        run: |
+          image="release/ReceiptMatch-$VERSION-linux-x64.AppImage"
+          deb="release/ReceiptMatch-$VERSION-linux-x64.deb"
+          test -x "$image"
+          "$image" --appimage-extract >/dev/null
+          test -x squashfs-root/AppRun
+          test -x squashfs-root/resources/local-ocr-runtimes/python/bin/python3.12
+          test -x squashfs-root/resources/local-ocr-runtimes/llama/llama-mtmd-cli
+          test "$(dpkg-deb --field "$deb" Architecture)" = amd64
+          dpkg-deb --extract "$deb" "$RUNNER_TEMP/receiptmatch-deb"
+          test -x "$RUNNER_TEMP/receiptmatch-deb/opt/ReceiptMatch/receiptmatch"
+          test -f "$RUNNER_TEMP/receiptmatch-deb/opt/ReceiptMatch/resources/apparmor-profile"
+          test -f "$RUNNER_TEMP/receiptmatch-deb/usr/share/applications/receiptmatch.desktop"
+          xvfb-run -a npm run test:packaged
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: receiptmatch-linux-x64
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            release/ReceiptMatch-*-linux-x64.AppImage
+            release/ReceiptMatch-*-linux-x64.deb
+
+  draft:
+    name: Create GitHub release draft
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [validate, build_windows, build_linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: receiptmatch-*-x64
+          path: release-assets
+          merge-multiple: true
+
+      - name: Check assets and create draft
+        working-directory: release-assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          files=(
+            "ReceiptMatch-Setup-$VERSION-windows-x64.exe"
+            "ReceiptMatch-$VERSION-linux-x64.AppImage"
+            "ReceiptMatch-$VERSION-linux-x64.deb"
+          )
+          for file in "${files[@]}"; do
+            test -s "$file"
+          done
+          sha256sum "${files[@]}" > SHA256SUMS.txt
+          if is_draft="$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft')"; then
+            [[ "$is_draft" == true ]] || { echo "::error::Published releases cannot be replaced"; exit 1; }
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" SHA256SUMS.txt --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" SHA256SUMS.txt \
+              --verify-tag --draft --generate-notes --title "ReceiptMatch $VERSION"
+          fi
