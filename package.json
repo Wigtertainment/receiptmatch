@@ -6,6 +6,8 @@
   "license": "MIT",
   "description": "Local-first financial reconciliation desktop application",
   "author": "Egor Kin",
+  "homepage": "https://github.com/Wigtertainment/receiptmatch",
+  "desktopName": "receiptmatch.desktop",
   "main": ".build/main.cjs",
   "scripts": {
     "lint": "eslint . --max-warnings 0",
@@ -17,6 +19,8 @@
     "build:electron": "tsc -p tsconfig.electron.json && webpack --fail-on-warnings && ng build receiptmatch-preview",
     "pack:win": "npm run build && node scripts/prepare-local-ocr-runtimes.mjs win32 && electron-builder --win --x64 --dir --publish never",
     "pack:linux": "npm run build && node scripts/prepare-local-ocr-runtimes.mjs linux && electron-builder --linux --x64 --dir --publish never",
+    "dist:win": "npm run build && node scripts/prepare-local-ocr-runtimes.mjs win32 && electron-builder --win nsis --x64 --publish never",
+    "dist:linux": "npm run build && node scripts/prepare-local-ocr-runtimes.mjs linux && electron-builder --linux AppImage deb --x64 --publish never",
     "start": "npm run build:electron && wait-on --reverse --timeout 1000 tcp:127.0.0.1:4310 && concurrently -k --success first \"cross-env CI=1 PORT=4310 ng serve receiptmatch --host 127.0.0.1 --port 4310 --hmr\" \"wait-on --timeout 60000 http-get://127.0.0.1:4310/ && cross-env ELECTRON_START_URL=http://127.0.0.1:4310/ electron .\"",
     "start:dist": "npm run build && cross-env ELECTRON_START_URL= electron .",
     "test:unit": "tsc -p tsconfig.tests.json && vitest run",
