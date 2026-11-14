@@ -3,7 +3,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { randomBytes } from 'node:crypto';
-import { commandSchema, documentExportRequestSchema, exportSettingsRequestSchema, matchRequestSchema, type WorkspaceState } from '../src/shared/protocol.js';
+import { commandSchema, documentExportRequestSchema, documentSnapshotRequestSchema, exportSettingsRequestSchema, matchRequestSchema, type WorkspaceState } from '../src/shared/protocol.js';
 import type { DocumentExportResponse } from '../src/shared/document-export.js';
 import { originalAdoptionRequestSchema, originalPreviewRequestSchema, originalSourceExtensions } from '../src/shared/original-preview.js';
 import { WorkspaceSession } from './workspace-session.js';
@@ -174,6 +174,12 @@ async function launch() {
   ipcMain.handle('workspace:document-imports', (event, ...payload: unknown[]) => {
     if (!authorized(event) || payload.length) throw new Error('Workspace request denied.');
     return workspace.documentImports();
+  });
+  ipcMain.handle('workspace:document-snapshot', (event, ...payload: unknown[]) => {
+    if (!authorized(event) || payload.length !== 1) throw new Error('Workspace request denied.');
+    const request = documentSnapshotRequestSchema.safeParse(payload[0]);
+    if (!request.success) throw new Error('Workspace request denied.');
+    return workspace.documentSnapshot(request.data);
   });
   ipcMain.handle('workspace:matches', (event, ...payload: unknown[]) => {
     if (!authorized(event) || payload.length !== 1) throw new Error('Workspace request denied.');

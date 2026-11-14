@@ -2,11 +2,11 @@ import path from 'node:path';
 import { formatAmountEntry } from '../src/shared/amount-entry.js';
 import { applyBankCorrections } from '../src/shared/bank-corrections.js';
 import type { TransactionCandidate, UnresolvedDraft } from '../src/shared/bank-import.js';
-import { applyDocumentCorrections } from '../src/shared/document-corrections.js';
 import type { DocumentExportOutcome } from '../src/shared/document-export.js';
 import { documentRevisionIndex } from '../src/shared/match-approvals.js';
 import { excludeDuplicateTransactions, excludeTransactions } from '../src/shared/transaction-duplicates.js';
 import { activeStatements, activeSupportingDocuments } from '../src/shared/source-replacements.js';
+import { WorkspaceDocumentState } from './documents/document-state.js';
 import { summarizeMatches } from './match-view.js';
 import { suggestWorkspaceMatches } from './matching.js';
 import { evaluateReviewMatches } from './review-matching.js';
@@ -29,9 +29,10 @@ function sourceName(file: string): string {
 export function reconciliationRows(snapshot: SavedWorkspace, copyOutcomes: readonly DocumentExportOutcome[] = []): ReconciliationRow[] {
 	const corrected = applyBankCorrections(snapshot.imports, snapshot.bankCorrections);
 	const imports = excludeDuplicateTransactions(activeStatements(corrected, snapshot.sourceReplacements), snapshot.duplicateDecisions.values());
-	const documents = activeSupportingDocuments(applyDocumentCorrections(snapshot.documentImports, snapshot.documentCorrections), snapshot.sourceReplacements);
+	const documentView = new WorkspaceDocumentState(snapshot.documentImports, snapshot.documentCorrections);
+	const documents = activeSupportingDocuments(documentView.effective, snapshot.sourceReplacements);
 	const matchImports = excludeTransactions(imports, snapshot.ignoredTransactions);
-	const exactMatches = matchImports === corrected ? snapshot.matches : suggestWorkspaceMatches(matchImports, documents);
+	const exactMatches = matchImports === corrected && !snapshot.sourceReplacements.size && !documentView.hasAutomaticChanges ? snapshot.matches : suggestWorkspaceMatches(matchImports, documents);
 	const matches = evaluateReviewMatches(exactMatches, matchImports, documents);
 	const documentRevisions = documentRevisionIndex(snapshot.documentCorrections.values());
 	const summaries = new Map(summarizeMatches(matches, imports, snapshot.matchDecisions, snapshot.bankCorrections, snapshot.reviewApprovals, documentRevisions, snapshot.ignoredTransactions)

@@ -4,6 +4,7 @@ import type { ExtractionProgress } from './pdf-extraction.js';
 import type { BankImportSummary, StoredBankImport } from './workspace-import.js';
 import type { ImportIssue } from './bank-import.js';
 import type { DocumentImportProgress, StoredDocumentImport } from './workspace-documents.js';
+import type { SupportingDocument } from './supporting-document.js';
 import { matchReviewSchema, type MatchDetails, type MatchReviewCounts, type MatchSummary } from './workspace-matching.js';
 import { bankCorrectionChangesSchema, type BankCorrection } from './bank-corrections.js';
 import { documentCorrectionTarget, documentCorrectionValueSchema, type DocumentCorrection } from './document-corrections.js';
@@ -39,6 +40,13 @@ export const exportSettingsRequestSchema = z.discriminatedUnion('type', [
 ]);
 export type ExportSettingsRequest = z.infer<typeof exportSettingsRequestSchema>;
 export const matchRequestSchema = z.strictObject({ revision: z.number().int().nonnegative(), transactionId: z.uuid().optional() });
+export const documentSnapshotRequestSchema = z.strictObject({ loadRevision: z.number().int().nonnegative(), revision: z.number().int().nonnegative() });
+export type DocumentSnapshotRequest = z.infer<typeof documentSnapshotRequestSchema>;
+export type OriginalDocumentFields = Pick<SupportingDocument, 'sections' | 'issues'>;
+export interface DocumentSnapshot extends DocumentSnapshotRequest {
+  reports: StoredDocumentImport[];
+  originals: Record<string, OriginalDocumentFields>;
+}
 export const documentExportRequestSchema = z.strictObject({ loadRevision: z.number().int().nonnegative(), includeCsv: z.boolean().default(false) });
 export interface DocumentImportSummary { id: string; folderPath: string; status: 'finished' | 'cancelled'; imported: number; skipped: number; failed: number; unsupported: number; directoryIssues: number; }
 export interface WorkspaceView {
@@ -64,6 +72,7 @@ export interface WorkspaceBridge {
   command(value: WorkspaceCommand): Promise<WorkspaceState>;
   bankImports(): Promise<StoredBankImport[]>;
   documentImports(): Promise<StoredDocumentImport[]>;
+  documentSnapshot(request: DocumentSnapshotRequest): Promise<DocumentSnapshot | null>;
   matchSummaries(revision: number): Promise<MatchSummary[] | null>;
   matchDetails(revision: number, transactionId: string): Promise<MatchDetails | null>;
   openOriginal(request: OriginalPreviewRequest): Promise<OriginalPreviewResult>;

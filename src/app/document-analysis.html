@@ -97,10 +97,9 @@
 			<details (toggle)="toggleDetail(field.id, $event)">
 				<summary class="field-summary">
 					<span class="field-role">{{ field.role }}</span> ·
-					@if (field.correction?.corrected; as corrected) {
-						{{ correctedValue(corrected.change) }} <span class="source-status">Corrected</span>
-					} @else {
-						{{ field.values.join(' / ') || 'No value found' }}
+					{{ field.values.join(' / ') || 'No value found' }}
+					@if (field.correction?.corrected) {
+						<span class="source-status">Corrected</span>
 					}
 					@if (!field.correction?.corrected && field.values.length > 1) {
 						<span class="field-warning"> · Ambiguous</span>
@@ -115,16 +114,14 @@
 								<dt>Printed label</dt>
 								<dd class="raw-text">{{ field.label }}</dd>
 							</div>
-							@if (field.correction?.corrected) {
+							@if (field.originalValues && (field.correction?.corrected || field.originalValues.join(' / ') !== field.values.join(' / '))) {
 								<div>
 									<dt>Original values</dt>
-									<dd>{{ field.values.join(' / ') || 'No value found' }}</dd>
+									<dd>{{ field.originalValues.join(' / ') || 'No value found' }}</dd>
 								</div>
 							}
 						</dl>
-						@if (field.newConflict; as message) {
-							<p class="field-warning">{{ message }}</p>
-						}
+
 						@if (field.correction; as correction) {
 							<wig-button
 								#correctButton

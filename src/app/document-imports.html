@@ -87,7 +87,7 @@
 											@let row = fileRows().get(report.id)![item.index];
 											@let file = row.file;
 											@let archived = file.status === 'imported' && state().workspace?.supersededDocuments?.includes(file.record.id);
-											@let reviewNeeded = !!row.projectedIssues?.length;
+											@let reviewNeeded = file.status === 'imported' && !!file.record.result.issues.length;
 											<span
 												class="source-status"
 												[class.source-status-warning]="archived || file.status === 'failed' || file.status === 'unsupported' || reviewNeeded"
@@ -164,9 +164,9 @@
 						[analysis]="file.record.result"
 						[format]="file.record.format"
 						[documentId]="file.record.id"
-						[busy]="state().busy"
+						[busy]="state().busy || !detailsCurrent()"
 						[workspaceError]="state().error"
-						[projectedIssues]="row.projectedIssues"
+						[original]="row.original"
 						[corrections]="correctionsByDocument().get(file.record.id) ?? null"
 						(correction)="correctField($event)"
 					/>

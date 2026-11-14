@@ -4,7 +4,7 @@ import type { DocumentSection } from '../src/shared/supporting-document.js';
 import type { StoredDocumentImport } from '../src/shared/workspace-documents.js';
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
 import type { MatchCandidate, MatchNameEvidence, ReviewMatch, ReviewMatchCandidate, TransactionMatch } from '../src/shared/workspace-matching.js';
-import { hasFullDocumentReference, mergedLegacySections, recordedDocumentPayments, withGenericIssueDate } from './documents/interpret.js';
+import { hasFullDocumentReference, mergedLegacySections, recordedDocumentPayments } from './documents/interpret.js';
 import { bankReferenceFields, dateEvidence, documentReferenceFields, moneyKey, normalizeReference, outgoingAmounts, referenceEvidence } from './matching.js';
 
 type AmountEvidence = MatchCandidate['amounts'][number];
@@ -23,6 +23,7 @@ interface ReviewSection {
 
 const day = 86_400_000;
 const exactAmountScore = 4;
+const filenameRank = { match: 2, partial: 1, different: 0, missing: 0 };
 const genericWords = new Set([
 	'at', 'beleg', 'bild', 'card', 'copy', 'dinner', 'document', 'file', 'from', 'gmbh', 'image', 'inc', 'invoice', 'karte', 'kartenzahlung', 'limited',
 	'ltd', 'lunch', 'new', 'payment', 'photo', 'pos', 'purchase', 'receipt', 'rechnung', 'restaurant', 'shop', 'store', 'terminal', 'to', 'transaction', 'transfer', 'zahlung',
@@ -99,7 +100,7 @@ function indexSections(imports: readonly StoredDocumentImport[]) {
 		for (const section of result.sections) {
 			const paymentDates = section.dates.filter(field => field.role === 'payment');
 			const dates = paymentDates.some(field => field.candidates.length) ? paymentDates :
-				withGenericIssueDate(section, result.input?.pages ?? []).filter(field => field.role === 'issue');
+				section.dates.filter(field => field.role === 'issue');
 			const merchants = section.merchants.flatMap(field => field.candidates.map(value => namedText(value)));
 			const references = new Set(documentReferenceFields(section).flatMap(field => field.candidates
 				.filter(value => hasFullDocumentReference(field, value)).map(normalizeReference)).filter(Boolean));
@@ -200,6 +201,7 @@ export function evaluateReviewMatches(
 		}
 		candidates.sort((left, right) => Number(right.reliable) - Number(left.reliable) || right.score - left.score ||
 			Number(right.candidate.signals.amount === 'equal') - Number(left.candidate.signals.amount === 'equal') ||
+			filenameRank[right.candidate.signals.filename.state] - filenameRank[left.candidate.signals.filename.state] ||
 			left.candidate.documentId.localeCompare(right.candidate.documentId) || left.candidate.sectionId.localeCompare(right.candidate.sectionId));
 		return { transactionId, status: candidates.some(candidate => candidate.reliable) ? 'reliable' : candidates.length ? 'uncertain' : 'unmatched',
 			candidates: candidates.map(({ candidate }) => candidate) };
