@@ -11,6 +11,7 @@
           "options": {
             "browser": "src/app.ts",
             "index": "src/index.html",
+            "assets": [{ "glob": "receiptmatch-logo.png", "input": "media/receiptmatch", "output": "/" }, { "glob": "receiptmatch.ico", "input": "media/receiptmatch", "output": "/" }],
             "styles": ["@wigtertainment-ltd/comp-lib/styles/default.css", "src/styles.css"],
             "tsConfig": "tsconfig.app.json",
             "outputPath": ".build/ui",
