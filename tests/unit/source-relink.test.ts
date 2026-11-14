@@ -6,7 +6,7 @@ import type { OriginalRelinkResult } from "../../src/shared/original-preview.js"
 import type { WorkspaceView } from "../../src/shared/protocol.js";
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -19,7 +19,7 @@ import type { OriginalPreviewRequest } from '../../src/shared/original-preview.j
 import { documentRun, retainedBank, retainedDocument } from './document-fixtures.js';
 
 async function fixture(context: TestContext): Promise<{ root: string; file: string; bank: StoredBankImport; receipt: StoredSupportingDocument; docs: StoredDocumentImport[]; bankPath: string; receiptPath: string; docsExport: string; csvExport: string; session: WorkspaceSession; state: () => WorkspaceView; request: (kind: OriginalPreviewRequest["kind"]) => OriginalPreviewRequest; relink: (kind: OriginalPreviewRequest["kind"], target: string | null) => Promise<OriginalRelinkResult>; approvals: Map<string, { associationRevision: number; approval: { batchId: `${string}-${string}-${string}-${string}-${string}`; approvedAt: string; transactionId: string; documentId: string; transactionRevision: number; documentRevision: number; associationRevision: number; }; }>; calls: () => number; }> {
-	const root: string = await mkdtemp(path.join(tmpdir(), 'receiptmatch-source-relink-'));
+	const root: string = await mkdtemp(path.join(await realpath(tmpdir()), 'receiptmatch-source-relink-'));
 	context.onTestFinished((): Promise<void> => rm(root, { recursive: true, force: true }));
 	const originals: string = path.join(root, 'originals'), moved: string = path.join(root, 'moved');
 	const docsExport: string = path.join(root, 'copy'), csvExport: string = path.join(root, 'export');

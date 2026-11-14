@@ -1,6 +1,6 @@
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { expect, test, type Locator, type Page, type ElectronApplication, type TestInfo, type PlaywrightWorkerOptions, type PlaywrightWorkerArgs, type PlaywrightTestOptions, type PlaywrightTestArgs } from '@playwright/test';
 import Database from 'better-sqlite3';
@@ -67,7 +67,9 @@ test('previews, validates and saves an export filename pattern across Electron r
 
 test('exports copies and the saved reconciliation CSV and shows mixed outcomes and collisions', async ({ playwright }: PlaywrightTestArgs & PlaywrightTestOptions & PlaywrightWorkerArgs & PlaywrightWorkerOptions, testInfo: TestInfo): Promise<void> => {
 	test.setTimeout(90_000);
-	const root: string = testInfo.outputPath('document-export');
+	const outputPath: string = testInfo.outputPath('document-export');
+	await mkdir(outputPath, { recursive: true });
+	const root: string = await realpath(outputPath);
 	const originals: string = path.join(root, 'originals');
 	const destination: string = path.join(root, 'destination');
 	const reportOnly: string = path.join(root, 'report-only');

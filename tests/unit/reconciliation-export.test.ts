@@ -28,7 +28,7 @@ import { statement } from './bank-fixtures.js';
 import type { PathLike } from 'node:fs';
 
 async function fixture(context: TestContext, approve: boolean = true): Promise<{ destination: string; file: string; snapshot: SavedWorkspace; first: string; second: string; document: StoredSupportingDocument; }> {
-	const root: string = await fs.mkdtemp(path.join(tmpdir(), 'receiptmatch-reconciliation-export-'));
+	const root: string = await fs.mkdtemp(path.join(await fs.realpath(tmpdir()), 'receiptmatch-reconciliation-export-'));
 	context.onTestFinished((): Promise<void> => fs.rm(root, { recursive: true, force: true }));
 	const originals: string = path.join(root, 'originals');
 	const destination: string = path.join(root, 'export');
@@ -128,7 +128,7 @@ test('reads approved copies from the saved relocation and keeps imported filenam
 });
 
 test('exports the primary booking and its approved document without the confirmed duplicate', async (context: TestContext & object): Promise<void> => {
-	const root: string = await fs.mkdtemp(path.join(tmpdir(), 'receiptmatch-duplicate-export-'));
+	const root: string = await fs.mkdtemp(path.join(await fs.realpath(tmpdir()), 'receiptmatch-duplicate-export-'));
 	context.onTestFinished((): Promise<void> => fs.rm(root, { recursive: true, force: true }));
 	const originals: string = path.join(root, 'originals');
 	const destination: string = path.join(root, 'export');

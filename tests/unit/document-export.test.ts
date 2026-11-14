@@ -23,7 +23,7 @@ import type { Mode } from 'node:fs';
 import type { PathLike } from 'node:fs';
 
 async function fixture(context: TestContext): Promise<{ root: string; originals: string; destination: string; }> {
-	const root: string = await fs.mkdtemp(path.join(tmpdir(), 'receiptmatch-document-export-'));
+	const root: string = await fs.mkdtemp(path.join(await fs.realpath(tmpdir()), 'receiptmatch-document-export-'));
 	context.onTestFinished((): Promise<void> => fs.rm(root, { recursive: true, force: true }));
 	const originals: string = path.join(root, 'originals', 'documents');
 	const destination: string = path.join(root, 'destination');
