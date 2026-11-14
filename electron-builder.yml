@@ -1,5 +1,9 @@
 appId: com.wigtertainment.receiptmatch
 productName: ReceiptMatch
+extraMetadata:
+  author:
+    name: Wigtertainment Ltd
+copyright: Copyright © 2026 Egor Kin
 
 directories:
   output: release
@@ -29,6 +33,7 @@ publish:
 
 win:
   executableName: ReceiptMatch
+  icon: media/receiptmatch/receiptmatch.ico
   signExecutable: false
   publish:
     provider: github
@@ -41,10 +46,19 @@ nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
+  installerIcon: media/receiptmatch/receiptmatch.ico
+  uninstallerIcon: media/receiptmatch/receiptmatch.ico
+  installerHeader: media/receiptmatch/installer-header.bmp
+  installerSidebar: media/receiptmatch/installer-sidebar.bmp
+  include: media/receiptmatch/installer.nsh
+  shortcutName: ReceiptMatch
+  uninstallDisplayName: ReceiptMatch
+  uninstallUrlHelp: https://github.com/Wigtertainment/receiptmatch/issues
 
 linux:
   executableName: receiptmatch
+  icon: media/receiptmatch/linux-icons
   artifactName: ReceiptMatch-${version}-linux-x64.${ext}
   category: Office
-  maintainer: Wigtertainment
+  maintainer: Wigtertainment Ltd
   syncDesktopName: true
