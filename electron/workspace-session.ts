@@ -25,10 +25,11 @@ import { approvedExportDocuments, copyApprovedDocuments } from './document-expor
 import { writeReconciliationExport } from './reconciliation-export.js';
 import type { DocumentExportReport, ReconciliationExportReport } from '../src/shared/document-export.js';
 import { indexStatementOverlaps } from '../src/shared/statement-overlaps.js';
-import { duplicatePairKey, excludeDuplicateTransactions, secondaryDuplicateId, validateDuplicateDecisions, type DuplicateDecision } from '../src/shared/transaction-duplicates.js';
+import { duplicatePairKey, excludeDuplicateTransactions, excludeTransactions, secondaryDuplicateId, validateDuplicateDecisions, type DuplicateDecision } from '../src/shared/transaction-duplicates.js';
 import { activeStatements, activeSupportingDocuments } from '../src/shared/source-replacements.js';
 import { analyzeSource, type AnalyzedSource, type ReplacementExtraction } from './source-analysis.js';
 import { prepareAdoption, supportingDocumentSource } from './source-adoption.js';
+import { readTransactionIgnoreRules, setTransactionIgnoreRule, transactionIgnoreRuleKey, transactionsIgnoredByRules } from './transaction-ignore-rules.js';
 
 export interface WorkspaceDialogs {
   open(): Promise<string | null>;
@@ -66,6 +67,9 @@ export class WorkspaceSession {
   private documentCorrections = new Map<string, DocumentCorrection>();
   private matches: TransactionMatch[] = [];
   private reviewMatches: { source: TransactionMatch[]; results: ReviewMatch[] } | null = null;
+  private ignoredTransactions = new Set<string>();
+  private ignoreRules = new Set<string>();
+  private ruleMatches: { imports: StoredBankImport[]; rules: ReadonlySet<string>; ids: ReadonlySet<string> } | null = null;
   private matchDecisions = new Map<string, string | null>();
   private reviewApprovals = new Map<string, ReviewApprovalState>();
   private duplicateDecisions = new Map<string, DuplicateDecision>();
@@ -82,7 +86,8 @@ export class WorkspaceSession {
   private loadRevision = 0;
   private matchRevision = 0;
   constructor(private readonly dialogs: WorkspaceDialogs, private readonly changed?: (state: WorkspaceState) => void, private readonly importService?: BankImportService,
-    private readonly documentService?: DocumentImportService, private readonly extractReplacement?: ReplacementExtraction) {}
+    private readonly documentService?: DocumentImportService, private readonly extractReplacement?: ReplacementExtraction,
+    private readonly ignoreRulesDirectory?: string) {}
 
   state(): WorkspaceState {
     const imports = this.effectiveImports.map(record => ({
@@ -93,7 +98,9 @@ export class WorkspaceSession {
     const sameImports = this.saved?.imports.length === this.importRecords.length && this.importRecords.every((record, index) => record.id === this.saved!.imports[index].id);
     const sameDocuments = this.saved?.documentImports.length === this.documentRecords.length && this.documentRecords.every((record, index) => record.id === this.saved!.documentImports[index].id);
     const matchReviewCounts: MatchReviewCounts = { open: 0, assigned: 0, 'completed-without-document': 0 };
+    const ignored = this.allIgnoredTransactions();
     for (const { transactionId } of this.matches) {
+      if (ignored.has(transactionId)) continue;
       const documentId = this.matchDecisions.get(transactionId);
       matchReviewCounts[documentId === undefined ? 'open' : documentId === null ? 'completed-without-document' : 'assigned']++;
     }
@@ -107,12 +114,12 @@ export class WorkspaceSession {
       workspace: this.metadata ? {
         id: this.metadata.id, loadRevision: this.loadRevision, matchRevision: this.matchRevision, name: this.metadata.name,
         dirty: !this.saved || this.metadata.name !== this.saved.metadata.name || !sameImports || !sameDocuments ||
-          !isDeepStrictEqual(this.matchDecisions, this.saved.matchDecisions) || !isDeepStrictEqual(this.bankCorrections, this.saved.bankCorrections) ||
+          !isDeepStrictEqual(this.ignoredTransactions, this.saved.ignoredTransactions) || !isDeepStrictEqual(this.matchDecisions, this.saved.matchDecisions) || !isDeepStrictEqual(this.bankCorrections, this.saved.bankCorrections) ||
           !isDeepStrictEqual(this.documentCorrections, this.saved.documentCorrections) || !isDeepStrictEqual(this.reviewApprovals, this.saved.reviewApprovals) ||
           !isDeepStrictEqual(this.duplicateDecisions, this.saved.duplicateDecisions) || !isDeepStrictEqual(this.sourceRelocations, this.saved.sourceRelocations) ||
           !isDeepStrictEqual(this.sourceReplacements, this.saved.sourceReplacements),
         filePath: this.saved?.filePath ?? null, savedAt: this.saved?.metadata.savedAt ?? null, imports, documentImports, matchReviewCounts,
-        approvedDocumentCount: this.currentApprovals().size,
+        approvedDocumentCount: this.exportableApprovals().size,
         bankCorrections: structuredClone([...this.bankCorrections.values()]), documentCorrections: structuredClone([...this.documentCorrections.values()]),
         duplicateDecisions: structuredClone([...this.duplicateDecisions.values()]),
         supersededStatements: this.importRecords.filter(record => this.sourceReplacements.has(record.result.sourceProvenance!.sourceId)).map(record => record.id),
@@ -197,7 +204,8 @@ export class WorkspaceSession {
       if (this.sources().some(item => item.sha256 === hash)) return { status: 'failed', error: 'This file has already been imported into the workspace.' };
       const replacement = await analyzeSource(request.kind, newPath, source.format, bytes, extract);
       const plan = prepareAdoption(original, replacement, { reviews: this.matchDecisions, approvals: this.reviewApprovals, currentApprovals: this.currentApprovals(),
-        bankCorrections: this.bankCorrections, documentCorrections: this.documentCorrections, duplicates: this.duplicateDecisions });
+        bankCorrections: this.bankCorrections, documentCorrections: this.documentCorrections, duplicates: this.duplicateDecisions,
+        ignoredTransactions: this.ignoredTransactions });
       const token = randomUUID();
       this.pendingAnalysis = { token, revision: this.matchRevision, oldSourceId: source.sourceId, replacement, plan };
       const { changes, conflicts, preserved, revoked } = plan;
@@ -246,6 +254,7 @@ export class WorkspaceSession {
       this.effectiveDocuments = correctedDocuments;
       this.matchDecisions = plan.reviews;
       this.reviewApprovals = plan.approvals;
+      this.ignoredTransactions = plan.ignoredTransactions;
       this.matches = matches;
       this.pendingAnalysis = null;
       this.loadRevision++;
@@ -266,21 +275,36 @@ export class WorkspaceSession {
     return activeSupportingDocuments(imports, this.sourceReplacements);
   }
   private restoreMatches(saved: SavedWorkspace) {
+    this.ignoredTransactions = new Set(saved.ignoredTransactions);
     this.duplicateDecisions = structuredClone(saved.duplicateDecisions);
     this.sourceReplacements = new Map(saved.sourceReplacements);
     this.archivedSourceReviews = structuredClone(saved.archivedSourceReviews);
     const active = this.activeImports();
     this.matches = active === this.effectiveImports ? structuredClone(saved.matches) : suggestWorkspaceMatches(active, this.activeDocuments());
   }
+  private ignoredByRule(): ReadonlySet<string> {
+    if (this.ruleMatches?.imports !== this.effectiveImports || this.ruleMatches.rules !== this.ignoreRules) {
+      this.ruleMatches = { imports: this.effectiveImports, rules: this.ignoreRules, ids: transactionsIgnoredByRules(this.effectiveImports, this.ignoreRules) };
+    }
+    return this.ruleMatches.ids;
+  }
+  private allIgnoredTransactions(): ReadonlySet<string> {
+    const byRule = this.ignoredByRule();
+    return byRule.size ? new Set([...this.ignoredTransactions, ...byRule]) : this.ignoredTransactions;
+  }
   private matchesForReview(): ReviewMatch[] {
-    if (this.reviewMatches?.source !== this.matches) this.reviewMatches = {
-      source: this.matches, results: evaluateReviewMatches(this.matches, this.activeImports(), this.activeDocuments())
-    };
+    if (this.reviewMatches?.source !== this.matches) {
+      const active = this.activeImports(), imports = excludeTransactions(active, this.allIgnoredTransactions());
+      const documents = this.activeDocuments();
+      const matches = imports === active ? this.matches : suggestWorkspaceMatches(imports, documents);
+      this.reviewMatches = { source: this.matches, results: evaluateReviewMatches(matches, imports, documents) };
+    }
     return this.reviewMatches.results;
   }
   matchSummaries(revision: number): MatchSummary[] | null {
     return this.metadata && revision === this.matchRevision ? summarizeMatches(
-      this.matchesForReview(), this.activeImports(), this.matchDecisions, this.bankCorrections, this.reviewApprovals, documentRevisionIndex(this.documentCorrections.values())
+      this.matchesForReview(), this.activeImports(), this.matchDecisions, this.bankCorrections, this.reviewApprovals,
+      documentRevisionIndex(this.documentCorrections.values()), this.allIgnoredTransactions(), this.ignoredByRule()
     ) : null;
   }
   matchDetails(revision: number, transactionId: string): MatchDetails | null {
@@ -291,13 +315,18 @@ export class WorkspaceSession {
   private currentApprovals() {
     return currentMatchApprovals(this.reviewApprovals, this.matchDecisions, this.bankCorrections, documentRevisionIndex(this.documentCorrections.values()));
   }
+  private exportableApprovals() {
+    const approvals = this.currentApprovals();
+    for (const id of this.allIgnoredTransactions()) approvals.delete(id);
+    return approvals;
+  }
   async exportApprovedDocuments(loadRevision: number, destination: string, pattern: string): Promise<DocumentExportReport> {
     if (this.busy) throw new Error('Finish the current workspace action before exporting.');
     if (!this.metadata || loadRevision !== this.loadRevision) throw new Error('The workspace changed before the export started.');
     this.busy = true;
     try {
       this.publish();
-      const documents = approvedExportDocuments(this.activeImports(), this.activeDocuments(this.documentRecords), this.currentApprovals(), this.sourceRelocations);
+      const documents = approvedExportDocuments(this.activeImports(), this.activeDocuments(this.documentRecords), this.exportableApprovals(), this.sourceRelocations);
       return await copyApprovedDocuments(destination, pattern, documents, [...this.sources().map(source => source.filePath), ...this.sourceRelocations.values()]);
     } finally {
       this.busy = false;
@@ -312,7 +341,9 @@ export class WorkspaceSession {
     this.busy = true;
     try {
       this.publish();
-      return await writeReconciliationExport(snapshot, destination, pattern);
+      const bank = applyBankCorrections(snapshot.imports, snapshot.bankCorrections);
+      const ignored = new Set([...snapshot.ignoredTransactions, ...transactionsIgnoredByRules(bank, this.ignoreRules)]);
+      return await writeReconciliationExport({ ...snapshot, ignoredTransactions: ignored }, destination, pattern);
     } finally {
       this.busy = false;
       this.publish();
@@ -337,14 +368,14 @@ export class WorkspaceSession {
     if (!this.metadata.name.trim()) throw new Error('Enter a workspace name before saving.');
     if (this.saved) this.saved = await saveWorkspace(
       this.saved, this.metadata, this.importRecords, this.documentRecords, this.matchDecisions, this.bankCorrections, this.documentCorrections,
-      this.reviewApprovals, this.duplicateDecisions, this.sourceRelocations, this.sourceReplacements, this.archivedSourceReviews
+      this.reviewApprovals, this.duplicateDecisions, this.sourceRelocations, this.sourceReplacements, this.archivedSourceReviews, this.ignoredTransactions
     );
     else {
       const destination = await this.dialogs.save(this.metadata.name);
       if (!destination) return false;
       this.saved = await createWorkspace(
         destination, this.metadata, this.importRecords, this.documentRecords, this.matchDecisions, this.bankCorrections, this.documentCorrections,
-        this.reviewApprovals, this.duplicateDecisions, this.sourceRelocations, this.sourceReplacements, this.archivedSourceReviews
+        this.reviewApprovals, this.duplicateDecisions, this.sourceRelocations, this.sourceReplacements, this.archivedSourceReviews, this.ignoredTransactions
       );
     }
     this.metadata = { ...this.saved.metadata };
@@ -463,7 +494,9 @@ export class WorkspaceSession {
   }
   private reviewMatch({ revision, transactionId, review }: Extract<WorkspaceCommand, { type: 'review-match' }>) {
     if (!this.metadata || revision !== this.matchRevision) throw new Error('The match review has changed. Refresh it before making a decision.');
-    if (!this.matches.some(match => match.transactionId === transactionId)) throw new Error('This transaction is no longer available for review.');
+    if (this.allIgnoredTransactions().has(transactionId) || !this.matches.some(match => match.transactionId === transactionId)) {
+      throw new Error('This transaction is no longer available for review.');
+    }
     if (review.status === 'assigned') {
       if (!this.activeDocuments(this.documentRecords).some(record => record.files.some(file => file.status === 'imported' && file.record.id === review.documentId))) {
         throw new Error('This supporting document is not available in the workspace.');
@@ -478,6 +511,32 @@ export class WorkspaceSession {
     if (documentId === undefined) this.matchDecisions.delete(transactionId);
     else this.matchDecisions.set(transactionId, documentId);
     this.reviewApprovals.set(transactionId, approval);
+    this.matchRevision++;
+  }
+  private async setTransactionIgnored({ revision, transactionId, ignored, remember }: Extract<WorkspaceCommand, { type: 'set-transaction-ignored' }>) {
+    if (!this.metadata || revision !== this.matchRevision) throw new Error('The match review has changed. Refresh it before changing the ignored status.');
+    if (!this.matches.some(row => row.transactionId === transactionId)) throw new Error('This transaction is no longer available for review.');
+    const byRule = this.ignoredByRule().has(transactionId);
+    const ignoredOnce = this.ignoredTransactions.has(transactionId);
+    if (remember && !ignored) throw new Error('Only an ignore decision can be remembered.');
+    if (remember || (!ignored && byRule)) {
+      if (!this.ignoreRulesDirectory) throw new Error('Remembered ignore rules are unavailable.');
+      const bank = this.effectiveImports.find(record => record.transactions.some(row => row.transactionId === transactionId))!;
+      const rowId = bank.transactions.find(row => row.transactionId === transactionId)!.rowId;
+      const key = transactionIgnoreRuleKey(bank.result.transactions.find(row => row.rowId === rowId)!);
+      if (!key) throw new Error('A description is required to remember this booking.');
+      await setTransactionIgnoreRule(this.ignoreRulesDirectory, key, ignored);
+      const rules = new Set(this.ignoreRules);
+      if (ignored) rules.add(key);
+      else rules.delete(key);
+      this.ignoreRules = rules;
+      this.ignoredTransactions.delete(transactionId);
+    } else {
+      if (ignored === (byRule || ignoredOnce)) return;
+      if (ignored) this.ignoredTransactions.add(transactionId);
+      else this.ignoredTransactions.delete(transactionId);
+    }
+    this.reviewMatches = null;
     this.matchRevision++;
   }
   private setDuplicateDecision({ revision, transactionId, otherTransactionId, decision }: Extract<WorkspaceCommand, { type: 'set-duplicate-decision' }>) {
@@ -651,6 +710,7 @@ export class WorkspaceSession {
     try {
       switch (command.type) {
         case 'save': await this.save(); break;
+        case 'set-transaction-ignored': await this.setTransactionIgnored(command); break;
         case 'review-match': this.reviewMatch(command); break;
         case 'set-duplicate-decision': this.setDuplicateDecision(command); break;
         case 'approve-matches': this.approveMatches(command); break;
@@ -660,10 +720,11 @@ export class WorkspaceSession {
         case 'import-documents': await this.importDocuments(); break;
         case 'new':
           if (await this.canLeave()) {
+            if (this.ignoreRulesDirectory) this.ignoreRules = await readTransactionIgnoreRules(this.ignoreRulesDirectory);
             this.metadata = newMetadata(); this.saved = null; this.importRecords = []; this.documentRecords = []; this.matches = []; this.matchDecisions.clear();
             this.bankCorrections.clear(); this.effectiveImports = [];
             this.documentCorrections.clear(); this.effectiveDocuments = [];
-            this.reviewApprovals.clear(); this.duplicateDecisions.clear(); this.sourceRelocations.clear();
+            this.reviewApprovals.clear(); this.ignoredTransactions.clear(); this.duplicateDecisions.clear(); this.sourceRelocations.clear();
             this.sourceReplacements.clear(); this.archivedSourceReviews.clear(); this.pendingAnalysis = null;
             this.importOutcome = null; this.documentOutcome = null; this.loadRevision++; this.matchRevision++;
           }
@@ -673,6 +734,7 @@ export class WorkspaceSession {
           const selected = await this.dialogs.open();
           if (!selected) break;
           const loaded = await loadWorkspace(selected);
+          if (this.ignoreRulesDirectory) this.ignoreRules = await readTransactionIgnoreRules(this.ignoreRulesDirectory);
           this.metadata = { ...loaded.metadata }; this.saved = loaded; this.importRecords = structuredClone(loaded.imports); this.documentRecords = structuredClone(loaded.documentImports);
           this.matchDecisions = new Map(loaded.matchDecisions);
           this.reviewApprovals = new Map(loaded.reviewApprovals);

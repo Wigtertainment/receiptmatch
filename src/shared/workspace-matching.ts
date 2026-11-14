@@ -58,6 +58,8 @@ export type MatchReviewCounts = Record<MatchReview['status'], number>;
 
 export interface MatchSummary {
 	transactionId: string;
+	ignored: boolean;
+	ignoredByRule: boolean;
 	bookingDate: string;
 	description: string;
 	accountAmount: z.infer<typeof moneySchema>;

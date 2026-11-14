@@ -14,11 +14,13 @@ interface AdoptionContext {
     bankCorrections: ReadonlyMap<string, BankCorrection>;
     documentCorrections: ReadonlyMap<string, DocumentCorrection>;
     duplicates: ReadonlyMap<string, DuplicateDecision>;
+    ignoredTransactions: ReadonlySet<string>;
 }
 
 export function prepareAdoption(original: AnalyzedSource, replacement: AnalyzedSource, context: AdoptionContext) {
     const reviews = new Map(context.reviews), approvals = new Map(context.approvals);
     const bankCorrections = new Map(context.bankCorrections), documentCorrections = new Map(context.documentCorrections);
+    const ignoredTransactions = new Set(context.ignoredTransactions);
     const archive = new Map<string, string | null>();
     const conflicts: string[] = [];
     let changes: OriginalAnalysisComparison['changes'], preserved = 0, revoked = 0;
@@ -48,6 +50,10 @@ export function prepareAdoption(original: AnalyzedSource, replacement: AnalyzedS
                 } catch { conflicts.push(`${label}: its correction could not be carried forward.`); }
             } else if (edit) conflicts.push(`${label}: its correction stays with the archived statement.`);
             if (duplicateIds.has(id)) conflicts.push(`${label}: its duplicate decision stays with the archived statement and needs review on the replacement.`);
+            if (ignoredTransactions.delete(id)) {
+                if (next && (index < original.record.transactions.length || bankCorrections.has(next))) ignoredTransactions.add(next);
+                else conflicts.push(`${label}: its ignore decision could not be transferred safely.`);
+            }
             const review = reviews.get(id);
             if (review === undefined) continue;
             archive.set(id, review);
@@ -106,7 +112,7 @@ export function prepareAdoption(original: AnalyzedSource, replacement: AnalyzedS
     } else throw new Error('The replacement must have the same source type.');
     const uniqueConflicts = [...new Set(conflicts)];
     if (uniqueConflicts.length > 100) uniqueConflicts.splice(99, uniqueConflicts.length - 99, `${uniqueConflicts.length - 99} additional conflicts remain in the archived analysis.`);
-    return { changes, conflicts: uniqueConflicts, blockingConflict, preserved, revoked, archive, reviews, approvals, bankCorrections, documentCorrections };
+    return { changes, conflicts: uniqueConflicts, blockingConflict, preserved, revoked, archive, reviews, approvals, bankCorrections, documentCorrections, ignoredTransactions };
 }
 
 export function supportingDocumentSource(imports: StoredDocumentImport[], id: string): Extract<AnalyzedSource, { kind: 'document' }> | null {

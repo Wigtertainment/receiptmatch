@@ -79,7 +79,7 @@ test('exports copies and the saved reconciliation CSV and shows mixed outcomes a
 	await createWorkspace(workspacePath, newMetadata(), [bank], [documentRun(originals, [approved, missing])],
 		new Map([[first.transactionId, approved.id], [second.transactionId, missing.id]]));
 	const database = new Database(workspacePath);
-	try { database.exec('DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; PRAGMA user_version = 7;'); }
+	try { database.exec('DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; PRAGMA user_version = 7;'); }
 	finally { database.close(); }
 	const app = await playwright._electron.launch({ executablePath, args: ['--hidden', '--disable-gpu', '--user-data-dir=' + profile] });
 	try {

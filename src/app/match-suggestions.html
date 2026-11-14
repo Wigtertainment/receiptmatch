@@ -1,5 +1,8 @@
 <section class="match-suggestions" aria-labelledby="matches-heading">
 	<h1 class="view-heading" id="matches-heading" tabindex="-1">Match suggestions</h1>
+	@if (ignoreError(); as error) {
+		<wig-alert type="error" [text]="error" />
+	}
 	@if (rows(); as results) {
 		@if (results.length) {
 			@let reviewCounts = workspace().matchReviewCounts;
@@ -211,7 +214,24 @@
 								@if (selectedDocument(); as document) {
 									<app-original-preview-button kind="document" [sourceId]="document.id" [sourceName]="document.name" [loadRevision]="workspace().loadRevision" />
 								}
+								<wig-button
+									label="Ignore transaction"
+									severity="secondary"
+									[ariaExpanded]="choosingIgnore()"
+									[ariaControls]="choosingIgnore() ? 'match-ignore-options' : null"
+									[disabled]="reviewDisabled()"
+									(click)="toggleIgnoreChoice()"
+								/>
 							</div>
+							@if (choosingIgnore()) {
+								<div class="match-ignore-options" id="match-ignore-options" role="group" aria-label="Ignore transaction options">
+									<p>A saved rule skips bookings with the same description, direction and currency across workspaces on this device.</p>
+									<div class="match-review-actions">
+										<wig-button label="Ignore once" severity="secondary" [disabled]="reviewDisabled()" (click)="changeIgnored(selected, true)" />
+										<wig-button label="Remember for future bookings" severity="secondary" [disabled]="reviewDisabled()" (click)="changeIgnored(selected, true, true)" />
+									</div>
+								</div>
+							}
 							@if (reviewError(); as error) {
 								<wig-alert type="error" [text]="error" />
 							}
@@ -368,8 +388,47 @@
 					</section>
 				}
 			</div>
+		} @else if (ignoredRows().length) {
+			<section class="match-panel" aria-labelledby="match-list-heading">
+				<header class="match-panel-heading"><h2 id="match-list-heading" tabindex="-1">Transactions</h2></header>
+				<p class="match-panel-message">All transactions are ignored.</p>
+			</section>
 		} @else {
 			<p class="match-panel match-panel-message">Import a bank statement with complete transactions to see match suggestions.</p>
+		}
+		@if (ignoredRows(); as ignored) {
+			@if (ignored.length) {
+				<section class="match-panel match-ignored-panel" aria-labelledby="match-ignored-heading">
+					<header class="match-panel-heading">
+						<h2 id="match-ignored-heading" tabindex="-1">Ignored transactions</h2>
+						<p>{{ ignored.length }} {{ ignored.length === 1 ? 'transaction' : 'transactions' }}</p>
+					</header>
+					<wig-table ariaLabel="Ignored transactions" [data]="ignored" [config]="ignoredColumns" [insideCard]="false">
+						<ng-template wigTemplate="date" let-row="item">
+							<span class="match-booking-date">{{ date(row.bookingDate) }}</span>
+						</ng-template>
+						<ng-template wigTemplate="transaction" let-row="item">
+							<span class="match-transaction">{{ row.description.trim() || 'Transaction' }}</span>
+						</ng-template>
+						<ng-template wigTemplate="amount" let-row="item">
+							<span class="match-account-amount">{{ money(row.accountAmount) }}</span>
+						</ng-template>
+						<ng-template wigTemplate="scope" let-row="item">
+							{{ row.ignoredByRule ? 'Remembered rule' : 'This transaction only' }}
+						</ng-template>
+						<ng-template wigTemplate="actions" let-row="item">
+							<wig-button
+								[label]="row.ignoredByRule ? 'Remove rule and restore' : 'Restore'"
+								[ariaLabel]="(row.ignoredByRule ? 'Remove rule and restore ' : 'Restore ') + transactionName(row.description)"
+								severity="secondary"
+								size="small"
+								[disabled]="reviewDisabled()"
+								(click)="changeIgnored(row, false)"
+							/>
+						</ng-template>
+					</wig-table>
+				</section>
+			}
 		}
 	} @else if (summariesFailed()) {
 		<div class="match-panel match-panel-message">

@@ -23,6 +23,7 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('import-documents') }),
   z.strictObject({ type: z.literal('cancel-import') }),
   z.strictObject({ type: z.literal('rename'), name: workspaceName }),
+  z.strictObject({ type: z.literal('set-transaction-ignored'), revision: z.number().int().nonnegative(), transactionId: z.uuid(), ignored: z.boolean(), remember: z.literal(true).optional() }),
   z.strictObject({ type: z.literal('review-match'), revision: z.number().int().nonnegative(), transactionId: z.uuid(), review: matchReviewSchema }),
   z.strictObject({ type: z.literal('set-duplicate-decision'), revision: z.number().int().nonnegative(), transactionId: z.uuid(), otherTransactionId: z.uuid(),
     decision: z.enum(['separate', 'keep-first', 'keep-second', 'clear']) }),

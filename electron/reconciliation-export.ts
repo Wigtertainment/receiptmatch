@@ -26,6 +26,7 @@ export async function writeReconciliationExport(snapshot: SavedWorkspace, destin
 	const imports = excludeDuplicateTransactions(activeStatements(applyBankCorrections(snapshot.imports, snapshot.bankCorrections), snapshot.sourceReplacements), snapshot.duplicateDecisions.values());
 	const revisions = documentRevisionIndex(snapshot.documentCorrections.values());
 	const approvals = currentMatchApprovals(snapshot.reviewApprovals, snapshot.matchDecisions, snapshot.bankCorrections, revisions);
+	for (const id of snapshot.ignoredTransactions) approvals.delete(id);
 	const documents = approvedExportDocuments(imports, activeSupportingDocuments(snapshot.documentImports, snapshot.sourceReplacements), approvals, snapshot.sourceRelocations);
 	const documentCopies = await copyApprovedDocuments(directory, pattern, documents, sources);
 	try {
