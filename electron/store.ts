@@ -20,7 +20,7 @@ import { suggestWorkspaceMatches } from './matching.js';
 export { moneySchema } from '../src/shared/money.js';
 
 export const APPLICATION_ID = 0x52434d54;
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 const metadataSchema = z.strictObject({ id: z.uuid(), name: workspaceName.refine(value => value.trim().length > 0), createdAt: z.iso.datetime(), savedAt: z.iso.datetime().nullable() });
 export type WorkspaceMetadata = z.infer<typeof metadataSchema>;
 export interface SavedWorkspace {
@@ -34,6 +34,7 @@ export interface SavedWorkspace {
   sourceRelocations: Map<string, string>;
   sourceReplacements: Map<string, string>;
   archivedSourceReviews: Map<string, Map<string, string | null>>;
+  ignoredTransactions: Set<string>;
 }
 
 export function newMetadata(): WorkspaceMetadata { return { id: randomUUID(), name: 'Untitled workspace', createdAt: new Date().toISOString(), savedAt: null }; }
@@ -78,6 +79,7 @@ const expectedTables = ['accounts', 'associations', 'documents', 'sources', 'sta
 const importSchema = 'CREATE TABLE bank_imports(id TEXT PRIMARY KEY, source_id TEXT NOT NULL UNIQUE REFERENCES sources(id), record_json TEXT NOT NULL);';
 const documentImportSchema = 'CREATE TABLE document_imports(id TEXT PRIMARY KEY, record_json TEXT NOT NULL);';
 const matchSchema = 'CREATE TABLE match_results(transaction_id TEXT PRIMARY KEY REFERENCES transactions(id), record_json TEXT NOT NULL);';
+const ignoredTransactionsSchema = 'CREATE TABLE ignored_transactions(transaction_id TEXT PRIMARY KEY NOT NULL REFERENCES transactions(id));';
 // No row means open. A row without a document records an explicit completion.
 const matchReviewSchema = `CREATE TABLE match_reviews(
   transaction_id TEXT PRIMARY KEY NOT NULL REFERENCES transactions(id),
@@ -449,6 +451,21 @@ function validateMatchDecisions(
   }
 }
 
+function validateIgnoredTransactions(ids: Iterable<string>, imports: StoredBankImport[]): Set<string> {
+  const ignored = new Set(ids);
+  if (!ignored.size) return ignored;
+  const transactions = new Set(imports.flatMap(record => record.transactions.map(row => row.transactionId)));
+  if ([...ignored].some(id => !transactions.has(id))) throw new Error('An ignored transaction is not in the workspace imports.');
+  return ignored;
+}
+
+function writeIgnoredTransactions(db: Database.Database, previous: ReadonlySet<string>, ignored: ReadonlySet<string>) {
+  const remove = db.prepare('DELETE FROM ignored_transactions WHERE transaction_id=?');
+  const insert = db.prepare('INSERT INTO ignored_transactions(transaction_id) VALUES(?)');
+  for (const id of previous) if (!ignored.has(id)) remove.run(id);
+  for (const id of ignored) if (!previous.has(id)) insert.run(id);
+}
+
 function writeMatchDecisions(db: Database.Database, previous: ReadonlyMap<string, string | null>, decisions: ReadonlyMap<string, string | null>) {
   const remove = db.prepare('DELETE FROM match_reviews WHERE transaction_id=?');
   const insert = db.prepare('INSERT INTO match_reviews(transaction_id,document_id) VALUES(?,?)');
@@ -664,6 +681,7 @@ function validateDatabase(db: Database.Database): Omit<SavedWorkspace, 'filePath
   if (version >= 9n) expected.push('duplicate_decisions');
   if (version >= 10n) expected.push('source_relocations');
   if (version >= 11n) expected.push('source_replacements', 'source_replacement_reviews');
+  if (version >= 12n) expected.push('ignored_transactions');
   expected.sort();
   if (JSON.stringify(tables) !== JSON.stringify(expected) || db.prepare("SELECT name FROM sqlite_schema WHERE type IN ('trigger','view')").all().length) throw new Error('The workspace structure is not supported.');
   if (db.pragma('quick_check', { simple: true }) !== 'ok' || (db.pragma('foreign_key_check') as unknown[]).length) throw new Error('The workspace is damaged.');
@@ -739,8 +757,10 @@ function validateDatabase(db: Database.Database): Omit<SavedWorkspace, 'filePath
     archive.set(source_id, reviews);
   }
   const archivedSourceReviews = validateArchivedSourceReviews(archive, sourceReplacements, effective, documentImports);
+  const ignoredRows = version < 12n ? [] : db.prepare('SELECT transaction_id FROM ignored_transactions').all() as { transaction_id: string }[];
+  const ignoredTransactions = validateIgnoredTransactions(ignoredRows.map(row => row.transaction_id), effective);
   return { metadata: metadataSchema.parse(rows[0]), schemaVersion: Number(version), imports, documentImports, sources: sourceCatalog(db), matches, matchDecisions,
-    bankCorrections, documentCorrections, reviewApprovals, duplicateDecisions, sourceRelocations, sourceReplacements, archivedSourceReviews };
+    bankCorrections, documentCorrections, reviewApprovals, duplicateDecisions, sourceRelocations, sourceReplacements, archivedSourceReviews, ignoredTransactions };
 }
 
 function checkHeader(filePath: string) {
@@ -778,7 +798,8 @@ export async function createWorkspace(
   decisions: ReadonlyMap<string, string | null> = new Map(), corrections: ReadonlyMap<string, BankCorrection> = new Map(),
   documentEdits: ReadonlyMap<string, DocumentCorrection> = new Map(), approvalEdits: ReadonlyMap<string, ReviewApprovalState> = new Map(),
   duplicateEdits: ReadonlyMap<string, DuplicateDecision> = new Map(), relocationEdits: ReadonlyMap<string, string> = new Map(),
-  replacementEdits: ReadonlyMap<string, string> = new Map(), archivedSourceReviewEdits: ArchivedSourceReviews = new Map()
+  replacementEdits: ReadonlyMap<string, string> = new Map(), archivedSourceReviewEdits: ArchivedSourceReviews = new Map(),
+  ignoredEdits: ReadonlySet<string> = new Set()
 ): Promise<SavedWorkspace> {
   if (path.extname(filePath).toLowerCase() !== '.receiptmatch') throw new Error('Use the .receiptmatch filename extension for a workspace.');
   const saved = metadataSchema.parse({ ...metadata, savedAt: new Date().toISOString() });
@@ -792,6 +813,7 @@ export async function createWorkspace(
   const sourceReplacements = validateSourceReplacements(replacementEdits, retained, retainedDocuments);
   const effective = applyBankCorrections(retained, bankCorrections);
   const archivedSourceReviews = validateArchivedSourceReviews(archivedSourceReviewEdits, sourceReplacements, effective, retainedDocuments);
+  const ignoredTransactions = validateIgnoredTransactions(ignoredEdits, effective);
   const effectiveDocuments = applyDocumentCorrections(retainedDocuments, documentCorrections);
   validateMatchDecisions(matchDecisions, effective, retainedDocuments, sourceReplacements);
   const duplicateDecisions = validateDuplicateDecisions(duplicateEdits.values(), effective);
@@ -822,6 +844,7 @@ export async function createWorkspace(
       db!.exec(duplicateDecisionSchema);
       db!.exec(sourceRelocationSchema);
       db!.exec(sourceReplacementSchema);
+      db!.exec(ignoredTransactionsSchema);
       db!.pragma(`application_id = ${APPLICATION_ID}`); db!.pragma(`user_version = ${SCHEMA_VERSION}`);
       db!.prepare('INSERT INTO workspace VALUES(?,?,?,?)').run(saved.id, saved.name, saved.createdAt, saved.savedAt);
       validateAppend(db!, [], retained, [], retainedDocuments); appendImports(db!, retained); appendDocumentImports(db!, retainedDocuments);
@@ -829,6 +852,7 @@ export async function createWorkspace(
       writeDocumentCorrections(db!, new Map(), documentCorrections);
       writeMatches(db!, matches);
       writeMatchDecisions(db!, new Map(), matchDecisions);
+      writeIgnoredTransactions(db!, new Set(), ignoredTransactions);
       writeReviewApprovals(db!, new Map(), reviewApprovals, []);
       writeDuplicateDecisions(db!, new Map(), duplicateDecisions);
       writeSourceRelocations(db!, new Map(), sourceRelocations);
@@ -840,7 +864,7 @@ export async function createWorkspace(
     completed = true;
     return { metadata: saved, filePath, fingerprint: committedFingerprint, schemaVersion: SCHEMA_VERSION, imports: retained,
       documentImports: retainedDocuments, sources: sourceCatalog(db), matches, matchDecisions, bankCorrections, documentCorrections, reviewApprovals,
-      duplicateDecisions, sourceRelocations, sourceReplacements, archivedSourceReviews };
+      duplicateDecisions, sourceRelocations, sourceReplacements, archivedSourceReviews, ignoredTransactions };
   } finally {
     try { db?.close(); }
     finally {
@@ -855,7 +879,8 @@ export async function saveWorkspace(
   decisions: ReadonlyMap<string, string | null> = current.matchDecisions, corrections: ReadonlyMap<string, BankCorrection> = current.bankCorrections,
   documentEdits: ReadonlyMap<string, DocumentCorrection> = current.documentCorrections, approvalEdits?: ReadonlyMap<string, ReviewApprovalState>,
   duplicateEdits: ReadonlyMap<string, DuplicateDecision> = current.duplicateDecisions, relocationEdits: ReadonlyMap<string, string> = current.sourceRelocations,
-  replacementEdits: ReadonlyMap<string, string> = current.sourceReplacements, archivedSourceReviewEdits: ArchivedSourceReviews = current.archivedSourceReviews
+  replacementEdits: ReadonlyMap<string, string> = current.sourceReplacements, archivedSourceReviewEdits: ArchivedSourceReviews = current.archivedSourceReviews,
+  ignoredEdits: ReadonlySet<string> = current.ignoredTransactions
 ): Promise<SavedWorkspace> {
   const matchDecisions = new Map(decisions);
   const bankCorrections = parseBankCorrections(corrections);
@@ -872,6 +897,7 @@ export async function saveWorkspace(
   const sourceReplacements = validateSourceReplacements(replacementEdits, retained, retainedDocuments);
   const effective = applyBankCorrections(retained, bankCorrections);
   const archivedSourceReviews = validateArchivedSourceReviews(archivedSourceReviewEdits, sourceReplacements, effective, retainedDocuments);
+  const ignoredTransactions = validateIgnoredTransactions(ignoredEdits, effective);
   const effectiveDocuments = applyDocumentCorrections(retainedDocuments, documentCorrections);
   validateMatchDecisions(matchDecisions, effective, retainedDocuments, sourceReplacements);
   const duplicateDecisions = validateDuplicateDecisions(duplicateEdits.values(), effective);
@@ -901,6 +927,7 @@ export async function saveWorkspace(
       if (existing.schemaVersion < 9) db!.exec(duplicateDecisionSchema);
       if (existing.schemaVersion < 10) db!.exec(sourceRelocationSchema);
       if (existing.schemaVersion < 11) db!.exec(sourceReplacementSchema);
+      if (existing.schemaVersion < 12) db!.exec(ignoredTransactionsSchema);
       if (existing.schemaVersion < SCHEMA_VERSION) db!.pragma(`user_version = ${SCHEMA_VERSION}`);
       const newImports = retained.slice(existing.imports.length);
       const newDocumentImports = retainedDocuments.slice(existing.documentImports.length);
@@ -912,6 +939,7 @@ export async function saveWorkspace(
       const updated = evidenceChanged ? suggestWorkspaceMatches(effective, effectiveDocuments) : existing.matches;
       if (existing.schemaVersion < 4 || updated !== existing.matches) writeMatches(db!, updated);
       writeMatchDecisions(db!, existing.matchDecisions, matchDecisions);
+      writeIgnoredTransactions(db!, existing.ignoredTransactions, ignoredTransactions);
       writeReviewApprovals(db!, existing.reviewApprovals, reviewApprovals, changed);
       writeDuplicateDecisions(db!, existing.duplicateDecisions, duplicateDecisions);
       writeSourceRelocations(db!, existing.sourceRelocations, sourceRelocations);
@@ -923,6 +951,6 @@ export async function saveWorkspace(
     const committedFingerprint = fingerprintDescriptor(descriptor, current.filePath);
     return { metadata: saved, filePath: current.filePath, fingerprint: committedFingerprint, schemaVersion: SCHEMA_VERSION, imports: retained,
       documentImports: retainedDocuments, sources: sourceCatalog(db), matches, matchDecisions, bankCorrections, documentCorrections, reviewApprovals,
-      duplicateDecisions, sourceRelocations, sourceReplacements, archivedSourceReviews };
+      duplicateDecisions, sourceRelocations, sourceReplacements, archivedSourceReviews, ignoredTransactions };
   } finally { try { db?.close(); } finally { closeSync(descriptor); } }
 }

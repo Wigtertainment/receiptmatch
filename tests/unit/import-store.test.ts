@@ -31,7 +31,7 @@ async function legacy(root: string) {
   const file = path.join(root, 'legacy.receiptmatch'); await createWorkspace(file, newMetadata());
   const legacyAccountId = randomUUID();
   const db = new Database(file); db.pragma('foreign_keys=ON');
-  db.exec(`DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
+  db.exec(`DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
     DROP TABLE match_results; DROP TABLE document_imports; DROP TABLE bank_imports; PRAGMA user_version=1;`);
   db.prepare('INSERT INTO sources VALUES(?,?,?)').run('legacy-source', path.join(root, 'legacy-original.pdf'), 'f'.repeat(64));
   db.prepare('INSERT INTO accounts VALUES(?,?,?)').run(legacyAccountId, 'Legacy account', 'EUR');

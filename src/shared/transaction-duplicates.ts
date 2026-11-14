@@ -86,7 +86,10 @@ export function excludedDuplicateIds(decisions: Iterable<DuplicateDecision>): Se
 }
 
 export function excludeDuplicateTransactions(imports: StoredBankImport[], decisions: Iterable<DuplicateDecision>): StoredBankImport[] {
-	const excluded = excludedDuplicateIds(decisions);
+	return excludeTransactions(imports, excludedDuplicateIds(decisions));
+}
+
+export function excludeTransactions(imports: StoredBankImport[], excluded: ReadonlySet<string>): StoredBankImport[] {
 	if (!excluded.size) return imports;
 	return imports.map(record => {
 		const transactions = record.transactions.filter(row => !excluded.has(row.transactionId));

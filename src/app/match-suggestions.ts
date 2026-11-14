@@ -72,6 +72,16 @@ export class MatchSuggestions {
 		{ field: 'accountAmount', text: 'Account amount', type: 'custom', template: 'amount' },
 		{ field: 'review', text: 'Review / suggestion', type: 'custom', template: 'review' }
 	] };
+	readonly ignoredColumns: TableConfig<MatchSummary> = { columns: [
+		{ field: 'bookingDate', text: 'Booking date', type: 'custom', template: 'date' },
+		{ field: 'description', text: 'Transaction', type: 'custom', template: 'transaction' },
+		{ field: 'accountAmount', text: 'Account amount', type: 'custom', template: 'amount' },
+		{ field: 'ignoredByRule', text: 'Scope', type: 'custom', template: 'scope' },
+		{ field: 'transactionId', text: 'Actions', type: 'custom', template: 'actions' }
+	] };
+	private readonly ignoreChoice = signal<{ transactionId: string; loadRevision: number } | null>(null);
+	private readonly ignoreFeedback = signal<{ loadRevision: number; message: string } | null>(null);
+	private readonly ignoreFocus = signal<{ loadRevision: number; revision: number; headingId: string } | null>(null);
 	private readonly selected = signal<{ transactionId: string; loadRevision: number } | null>(null);
 	private readonly filterState = signal<{ filter: Filter; loadRevision: number } | null>(null);
 	private readonly summaryRequest = signal<{ revision: number; loadRevision: number; rows: MatchSummary[] | null } | null>(null);
@@ -95,9 +105,15 @@ export class MatchSuggestions {
 		return result?.revision === this.revision() ? result : null;
 	});
 	readonly filter = computed(() => this.filterState()?.loadRevision === this.workspace().loadRevision ? this.filterState()!.filter : 'all');
-	readonly rows = computed(() => {
+	private readonly allRows = computed(() => {
 		const result = this.summaryRequest();
 		return result?.loadRevision === this.workspace().loadRevision ? result.rows : null;
+	});
+	readonly rows = computed(() => this.allRows()?.filter(row => !row.ignored) ?? null);
+	readonly ignoredRows = computed(() => this.allRows()?.filter(row => row.ignored) ?? []);
+	readonly ignoreError = computed(() => {
+		const feedback = this.ignoreFeedback();
+		return feedback?.loadRevision === this.workspace().loadRevision ? feedback.message : null;
 	});
 	readonly summariesFailed = computed(() => this.currentSummary()?.rows === null);
 	readonly counts = computed(() => {
@@ -115,6 +131,10 @@ export class MatchSuggestions {
 		const selected = this.selected();
 		const id = selected?.loadRevision === this.workspace().loadRevision ? selected.transactionId : null;
 		return rows.find(row => row.transactionId === id) ?? rows[0] ?? null;
+	});
+	readonly choosingIgnore = computed(() => {
+		const choice = this.ignoreChoice();
+		return choice?.loadRevision === this.workspace().loadRevision && choice.transactionId === this.selectedRow()?.transactionId;
 	});
 	readonly reviewDisabled = computed(() => this.busy() || this.pending() || !this.currentSummary()?.rows);
 	readonly approvalSelections = computed(() => {
@@ -144,7 +164,7 @@ export class MatchSuggestions {
 		}
 		return duplicates;
 	});
-	readonly owners = computed(() => new Map((this.rows() ?? []).flatMap(row => row.review.status === 'assigned' ? [[row.review.documentId, row] as const] : [])));
+	readonly owners = computed(() => new Map((this.allRows() ?? []).flatMap(row => row.review.status === 'assigned' ? [[row.review.documentId, row] as const] : [])));
 	readonly documentOptions = computed(() => {
 		const transaction = this.selectedRow()?.transactionId;
 		const owners = this.owners();
@@ -176,6 +196,14 @@ export class MatchSuggestions {
 	readonly detailsFailed = computed(() => this.currentDetail()?.value === null);
 
 	constructor() {
+		effect(() => {
+			const focus = this.ignoreFocus();
+			if (!focus || !this.active() || focus.loadRevision !== this.workspace().loadRevision || (this.currentSummary()?.revision ?? -1) < focus.revision) return;
+			this.ignoreFocus.set(null);
+			requestAnimationFrame(() => {
+				if (this.active() && focus.loadRevision === this.workspace().loadRevision) document.getElementById(focus.headingId)?.focus();
+			});
+		});
 		effect(onCleanup => {
 			const matchRevision = this.revision();
 			this.summaryRetry();
@@ -184,7 +212,13 @@ export class MatchSuggestions {
 			let current = true;
 			onCleanup(() => { current = false; });
 			const update = (rows: MatchSummary[] | null) => {
-				if (current && this.active() && this.revision() === matchRevision) this.summaryRequest.set({ revision: matchRevision, loadRevision, rows });
+					if (!current || !this.active() || this.revision() !== matchRevision) return;
+				this.summaryRequest.set({ revision: matchRevision, loadRevision, rows });
+				const selection = this.batchSelection();
+				if (selection?.loadRevision !== loadRevision || !selection.rows.size) return;
+				const remaining = new Map(selection.rows);
+				for (const row of rows ?? []) if (row.ignored) remaining.delete(row.transactionId);
+				if (remaining.size !== selection.rows.size) this.batchSelection.set({ loadRevision, rows: remaining });
 			};
 			void window.receiptmatch.matchSummaries(matchRevision).then(update, () => update(null));
 		});
@@ -245,6 +279,39 @@ export class MatchSuggestions {
 				document.getElementById('match-detail-heading')?.focus({ preventScroll: !stacked });
 			}
 		});
+	}
+	toggleIgnoreChoice() {
+		const row = this.selectedRow();
+		this.ignoreFeedback.set(null);
+		this.ignoreChoice.set(row && !this.choosingIgnore() ? { transactionId: row.transactionId, loadRevision: this.workspace().loadRevision } : null);
+	}
+	async changeIgnored(row: MatchSummary, ignored: boolean, remember?: true) {
+		if (this.reviewDisabled()) return;
+		const { loadRevision, matchRevision } = this.workspace();
+		this.pending.set(true);
+		this.ignoreFeedback.set(null);
+		try {
+			const result = await window.receiptmatch.command({
+				type: 'set-transaction-ignored', transactionId: row.transactionId, revision: matchRevision, ignored, ...(remember && { remember }),
+			});
+			if (this.workspace().loadRevision !== loadRevision) return;
+			if (result.error) {
+				if (result.busy) this.ignoreFeedback.set({ loadRevision, message: result.error });
+				return;
+			}
+			this.ignoreChoice.set(null);
+			this.documentDraft.set(null);
+			if (!ignored) {
+				this.setFilter('all');
+				this.selected.set({ transactionId: row.transactionId, loadRevision });
+			}
+			this.ignoreFocus.set({ loadRevision, revision: result.workspace?.matchRevision ?? matchRevision,
+				headingId: ignored ? 'match-ignored-heading' : 'match-list-heading' });
+		} catch {
+			this.ignoreFeedback.set({ loadRevision, message: 'The ignore decision could not be saved. Please try again.' });
+		} finally {
+			this.pending.set(false);
+		}
 	}
 	private resetDetail() {
 		const panel = document.getElementById('match-detail-panel');

@@ -94,20 +94,30 @@ test('requires acknowledgement for an unrelated document and leaves the previous
     assert.equal(saved.archivedSourceReviews.get(receipt.result.input!.source.sourceId)?.get(transactionId), receipt.id);
 });
 
-test('keeps the review and approval for an unambiguously unchanged booking in a replacement statement', async (context) => {
+test.for([false, true])('keeps the review and approval for an unchanged booking in a replacement statement (ignored: %s)', async (ignored, context) => {
     const { workspace, bank, transactionId, session, analyze, accept } = await fixture(context, 'statement');
     assert.ok(bank.result.accountSections[0].accountReference);
+    if (ignored) {
+        assert.equal((await session.dispatch({ type: 'set-transaction-ignored', revision: session.state().workspace!.matchRevision, transactionId, ignored })).error, null);
+    }
     const analysis = await analyze();
     if (analysis.status !== 'ready') assert.fail(JSON.stringify(analysis));
     assert.equal(analysis.comparison.preserved, 1);
     assert.equal(analysis.comparison.revoked, 0);
     assert.deepEqual(await accept(analysis.comparison.token), { status: 'adopted' });
-    assert.equal(session.state().workspace?.approvedDocumentCount, 1);
+    assert.equal(session.state().workspace?.approvedDocumentCount, ignored ? 0 : 1);
     assert.deepEqual(session.state().workspace?.supersededStatements, [bank.id]);
     assert.ok(!session.matchResults().some(match => match.transactionId === transactionId));
     assert.equal((await session.dispatch({ type: 'save' })).error, null);
     const saved = await loadWorkspace(workspace);
     assert.equal(saved.imports.length, 2);
     assert.equal(reconciliationRows(saved).filter(row => row.row_type === 'transaction').length, bank.transactions.length);
-    assert.equal(reconciliationRows(saved).filter(row => row.approval_status === 'approved').length, 1);
+    const rows = reconciliationRows(saved);
+    assert.equal(rows.filter(row => row.approval_status === 'approved').length, ignored ? 0 : 1);
+    if (ignored) {
+        const replacementId = [...saved.ignoredTransactions][0];
+        assert.notEqual(replacementId, transactionId);
+        assert.equal(rows.find(row => row.transaction_id === replacementId)?.review_status, 'ignored');
+        assert.ok(saved.reviewApprovals.get(replacementId)?.approval);
+    }
 });

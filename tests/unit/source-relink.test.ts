@@ -104,7 +104,7 @@ test('rejects altered files and stale requests and leaves cancellation and previ
 test('opens a version 9 workspace and migrates its source links only on save', async (context) => {
 	const { file, session, receiptPath, relink, state } = await fixture(context);
 	const database = new Database(file);
-	try { database.exec('DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; PRAGMA user_version=9;'); }
+	try { database.exec('DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; PRAGMA user_version=9;'); }
 	finally { database.close(); }
 	const before = await readFile(file);
 	assert.equal((await session.dispatch({ type: 'open' })).error, null);

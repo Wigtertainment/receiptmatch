@@ -250,6 +250,10 @@ app-match-suggestions { display: block; min-width: 0; }
 .match-review label { font-weight: 650; }
 .match-review .file-location { color: var(--muted); }
 .match-review-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.match-ignore-options { display: grid; gap: 8px; padding-top: 8px; border-top: 1px solid var(--divider); }
+.match-ignore-options p { color: var(--muted); }
+.match-ignored-panel { margin-top: 16px; }
+.match-ignored-panel th:nth-child(3) { text-align: right; }
 .match-review button { justify-self: start; }
 .match-document-preview { padding-top: 8px; border-top: 1px solid var(--divider); }
 .match-approval-note { margin: 0; padding: 9px 14px; border-bottom: 1px solid var(--divider); color: var(--muted); background: #f5f8f6; font-size: 12px; }

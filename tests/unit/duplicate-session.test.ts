@@ -144,7 +144,7 @@ test('opens a version 8 workspace without writing and migrates it on explicit sa
 	const { file, banks, session, decide, secondId, summaries } = await fixture(context);
 	await createWorkspace(file, newMetadata(), banks);
 	const db = new Database(file);
-	try { db.exec('DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; PRAGMA user_version=8;'); }
+	try { db.exec('DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; PRAGMA user_version=8;'); }
 	finally { db.close(); }
 	const before = await readFile(file);
 	assert.equal((await session.dispatch({ type: 'open' })).workspace?.dirty, false);

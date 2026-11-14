@@ -14,6 +14,7 @@ import { defaultExportFilenamePattern } from '../../src/shared/export-filename.j
 import { advanceReviewRevision, approvalSelectionFor, type ReviewApprovalState } from '../../src/shared/match-approvals.js';
 import { duplicatePairKey } from '../../src/shared/transaction-duplicates.js';
 import { documentRun, retainedBank, retainedDocument } from './document-fixtures.js';
+import { statement } from './bank-fixtures.js';
 
 async function fixture(context: TestContext, approve = true) {
 	const root = await fs.mkdtemp(path.join(tmpdir(), 'receiptmatch-reconciliation-export-'));
@@ -210,4 +211,128 @@ test.for(['collision', 'write-failed', 'collision-with-cleanup-error'] as const)
 		link.mockRestore();
 		syncBuiltinESMExports();
 	}
+});
+
+test('persists an ignored booking, suppresses it from matching and exports, and restores its approval on undo', async context => {
+	const { destination, file, snapshot, first, second, document } = await fixture(context);
+	const reopen = async () => {
+		const session = new WorkspaceSession({ open: async () => file, save: async () => file, unsaved: async () => 'discard' });
+		assert.equal((await session.dispatch({ type: 'open' })).error, null);
+		return session;
+	};
+	const session = await reopen();
+	const workspace = () => session.state().workspace!;
+	const revision = workspace().matchRevision;
+	const initialApproval = session.matchSummaries(revision)!.find(row => row.transactionId === first)!.approvalSelection!;
+	assert.equal((await session.dispatch({ type: 'set-transaction-ignored', revision, transactionId: first, ignored: true })).error, null);
+	assert.equal(workspace().dirty, true);
+	assert.equal(workspace().approvedDocumentCount, 1);
+	assert.equal(session.matchSummaries(revision), null);
+	assert.equal(session.matchDetails(workspace().matchRevision, first), null);
+	assert.match((await session.dispatch({ type: 'set-transaction-ignored', revision, transactionId: first, ignored: false })).error ?? '', /changed/i);
+	assert.match((await session.dispatch({ type: 'review-match', revision: workspace().matchRevision, transactionId: first, review: { status: 'open' } })).error ?? '', /no longer available/i);
+	assert.match((await session.dispatch({ type: 'approve-matches', loadRevision: workspace().loadRevision, selections: [initialApproval] })).error ?? '', /no assigned document/i);
+	assert.deepEqual((await session.exportApprovedDocuments(workspace().loadRevision, destination, defaultExportFilenamePattern)).outcomes.map(row => row.transactionId), [second]);
+	assert.equal((await loadWorkspace(file)).ignoredTransactions.size, 0);
+
+	assert.equal((await session.dispatch({ type: 'save' })).error, null);
+	const saved = await loadWorkspace(file);
+	assert.deepEqual(saved.ignoredTransactions, new Set([first]));
+	assert.deepEqual(saved.imports, snapshot.imports);
+	assert.equal(saved.matchDecisions.get(first), document.id);
+	assert.deepEqual(saved.reviewApprovals, snapshot.reviewApprovals);
+	const csv = reconciliationRows(saved).find(row => row.transaction_id === first)!;
+	assert.equal(csv.review_status, 'ignored');
+	assert.equal(csv.match_status, '');
+	assert.equal(csv.approval_batch_id, '');
+	assert.equal(csv.copy_status, 'not-eligible');
+	const exportReport = await writeReconciliationExport(saved, destination, defaultExportFilenamePattern);
+	assert.deepEqual(exportReport.documentCopies.outcomes.map(row => row.transactionId), [second]);
+
+	const reopened = await reopen();
+	const reopenedState = reopened.state().workspace!;
+	const ignored = reopened.matchSummaries(reopenedState.matchRevision)!.find(row => row.transactionId === first)!;
+	assert.equal(ignored.ignored, true);
+	assert.equal(ignored.candidateCount, 0);
+	assert.equal(ignored.approval, null);
+	assert.equal((await reopened.dispatch({ type: 'set-transaction-ignored', revision: reopenedState.matchRevision, transactionId: first, ignored: false })).error, null);
+	const restored = reopened.matchSummaries(reopened.state().workspace!.matchRevision)!.find(row => row.transactionId === first)!;
+	assert.equal(restored.ignored, false);
+	assert.deepEqual(restored.review, { status: 'assigned', documentId: document.id });
+	assert.deepEqual(restored.approval, snapshot.reviewApprovals.get(first)?.approval);
+	assert.equal((await reopened.dispatch({ type: 'save' })).error, null);
+	assert.equal((await loadWorkspace(file)).ignoredTransactions.size, 0);
+});
+
+test('applies and removes a local ignore rule across workspaces and keeps independent one-time ignores', async context => {
+	const { file, destination, snapshot, first, second } = await fixture(context);
+	const root = path.dirname(file);
+	const rules = path.join(root, 'transaction-ignore-rules');
+	const input = statement();
+	const spans = input.pages[0].spans;
+	spans.find(span => span.text === 'To: Orchard Workshop')!.text = 'TO: ORCHARD   WORKSHOP';
+	spans.find(span => span.text === '1,234.56')!.text = '35.50';
+	const nextBank = retainedBank(root, input);
+	const differentCurrency = retainedBank(root);
+	differentCurrency.result.accountSections[0].currency.value = 'USD';
+	for (const row of differentCurrency.result.transactions) row.accountAmount.value.currency = 'USD';
+	const differentDirectionInput = statement();
+	const payment = differentDirectionInput.pages[0].spans.find(span => span.text === '1,234.56')!;
+	payment.region.x = 437;
+	differentDirectionInput.pages[0].spans = differentDirectionInput.pages[0].spans.filter(span => !span.text.startsWith('Original amount:'));
+	const differentDirection = retainedBank(root, differentDirectionInput);
+	assert.equal(differentDirection.result.transactions[0].direction, 'incoming');
+	const differentDescriptionInput = statement();
+	differentDescriptionInput.pages[0].spans.find(span => span.text === 'To: Orchard Workshop')!.text = 'To: Orchard Workshop Annex';
+	const differentDescription = retainedBank(root, differentDescriptionInput);
+	const future = path.join(root, 'future.receiptmatch');
+	const [{ transactionId: matching }] = nextBank.transactions;
+	const [{ transactionId: independentlyIgnored }] = differentCurrency.transactions;
+	const banks = [nextBank, differentCurrency, differentDirection, differentDescription];
+	for (const [index, bank] of banks.entries()) bank.filePath = path.join(root, 'bank-' + index + '.pdf');
+	const next = await createWorkspace(future, newMetadata(), banks);
+	await saveWorkspace(next, next.metadata, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+		new Set([independentlyIgnored]));
+
+	const newlyImported = retainedBank(root, statement());
+	newlyImported.filePath = path.join(root, 'newly-imported.pdf');
+	const open = async (workspaceFile: string) => {
+		const session = new WorkspaceSession({ open: async () => workspaceFile, save: async () => workspaceFile, unsaved: async () => 'discard' },
+			undefined, { run: async () => ({ status: 'imported', record: newlyImported }) }, undefined, undefined, rules);
+		assert.equal((await session.dispatch({ type: 'open' })).error, null);
+		return session;
+	};
+	const summary = (session: WorkspaceSession, id: string) =>
+		session.matchSummaries(session.state().workspace!.matchRevision)!.find(row => row.transactionId === id)!;
+	const setIgnored = (session: WorkspaceSession, transactionId: string, ignored: boolean, remember?: true) =>
+		session.dispatch({ type: 'set-transaction-ignored', revision: session.state().workspace!.matchRevision, transactionId, ignored, ...(remember && { remember }) });
+
+	const original = await open(file);
+	assert.equal((await setIgnored(original, first, true, true)).error, null);
+	assert.equal(original.state().workspace!.dirty, false);
+	assert.equal(original.state().workspace!.approvedDocumentCount, 1);
+	assert.equal(summary(original, first).ignoredByRule, true);
+	assert.equal(summary(original, second).ignored, false);
+	const report = await original.exportReconciliation(original.state().workspace!.loadRevision, destination, defaultExportFilenamePattern);
+	assert.deepEqual(report.documentCopies.outcomes.map(outcome => outcome.transactionId), [second]);
+	const csv = await fs.readFile(path.join(destination, 'reconciliation.csv'), 'utf8');
+	assert.match(csv, new RegExp(first + '.*?,ignored,', 's'));
+	assert.deepEqual((await loadWorkspace(file)).ignoredTransactions, snapshot.ignoredTransactions);
+
+	const reopened = await open(future);
+	assert.equal(summary(reopened, matching).ignoredByRule, true);
+	assert.equal((await reopened.dispatch({ type: 'import-statement' })).importOutcome?.status, 'imported');
+	const newlyImportedId = newlyImported.transactions[0].transactionId;
+	assert.equal(summary(reopened, newlyImportedId).ignoredByRule, true);
+	assert.equal(summary(reopened, independentlyIgnored).ignored, true);
+	assert.equal(summary(reopened, independentlyIgnored).ignoredByRule, false);
+	assert.equal(summary(reopened, differentDirection.transactions[0].transactionId).ignored, false);
+	assert.equal(summary(reopened, differentDescription.transactions[0].transactionId).ignored, false);
+	assert.equal((await setIgnored(reopened, matching, false)).error, null);
+	assert.equal(summary(reopened, matching).ignored, false);
+	assert.equal(summary(reopened, newlyImportedId).ignored, false);
+	assert.equal(summary(reopened, independentlyIgnored).ignored, true);
+	const restored = await open(file);
+	assert.equal(summary(restored, first).ignored, false);
+	assert.equal(restored.state().workspace!.approvedDocumentCount, 2);
 });

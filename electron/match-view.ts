@@ -9,22 +9,24 @@ import { withGenericIssueDate } from './documents/interpret.js';
 
 export function summarizeMatches(
 	matches: ReviewMatch[], imports: StoredBankImport[], decisions: ReadonlyMap<string, string | null>, corrections: ReadonlyMap<string, BankCorrection>,
-	reviewApprovals: ReadonlyMap<string, ReviewApprovalState>, documentRevisions: ReadonlyMap<string, number>,
+	reviewApprovals: ReadonlyMap<string, ReviewApprovalState>, documentRevisions: ReadonlyMap<string, number>, ignoredTransactions: ReadonlySet<string>,
+	ignoredByRule: ReadonlySet<string> = new Set(),
 ): MatchSummary[] {
 	const byTransaction = new Map(matches.map(match => [match.transactionId, match]));
 	return imports.flatMap(record => {
 		const ids = new Map(record.transactions.map(({ rowId, transactionId }) => [rowId, transactionId]));
 		return record.result.transactions.map(row => {
 			const transactionId = ids.get(row.rowId)!;
-			const match = byTransaction.get(transactionId)!;
+			const match = byTransaction.get(transactionId);
+			const ignored = ignoredTransactions.has(transactionId);
 			const documentId = decisions.get(transactionId);
 			const reviewApproval = reviewApprovals.get(transactionId);
-			const approvalSelection = documentId ?
+			const approvalSelection = documentId && !ignored ?
 				approvalSelectionFor(transactionId, documentId, corrections.get(transactionId)?.revision, documentRevisions.get(documentId), reviewApproval?.associationRevision) : null;
-			const approval = reviewApproval?.approval ?? null;
+			const approval = ignored ? null : reviewApproval?.approval ?? null;
 			const approvalStatus = matchApprovalStatus(approval, approvalSelection);
 			return { transactionId, bookingDate: row.bookingDate.value, description: row.description.value,
-				accountAmount: row.accountAmount.value, status: match.status, candidateCount: match.candidates.length, bankValuesCorrected: corrections.has(transactionId),
+				accountAmount: row.accountAmount.value, ignored, ignoredByRule: ignoredByRule.has(transactionId), status: match?.status ?? 'unmatched', candidateCount: match?.candidates.length ?? 0, bankValuesCorrected: corrections.has(transactionId),
 				approvalSelection, approvalStatus, approval: approvalStatus.status === 'approved' ? approval : null,
 				review: documentId === undefined ? { status: 'open' } : documentId === null ? { status: 'completed-without-document' } : { status: 'assigned', documentId } };
 		});

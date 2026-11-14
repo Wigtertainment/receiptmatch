@@ -5,7 +5,7 @@ import type { TransactionCandidate, UnresolvedDraft } from '../src/shared/bank-i
 import { applyDocumentCorrections } from '../src/shared/document-corrections.js';
 import type { DocumentExportOutcome } from '../src/shared/document-export.js';
 import { documentRevisionIndex } from '../src/shared/match-approvals.js';
-import { excludeDuplicateTransactions } from '../src/shared/transaction-duplicates.js';
+import { excludeDuplicateTransactions, excludeTransactions } from '../src/shared/transaction-duplicates.js';
 import { activeStatements, activeSupportingDocuments } from '../src/shared/source-replacements.js';
 import { summarizeMatches } from './match-view.js';
 import { suggestWorkspaceMatches } from './matching.js';
@@ -30,10 +30,11 @@ export function reconciliationRows(snapshot: SavedWorkspace, copyOutcomes: reado
 	const corrected = applyBankCorrections(snapshot.imports, snapshot.bankCorrections);
 	const imports = excludeDuplicateTransactions(activeStatements(corrected, snapshot.sourceReplacements), snapshot.duplicateDecisions.values());
 	const documents = activeSupportingDocuments(applyDocumentCorrections(snapshot.documentImports, snapshot.documentCorrections), snapshot.sourceReplacements);
-	const exactMatches = imports === corrected ? snapshot.matches : suggestWorkspaceMatches(imports, documents);
-	const matches = evaluateReviewMatches(exactMatches, imports, documents);
+	const matchImports = excludeTransactions(imports, snapshot.ignoredTransactions);
+	const exactMatches = matchImports === corrected ? snapshot.matches : suggestWorkspaceMatches(matchImports, documents);
+	const matches = evaluateReviewMatches(exactMatches, matchImports, documents);
 	const documentRevisions = documentRevisionIndex(snapshot.documentCorrections.values());
-	const summaries = new Map(summarizeMatches(matches, imports, snapshot.matchDecisions, snapshot.bankCorrections, snapshot.reviewApprovals, documentRevisions)
+	const summaries = new Map(summarizeMatches(matches, imports, snapshot.matchDecisions, snapshot.bankCorrections, snapshot.reviewApprovals, documentRevisions, snapshot.ignoredTransactions)
 		.map(summary => [summary.transactionId, summary]));
 	const names = new Map(snapshot.documentImports.flatMap(run => run.files.flatMap(file => file.status === 'imported' ?
 		[[file.record.id, sourceName(file.record.filePath)] as const] : [])));
@@ -70,11 +71,11 @@ export function reconciliationRows(snapshot: SavedWorkspace, copyOutcomes: reado
 			const row = transactions.get(rowId)!;
 			const summary = summaries.get(transactionId)!;
 			const documentId = summary.review.status === 'assigned' ? summary.review.documentId : '';
-			const approval = summary.approvalStatus.status === 'revoked' ? null : snapshot.reviewApprovals.get(transactionId)?.approval;
+			const approval = summary.ignored || summary.approvalStatus.status === 'revoked' ? null : snapshot.reviewApprovals.get(transactionId)?.approval;
 			const copy = copies.get(transactionId);
 			rows.push({
 				row_type: 'transaction', transaction_id: transactionId, draft_id: '', ...bookingFields(row),
-				review_status: summary.review.status, match_status: summary.status, approval_status: summary.approvalStatus.status,
+				review_status: summary.ignored ? 'ignored' : summary.review.status, match_status: summary.ignored ? '' : summary.status, approval_status: summary.approvalStatus.status,
 				approval_batch_id: approval?.batchId ?? '', approved_at: approval?.approvedAt ?? '', document_id: documentId, document_file: names.get(documentId) ?? '',
 				copy_status: copy?.status ?? (summary.approval ? 'not-attempted' : 'not-eligible'),
 				exported_file: copy?.status === 'copied' ? 'documents/' + copy.filename : '',

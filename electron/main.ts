@@ -109,7 +109,7 @@ async function launch() {
     },
     extract: extractDocumentBytes,
     localOcr: () => localOcr.selected()
-  }), extractDocumentBytes);
+  }), extractDocumentBytes, path.join(userData, 'transaction-ignore-rules'));
   const authorized = (event: Electron.IpcMainInvokeEvent) => event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && event.senderFrame.url === appUrl;
   const exportSettingsFile = path.join(app.getPath('userData'), 'export-settings.json');
   let confirmingOcrDownload = false;
