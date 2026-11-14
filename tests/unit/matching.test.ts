@@ -154,3 +154,28 @@ test('keeps conflicting financial fields uncertain and rejects unknown currency 
 	assert.equal(matchFor(bank, 0, invoice('Invoice Total: EUR 9,007,199,254,740,993.02')).status, 'unmatched');
 	assert.equal(matchFor(bank, 0, invoice('Invoice Total: EUR 9,007,199,254,740,993.01')).status, 'uncertain');
 });
+
+test.for(["'", '’'])('suggests a receipt when the bank name contains an internal %s apostrophe', (apostrophe) => {
+	const root = process.cwd();
+	const bank = retainedBank(root);
+	const booking = bank.result.transactions[0];
+	const description = `Bloom${apostrophe}s Bar & Grill Lca`;
+	booking.description.value = description;
+	booking.counterpartyCandidate = null;
+	booking.reportedOriginalAmount = null;
+	booking.accountAmount.value = { coefficient: '-14663', scale: 2, currency: 'EUR' };
+	const receipt = document('Receipt', 'Total: EUR 133.30');
+	receipt.filePath = `${root}/Blooms.pdf`;
+
+	const historical = matchFor(bank, 0, receipt);
+	assert.equal(historical.status, 'unmatched');
+	const [reviewed] = evaluateReviewMatches([historical], [bank], [documentRun(root, [receipt])]);
+	assert.equal(reviewed.status, 'uncertain');
+	assert.deepEqual(reviewed.candidates.map(({ documentId, signals }) => [documentId, signals.amount, signals.filename]), [
+		[receipt.id, 'close', { state: 'partial', bankText: description, documentText: 'Blooms.pdf' }],
+	]);
+
+	booking.description.value = 'Bloom S Bar & Grill Lca';
+	const [unrelated] = evaluateReviewMatches([historical], [bank], [documentRun(root, [receipt])]);
+	assert.equal(unrelated.status, 'unmatched');
+});

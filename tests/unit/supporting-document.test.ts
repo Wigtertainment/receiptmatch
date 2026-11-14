@@ -531,3 +531,55 @@ test('the document contract rejects forged evidence and orphaned or reused ident
     }
     assert.equal(bankImportInputSchema.safeParse(invoice()).success, true);
 });
+
+test('reads receipt tax categories below the total and excludes tax registration identifiers', () => {
+    const input = document(['Harbour Cafe', 'VAT: 103000000', 'TIC: 12300000C', 'VAT No. CY10500000Z', 'Tax ID: 8888888',
+        'Total: EUR 70.00', 'Food 9% 4.95', 'BevNonAlc9% 0.83', 'All Taxes are Included']);
+    const page = input.pages[0];
+    const food = page.spans.find(span => span.text.startsWith('Food'))!;
+    food.text = 'Food 9%';
+    page.spans.push({ ...food, text: '4.95', region: { ...food.region, x: 620, y: food.region.y + 3, width: 55 } });
+    food.region.width = 100;
+    const result = interpretSupportingDocument(input);
+    assert.deepEqual(amounts(result.sections[0], 'tax'), [
+        { coefficient: '495', scale: 2, currency: 'EUR' },
+        { coefficient: '83', scale: 2, currency: 'EUR' }
+    ]);
+    assert.ok(result.sections[0].amounts.filter(field => field.role === 'tax').every(field => field.evidence.length));
+    assert.ok(result.input?.pages[0].spans.some(span => span.text === 'VAT: 103000000'));
+    assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '7000', scale: 2, currency: 'EUR' }]);
+
+    const unrelated = interpretSupportingDocument(document(['Receipt', 'Food 9% 4.95', 'Total: EUR 70.00', 'Food 9% 4.95']));
+    assert.deepEqual(amounts(unrelated.sections[0], 'tax'), []);
+});
+
+test('recovers one missing leading digit from aligned receipt items and retains the OCR evidence', () => {
+    const input = document([]);
+    const page = input.pages[0];
+    const add = (text: string, x: number, y: number, width = 30, method: PositionedSpan['method'] = 'local-ocr') =>
+        page.spans.push({ text, region: { x, y, width, height: 16 }, method });
+    add('Receipt', 40, 40);
+    add('2', 35, 104); add('Lunch', 75, 103, 75); add('29.50', 400, 105, 46);
+    add('1', 35, 127); add('Drinks', 75, 126, 75); add('~', 335, 124); add('19.20', 402, 129, 44);
+    add(']', 510, 144);
+    add('1', 35, 150); add('Dessert', 75, 150, 75); add('59.50', 402, 151, 44);
+    add('19:51', 35, 188, 42); add('Total', 90, 187, 50); add('08.20', 371, 189, 75);
+
+    const result = interpretSupportingDocument(input);
+    const recovered = result.sections[0].amounts.find(field => field.role === 'billed-total')!;
+    assert.deepEqual(recovered.candidates, [{ coefficient: '10820', scale: 2, currency: 'EUR' }]);
+    assert.ok(recovered.evidence.some(item => item.rawText.includes('08.20')));
+    assert.ok(recovered.evidence.some(item => item.rawText.includes('29.50')));
+    assert.ok(result.issues.some(issue => issue.code === 'reconstructed-total' && issue.fieldId === recovered.id));
+    assert.equal(formatDocumentTotal(result), formatMoney({ coefficient: '10820', scale: 2, currency: 'EUR' }));
+
+    const print = page.spans.find(span => span.text === '08.20')!;
+    print.text = '08.21';
+    assert.ok(!interpretSupportingDocument(input).issues.some(issue => issue.code === 'reconstructed-total'));
+    print.text = '08.20';
+    add('4.00', 330, 150, 44);
+    assert.ok(!interpretSupportingDocument(input).issues.some(issue => issue.code === 'reconstructed-total'));
+    page.spans.pop();
+    print.method = 'embedded-text';
+    assert.ok(!interpretSupportingDocument(input).issues.some(issue => issue.code === 'reconstructed-total'));
+});
