@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { test as base, type ElectronApplication, type Page } from '@playwright/test';
+import { expect, test as base, type ElectronApplication, type Page } from '@playwright/test';
 import Database from 'better-sqlite3';
 import { createWorkspace, fingerprint, newMetadata } from '../../electron/store.js';
 import type { WorkspaceCommand, WorkspaceView } from '../../src/shared/protocol.js';
@@ -201,6 +201,29 @@ test('packaged Electron workspace smoke test', async ({ smoke: { root, report, c
 		await page.getByRole('button', { name: 'Save', exact: true }).click();
 		await waitState({ dirty: false, filePath: file });
 		await screenshot('workspace');
+	});
+	await check('workspace-path-stays-inline-and-shows-the-full-path-only-when-clipped', async () => {
+		const location = page.locator('.workspace-location');
+		const name = page.getByRole('textbox', { name: 'Workspace name' });
+		const clipped = () => location.evaluate(element => element.scrollWidth > element.clientWidth);
+
+		await location.evaluate(element => element.parentElement!.style.setProperty('flex', '0 1 180px'));
+		assert.equal(await location.textContent(), file);
+		await expect.poll(clipped).toBe(true);
+		await location.hover();
+		assert.equal(await location.getAttribute('title'), file);
+		assert.equal(await location.evaluate(element => getComputedStyle(element).whiteSpace), 'nowrap');
+		assert.equal(await location.evaluate(element => getComputedStyle(element).textOverflow), 'ellipsis');
+		const [input, displayedPath] = await Promise.all([name.boundingBox(), location.boundingBox()]);
+		assert.ok(input && displayedPath && displayedPath.x >= input.x + input.width && displayedPath.y >= input.y && displayedPath.y < input.y + input.height);
+		await location.evaluate(element => {
+			element.style.setProperty('min-width', element.scrollWidth + 'px');
+			element.dispatchEvent(new MouseEvent('mouseenter'));
+		});
+		assert.equal(await clipped(), false);
+		assert.equal(await location.getAttribute('title'), '');
+		await location.evaluate(element => element.style.removeProperty('min-width'));
+		await location.evaluate(element => element.parentElement!.style.removeProperty('flex'));
 	});
 	await check('unsaved-new-cancel-and-save-choice', async () => {
 		const id = (await state()).workspace?.id;

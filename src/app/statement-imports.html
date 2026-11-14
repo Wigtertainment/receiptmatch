@@ -129,50 +129,59 @@
 					</ul>
 				</aside>
 			}
-			@for (correction of correctionEditor(); track correction.id) {
-				<section class="bank-correction-editor" id="bank-correction-editor" aria-labelledby="bank-correction-heading">
-					<h3 id="bank-correction-heading" tabindex="-1">Correct booking details</h3>
-					<p class="row-description">{{ correction.row.description?.value || 'Unknown description' }}</p>
-					<dl class="source-facts">
-						<div>
-							<dt>Extracted booking date</dt>
-							<dd>{{ date(correction.original.bookingDate?.value ?? null) }}</dd>
-						</div>
-						<div>
-							<dt>Extracted account amount</dt>
-							<dd>{{ money(correction.original.accountAmount?.value ?? null) }}</dd>
-						</div>
-					</dl>
-					<form #correctionFields (submit)="applyCorrection(correctionFields, $event)" (keydown.enter)="submitFromField(correctionFields, $event)">
-						<div class="bank-correction-fields">
-							<label for="bank-correction-date">Booking date</label>
-							<input id="bank-correction-date" name="booking-date" type="date" [value]="correction.row.bookingDate?.value ?? ''" [disabled]="state().busy" />
-							<label for="bank-correction-amount">Account amount ({{ correction.currency }})</label>
-							<wig-input
-								inputId="bank-correction-amount"
-								name="account-amount"
-								type="text"
-								inputMode="decimal"
-								[appInputLength]="130"
-								ariaDescribedBy="bank-correction-amount-hint"
-								[value]="amountInput(correction.row.accountAmount?.value)"
-								[disabled]="state().busy"
-							/>
-							<p id="bank-correction-amount-hint" class="muted">Use {{ decimalExample }} for money in and −{{ decimalExample }} for money out.</p>
-						</div>
-						@if (correctionError(); as error) {
-							<wig-alert class="bank-correction-error" type="error" [text]="error" />
+			<wig-drawer
+				position="right"
+				[header]="activeBookingAction()?.mode === 'source' ? 'Source details' : 'Correct booking details'"
+				closeLabel="Close"
+				[visible]="!!sourceRow() || !!editing()"
+				(visibleChange)="!$event && closeBookingAction()"
+			>
+				@if (sourceRow(); as source) {
+					<app-row-source [row]="source" [record]="record" />
+				}
+				@for (correction of correctionEditor(); track correction.id) {
+					<section class="bank-correction-editor">
+						<p class="row-description">{{ correction.row.description?.value || 'Unknown description' }}</p>
+						<dl class="source-facts">
+							<div>
+								<dt>Extracted booking date</dt>
+								<dd>{{ date(correction.original.bookingDate?.value ?? null) }}</dd>
+							</div>
+							<div>
+								<dt>Extracted account amount</dt>
+								<dd>{{ money(correction.original.accountAmount?.value ?? null) }}</dd>
+							</div>
+						</dl>
+						<form #correctionFields (submit)="applyCorrection(correctionFields, $event)" (keydown.enter)="submitFromField(correctionFields, $event)">
+							<div class="bank-correction-fields">
+								<label for="bank-correction-date">Booking date</label>
+								<input id="bank-correction-date" name="booking-date" type="date" [value]="correction.row.bookingDate?.value ?? ''" [disabled]="state().busy" />
+								<label for="bank-correction-amount">Account amount ({{ correction.currency }})</label>
+								<wig-input
+									inputId="bank-correction-amount"
+									name="account-amount"
+									type="text"
+									inputMode="decimal"
+									[appInputLength]="130"
+									ariaDescribedBy="bank-correction-amount-hint"
+									[value]="amountInput(correction.row.accountAmount?.value)"
+									[disabled]="state().busy"
+								/>
+								<p id="bank-correction-amount-hint" class="muted">Use {{ decimalExample }} for money in and −{{ decimalExample }} for money out.</p>
+							</div>
+							@if (correctionError(); as error) {
+								<wig-alert class="bank-correction-error" type="error" [text]="error" />
+							}
+							<div class="bank-correction-actions">
+								<wig-button label="Apply correction" [disabled]="state().busy" (click)="applyCorrection(correctionFields)" />
+							</div>
+						</form>
+						@if (correctionApplied() && !correctionError() && !state().error) {
+							<p class="bank-correction-feedback" role="status">Correction applied to this workspace.</p>
 						}
-						<div class="bank-correction-actions">
-							<wig-button label="Apply correction" [disabled]="state().busy" (click)="applyCorrection(correctionFields)" />
-							<wig-button label="Close" severity="secondary" (click)="closeCorrection()" [disabled]="state().busy" />
-						</div>
-					</form>
-					@if (correctionApplied() && !correctionError() && !state().error) {
-						<p class="bank-correction-feedback" role="status">Correction applied to this workspace.</p>
-					}
-				</section>
-			}
+					</section>
+				}
+			</wig-drawer>
 			<div class="table-heading">
 				<h3>Transactions</h3>
 				<span>{{ record.result.transactions.length }}</span>
@@ -280,18 +289,6 @@
 									</ul>
 								</details>
 							}
-							<app-row-source [row]="originalRows().get(row.rowId) ?? row" [record]="record" />
-							<wig-button
-								label="Correct booking details"
-								[link]="true"
-								styleClass="bank-correction-link"
-								[id]="'bank-correction-' + correctionId"
-								[ariaDescribedBy]="'bank-description-' + correctionId"
-								[ariaControls]="editing()?.id === correctionId ? 'bank-correction-editor' : null"
-								[ariaExpanded]="editing()?.id === correctionId"
-								[disabled]="state().busy"
-								(click)="startCorrection(row.rowId)"
-							/>
 						</div>
 					</ng-template>
 					<ng-template wigTemplate="account-amount" let-row="item">
@@ -300,6 +297,9 @@
 					<ng-template wigTemplate="direction" let-row="item">{{ direction(row.direction) }}</ng-template>
 					<ng-template wigTemplate="original-amount" let-row="item">
 						<span class="amount-cell">{{ money(row.reportedOriginalAmount?.value ?? null) }}</span>
+					</ng-template>
+					<ng-template wigTemplate="actions" let-row="item">
+						<ng-container [ngTemplateOutlet]="bookingActions" [ngTemplateOutletContext]="{ $implicit: row.rowId }" />
 					</ng-template>
 				</wig-table>
 			} @else {
@@ -338,18 +338,6 @@
 									</li>
 								}
 							</ul>
-							<app-row-source [row]="originalRows().get(row.rowId) ?? row" [record]="record" />
-							<wig-button
-								label="Correct booking details"
-								[link]="true"
-								styleClass="bank-correction-link"
-								[id]="'bank-correction-' + correctionId"
-								[ariaDescribedBy]="'bank-description-' + correctionId"
-								[ariaControls]="editing()?.id === correctionId ? 'bank-correction-editor' : null"
-								[ariaExpanded]="editing()?.id === correctionId"
-								[disabled]="state().busy"
-								(click)="startCorrection(row.rowId)"
-							/>
 						</div>
 					</ng-template>
 					<ng-template wigTemplate="account-amount" let-row="item">
@@ -359,6 +347,9 @@
 					<ng-template wigTemplate="original-amount" let-row="item">
 						<span class="amount-cell">{{ money(row.reportedOriginalAmount?.value ?? null) }}</span>
 					</ng-template>
+					<ng-template wigTemplate="actions" let-row="item">
+						<ng-container [ngTemplateOutlet]="bookingActions" [ngTemplateOutletContext]="{ $implicit: row.rowId }" />
+					</ng-template>
 				</wig-table>
 			} @else {
 				<p class="empty-table">No unresolved drafts in this statement.</p>
@@ -366,3 +357,29 @@
 		}
 	}
 </section>
+
+<ng-template #bookingActions let-rowId>
+	@let id = rowIds().get(rowId);
+	<div class="booking-actions">
+		<wig-button
+			ariaLabel="Correct booking details"
+			buttonTitle="Correct booking details"
+			iconName="edit"
+			[text]="true"
+			class="booking-action"
+			[id]="'bank-correction-' + id"
+			[ariaDescribedBy]="'bank-description-' + id"
+			[disabled]="state().busy"
+			(click)="openBookingAction('correction', rowId)"
+		/>
+		<wig-button
+			ariaLabel="Source details"
+			buttonTitle="Source details"
+			iconName="search"
+			[text]="true"
+			class="booking-action"
+			[ariaDescribedBy]="'bank-description-' + id"
+			(click)="openBookingAction('source', rowId)"
+		/>
+	</div>
+</ng-template>

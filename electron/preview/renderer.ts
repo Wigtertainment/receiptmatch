@@ -1,4 +1,4 @@
-import { Component, signal } from '@angular/core';
+import { Component, computed, signal } from '@angular/core';
 import { bootstrapApplication } from '@angular/platform-browser';
 import { WigButtonComponent, WigDropdownComponent } from '@wigtertainment-ltd/comp-lib';
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type RenderTask } from 'pdfjs-dist';
@@ -27,6 +27,10 @@ const selectedPage = signal(1);
 const pageCount = signal(0);
 const ready = signal(false);
 const zoom = signal('fit');
+const zoomPresets = [75, 100, 125, 150, 200];
+const minimumZoom = 25;
+const maximumZoom = 400;
+let renderedScale = 1;
 let renderTask: RenderTask | undefined;
 let renderQueue = Promise.resolve();
 let revision = 0;
@@ -43,7 +47,7 @@ let revision = 0;
                 </div>
             }
             <label for="zoom">Zoom</label>
-            <wig-dropdown class="zoom-control" inputId="zoom" ariaLabel="Zoom" [options]="zoomOptions" optionLabel="label" optionValue="value"
+            <wig-dropdown class="zoom-control" inputId="zoom" ariaLabel="Zoom" [options]="zoomOptions()" optionLabel="label" optionValue="value"
                 [disabled]="!ready()" [selectedOption]="zoom()" (selectedOptionChange)="changeZoom($event)" />
         </div>
     `
@@ -53,7 +57,11 @@ class PreviewControls {
     readonly pageCount = pageCount;
     readonly ready = ready;
     readonly zoom = zoom;
-    readonly zoomOptions = [{ value: 'fit', label: 'Fit to window' }, ...[75, 100, 125, 150, 200].map(percent => ({ value: String(percent / 100), label: `${percent}%` }))];
+    readonly zoomOptions = computed(() => {
+        const current = zoom();
+        const percentages = current === 'fit' ? zoomPresets : [...new Set([...zoomPresets, Math.round(Number(current) * 100)])].sort((a, b) => a - b);
+        return [{ value: 'fit', label: 'Fit to window' }, ...percentages.map(percent => ({ value: String(percent / 100), label: `${percent}%` }))];
+    });
 
     movePage(offset: number) {
         const page = selectedPage() + offset;
@@ -63,9 +71,7 @@ class PreviewControls {
     }
 
     changeZoom(value: string | null) {
-        zoom.set(value ?? 'fit');
-        if (pdf) showPage();
-        else resizeImage();
+        changeZoom(value ?? 'fit');
     }
 }
 
@@ -82,7 +88,36 @@ function displayScale(width: number, height: number) {
     return Math.max(0.01, Math.min(availableWidth / width, availableHeight / height));
 }
 
-function showPage(resetScroll = false) {
+function changeZoom(value: string, restorePosition?: () => void) {
+    if (zoom() === value) return;
+    zoom.set(value);
+    if (pdf) showPage(false, restorePosition);
+    else {
+        resizeImage();
+        restorePosition?.();
+    }
+}
+
+function zoomWithWheel(event: WheelEvent) {
+    if (!event.ctrlKey || !event.deltaY) return;
+    event.preventDefault();
+    const page = pdf ? canvas : image;
+    if (!ready() || page.hidden) return;
+    const current = zoom() === 'fit' ? renderedScale : Number(zoom());
+    const percent = Math.round(current * 100);
+    const next = event.deltaY < 0 ? Math.min(maximumZoom, percent + 10) : Math.max(minimumZoom, percent - 10);
+    if (event.deltaY < 0 ? next <= percent : next >= percent) return;
+
+    const before = page.getBoundingClientRect();
+    const x = (event.clientX - before.left) / before.width;
+    const y = (event.clientY - before.top) / before.height;
+    changeZoom(String(next / 100), () => {
+        const after = page.getBoundingClientRect();
+        viewport.scrollBy(after.left + x * after.width - event.clientX, after.top + y * after.height - event.clientY);
+    });
+}
+
+function showPage(resetScroll = false, restorePosition?: () => void) {
     const document = pdf;
     if (!document) return;
     const page = selectedPage();
@@ -98,7 +133,8 @@ function showPage(resetScroll = false) {
             const { width, height } = source.getViewport({ scale: 1 });
             if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new Error('Invalid page dimensions');
             const maxScale = Math.min(Math.sqrt(PDF_EXTRACTION_LIMITS.pixelsPerPage / width / height), 8192 / width, 8192 / height);
-            const pageViewport = source.getViewport({ scale: Math.min(displayScale(width, height), maxScale) });
+            renderedScale = Math.min(displayScale(width, height), maxScale);
+            const pageViewport = source.getViewport({ scale: renderedScale });
             canvas.width = Math.max(1, Math.floor(pageViewport.width));
             canvas.height = Math.max(1, Math.floor(pageViewport.height));
             const task = source.render({ canvas, viewport: pageViewport });
@@ -107,6 +143,7 @@ function showPage(resetScroll = false) {
             if (current !== revision) return;
             canvas.setAttribute('aria-label', `Page ${page} of ${document.numPages}`);
             canvas.hidden = false;
+            restorePosition?.();
         } catch {
             if (current !== revision) return;
             canvas.hidden = true;
@@ -121,6 +158,7 @@ function showPage(resetScroll = false) {
 function resizeImage() {
     if (!image.naturalWidth || !image.naturalHeight) return;
     const scale = displayScale(image.naturalWidth, image.naturalHeight);
+    renderedScale = scale;
     image.width = Math.max(1, Math.floor(image.naturalWidth * scale));
     image.height = Math.max(1, Math.floor(image.naturalHeight * scale));
 }
@@ -159,6 +197,7 @@ const observer = new ResizeObserver(() => {
     if (pdf) showPage(); else resizeImage();
 });
 observer.observe(viewport);
+viewport.addEventListener('wheel', zoomWithWheel, { passive: false });
 window.addEventListener('pagehide', () => {
     observer.disconnect();
     revision++;

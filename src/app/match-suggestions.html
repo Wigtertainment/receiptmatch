@@ -45,73 +45,60 @@
 						}
 					</header>
 					@if (filteredRows().length) {
-						<div class="table-scroll match-table" role="region" aria-label="Transaction match results" tabindex="0">
-							<table>
-								<caption class="sr-only">
-									Transaction match results
-								</caption>
-								<thead>
-									<tr>
-										<th scope="col" class="match-batch-column"><span class="sr-only">Approval selection</span></th>
-										<th scope="col" class="match-date-column">Booking date</th>
-										<th scope="col">Transaction</th>
-										<th scope="col" class="match-amount-column">Account amount</th>
-										<th scope="col" class="match-result-column">Review / suggestion</th>
-									</tr>
-								</thead>
-								<tbody>
-									@for (row of filteredRows(); track row.transactionId) {
-										@let isSelected = selectedRow()?.transactionId === row.transactionId;
-										@let checked = approvalSelections()?.has(row.transactionId) ?? false;
-										@let approvalIssue = approvalFeedback()?.transactionId === row.transactionId;
-										<tr [class.match-selected]="isSelected">
-											<td class="match-batch-cell">
-												@if ((row.approvalSelection && !row.approval) || checked) {
-													<wig-checkbox
-														class="match-batch-checkbox"
-														[checked]="checked"
-														[disabled]="reviewDisabled()"
-														[ariaLabel]="'Select ' + (row.description.trim() || 'Transaction') + ' for approval'"
-														(checkedChange)="selectForApproval(row, $event)"
-													/>
-												}
-											</td>
-											<td class="match-booking-date">{{ date(row.bookingDate) }}</td>
-											<th scope="row">
-												<wig-button
-													class="match-transaction-button"
-													styleClass="match-transaction"
-													[link]="true"
-													[id]="'match-transaction-' + row.transactionId"
-													[appButtonPressed]="isSelected"
-													[ariaDescribedBy]="approvalIssue ? 'match-batch-result' : undefined"
-													ariaControls="match-detail-panel"
-													(click)="selectTransaction(row.transactionId, $event)"
-												>
-													{{ row.description.trim() || 'Transaction' }}
-												</wig-button>
-											</th>
-											<td class="match-account-amount">{{ money(row.accountAmount) }}</td>
-											<td>
-												<span class="match-row-review">{{ reviewLabels[row.review.status] }}</span>
-												@let approval = row.approvalStatus.status;
-												@if (approval !== 'none') {
-													<span class="match-row-approval" [class.match-approval-changed]="approval !== 'approved'">{{ approvalLabels[approval] }}</span>
-												}
-												<wig-tag
-													class="match-status"
-													[label]="statusLabels[row.status]"
-													[severity]="row.status === 'reliable' ? 'success' : row.status === 'uncertain' ? 'warn' : 'secondary'"
-												/>
-												@if (row.candidateCount) {
-													<span class="match-candidate-count">{{ row.candidateCount }} {{ row.candidateCount === 1 ? 'candidate' : 'candidates' }}</span>
-												}
-											</td>
-										</tr>
-									}
-								</tbody>
-							</table>
-						</div>
+						<wig-table
+							class="match-table"
+							ariaLabel="Transaction match results"
+							[data]="filteredRows()"
+							[config]="transactionColumns"
+							[insideCard]="false"
+							(click)="selectTransaction($event)"
+						>
+							<ng-template wigTemplate="approval" let-row="item">
+								@let checked = approvalSelections()?.has(row.transactionId) ?? false;
+								@if ((row.approvalSelection && !row.approval) || checked) {
+									<wig-checkbox
+										class="match-batch-checkbox"
+										[checked]="checked"
+										[disabled]="reviewDisabled()"
+										[ariaLabel]="'Select ' + (row.description.trim() || 'Transaction') + ' for approval'"
+										(checkedChange)="selectForApproval(row, $event)"
+									/>
+								}
+							</ng-template>
+							<ng-template wigTemplate="date" let-row="item">
+								<span class="match-booking-date">{{ date(row.bookingDate) }}</span>
+							</ng-template>
+							<ng-template wigTemplate="transaction" let-row="item">
+								<span
+									class="match-transaction"
+									[id]="'match-transaction-' + row.transactionId"
+									[attr.data-transaction-id]="row.transactionId"
+									[attr.aria-current]="selectedRow()?.transactionId === row.transactionId ? 'true' : null"
+									[attr.aria-describedby]="approvalFeedback()?.transactionId === row.transactionId ? 'match-batch-result' : null"
+								>
+									{{ row.description.trim() || 'Transaction' }}
+								</span>
+							</ng-template>
+							<ng-template wigTemplate="amount" let-row="item">
+								<span class="match-account-amount">{{ money(row.accountAmount) }}</span>
+							</ng-template>
+							<ng-template wigTemplate="review" let-item="item">
+								@let row = tableRow(item);
+								<span class="match-row-review">{{ reviewLabels[row.review.status] }}</span>
+								@let approval = row.approvalStatus.status;
+								@if (approval !== 'none') {
+									<span class="match-row-approval" [class.match-approval-changed]="approval !== 'approved'">{{ approvalLabels[approval] }}</span>
+								}
+								<wig-tag
+									class="match-status"
+									[label]="statusLabels[row.status]"
+									[severity]="row.status === 'reliable' ? 'success' : row.status === 'uncertain' ? 'warn' : 'secondary'"
+								/>
+								@if (row.candidateCount) {
+									<span class="match-candidate-count">{{ row.candidateCount }} {{ row.candidateCount === 1 ? 'candidate' : 'candidates' }}</span>
+								}
+							</ng-template>
+						</wig-table>
 					} @else {
 						<p class="match-panel-message" role="status">No transactions with this result.</p>
 					}
@@ -262,14 +249,20 @@
 												>{{ owner.transactionId === selected.transactionId ? 'Assigned to this transaction' : 'Assigned to ' + transactionName(owner.description) }}</span
 											>
 										} @else {
-											<wig-button [disabled]="reviewDisabled()" (click)="applyReview({ status: 'assigned', documentId: candidate.documentId })">
-												{{ selected.review.status === 'assigned' ? 'Replace with this document' : 'Assign this document' }}
-												<span class="sr-only">{{ basename(candidate.filePath) }}</span>
-											</wig-button>
+											@let assignLabel = selected.review.status === 'assigned' ? 'Replace with this document' : 'Assign this document';
+											<wig-icon-button
+												iconName="plus"
+												[ariaLabel]="assignLabel + ' ' + basename(candidate.filePath)"
+												[tooltip]="assignLabel"
+												tooltipPosition="top"
+												[disabled]="reviewDisabled()"
+												(click)="applyReview({ status: 'assigned', documentId: candidate.documentId })"
+											/>
 										}
 										<app-original-preview-button
 											kind="document"
 											[sourceId]="candidate.documentId"
+											iconTooltip="Open original"
 											[sourceName]="basename(candidate.filePath)"
 											[loadRevision]="workspace().loadRevision"
 										/>

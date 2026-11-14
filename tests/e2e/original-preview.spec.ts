@@ -28,7 +28,7 @@ async function original(root: string, filename: string, format: StoredSupporting
 }
 
 test('opens local originals independently from statements, documents and match suggestions', async ({ playwright }, testInfo) => {
-    test.setTimeout(90000);
+    test.setTimeout(120000);
     const root = testInfo.outputPath('originals');
     await mkdir(root, { recursive: true });
     const app = await playwright._electron.launch({
@@ -90,6 +90,19 @@ test('opens local originals independently from statements, documents and match s
         await expect(next).toBeDisabled();
         await previous.press('Enter');
         await expect(statement.getByRole('img', { name: 'Page 1 of 2', exact: true })).toBeVisible();
+        async function wheelZoom(preview: Page, delta: number) {
+            await preview.locator('#viewport').hover({ timeout: 5000 });
+            await preview.keyboard.down('Control');
+            try { await preview.mouse.wheel(0, delta); } finally { await preview.keyboard.up('Control'); }
+        }
+        const pdfZoom = statement.getByRole('combobox', { name: 'Zoom' });
+        await pdfZoom.click({ timeout: 5000 });
+        await statement.getByRole('option', { name: '100%', exact: true }).click({ timeout: 5000 });
+        const pdfPage = statement.locator('canvas');
+        await expect(pdfPage).toHaveAttribute('width', '600');
+        await wheelZoom(statement, -100);
+        await expect(pdfPage).toHaveAttribute('width', '660');
+        await expect(pdfZoom).toContainText('110%');
         expect(await statement.evaluate(async () => {
             const root = document.querySelector('app-preview-controls');
             const styles = [...document.querySelectorAll('style')].filter(style => style.textContent?.includes('wig-button-min-height'));
@@ -105,6 +118,8 @@ test('opens local originals independently from statements, documents and match s
         const files = sources.getByRole('table', { name: `Files in ${path.basename(root)}` });
         await expect(files.getByRole('columnheader', { name: 'Actions' })).toBeVisible();
         const previewButton = files.locator('.document-actions').getByRole('button', { name: 'Open original receipt.png', exact: true });
+        const detailsButton = files.locator('.document-actions').getByRole('button', { name: 'Show details for receipt.png', exact: true });
+        await expect(detailsButton.locator('svg')).toBeVisible();
         await expect(previewButton.locator('svg')).toBeVisible();
         await expect(previewButton).toHaveText('');
         await expect(previewButton).toHaveCSS('width', '44px');
@@ -117,16 +132,27 @@ test('opens local originals independently from statements, documents and match s
         await zoom.press('Enter');
         await png.getByRole('option', { name: '200%', exact: true }).click();
         await expect(png.getByRole('img')).toHaveAttribute('width', '1200');
+        await wheelZoom(png, -100);
+        await expect(png.getByRole('img')).toHaveAttribute('width', '1260');
+        await expect(zoom).toContainText('210%');
+        await png.mouse.wheel(0, -100);
+        await expect(png.getByRole('img')).toHaveAttribute('width', '1260');
+        await wheelZoom(png, 100);
+        await expect(png.getByRole('img')).toHaveAttribute('width', '1200');
+        await expect(zoom).toContainText('200%');
         await zoom.click();
         await png.getByRole('option', { name: 'Fit to window', exact: true }).click();
         await expect(png.getByRole('img')).not.toHaveAttribute('width', '1200');
+        const fitted = Number(await png.getByRole('img').getAttribute('width'));
+        await wheelZoom(png, -100);
+        await expect.poll(async () => Number(await png.getByRole('img').getAttribute('width'))).toBeGreaterThan(fitted);
         const columns = () => files.getByRole('columnheader').evaluateAll(headers => headers.map(header => header.getBoundingClientRect().width));
         const widthsBeforeError = await columns();
         await rename(path.join(root, 'receipt.png'), movedPng);
         await previewButton.click();
         const feedback = files.locator('.document-preview-feedback');
         await expect(feedback.getByRole('alert')).toContainText('no longer at its imported location');
-        await expect(feedback.locator('td')).toHaveAttribute('colspan', '4');
+        await expect(feedback).toBeVisible();
         expect(await columns()).toEqual(widthsBeforeError);
         await feedback.getByRole('button', { name: 'Relink original receipt.png' }).click();
         await expect(feedback.getByRole('status')).toContainText('Original relinked');

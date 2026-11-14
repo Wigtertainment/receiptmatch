@@ -640,10 +640,12 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		await transactions().waitFor();
 		assert.equal(await transactions().locator('tbody > tr').count(), 2);
 		assert.match(normalized(await transactions().locator('tbody > tr').first().textContent()), /-1\.234,56 EUR/);
-		await transactions().locator('tbody > tr').first().getByText('Source details', { exact: true }).click();
-		await page.getByText('Date (UTC)', { exact: true }).first().waitFor();
-		assert.match((await transactions().locator('tbody > tr').first().textContent()) ?? '', /SYNTHETIC-A/);
-		assert.match((await transactions().locator('tbody > tr').first().textContent()) ?? '', /Region in PDF points/);
+		await transactions().locator('tbody > tr').first().getByRole('button', { name: 'Source details', exact: true }).click();
+		const sourceDrawer = page.getByRole('dialog', { name: 'Source details', exact: true });
+		await sourceDrawer.getByText('Date (UTC)', { exact: true }).first().waitFor();
+		assert.match((await sourceDrawer.textContent()) ?? '', /SYNTHETIC-A/);
+		assert.match((await sourceDrawer.textContent()) ?? '', /Region in PDF points/);
+		await sourceDrawer.getByRole('button', { name: 'Close', exact: true }).click();
 		await clickCommand(page.getByRole('button', { name: 'Save', exact: true }), 'save');
 		await waitState({ dirty: false });
 		const saved = await state();
@@ -728,11 +730,10 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		const visible = normalized(await transactions().textContent());
 		assert.match(visible, /-1\.234,56 EUR/);
 		assert.match(visible, /25,07 EUR/);
-		await transactions().locator('tbody > tr').first().getByText('Source details', { exact: true }).click();
-		await transactions()
-			.getByText(/Local English OCR/)
-			.first()
-			.waitFor();
+		await transactions().locator('tbody > tr').first().getByRole('button', { name: 'Source details', exact: true }).click();
+		const sourceDrawer = page.getByRole('dialog', { name: 'Source details', exact: true });
+		await sourceDrawer.getByText(/Local English OCR/).first().waitFor();
+		await sourceDrawer.getByRole('button', { name: 'Close', exact: true }).click();
 		await clickCommand(page.getByRole('button', { name: 'Save', exact: true }), 'save');
 		await waitState({ dirty: false });
 	});
@@ -780,12 +781,14 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		assert.equal(normalized(await second.locator('.amount-cell').first().textContent()), '0,000000000000000001 EUR');
 		assert.equal((await first.locator('.date-cell').textContent())?.trim(), '28.02.2032');
 		assert.equal((await first.locator('.row-description').textContent())?.trim(), payload);
-		await first.getByText('Source details', { exact: true }).click();
-		await first.getByText('Printed date basis', { exact: true }).waitFor();
-		assert.match((await first.textContent()) ?? '', /Printed date basis/);
+		await first.getByRole('button', { name: 'Source details', exact: true }).click();
+		const sourceDrawer = page.getByRole('dialog', { name: 'Source details', exact: true });
+		await sourceDrawer.getByText('Printed date basis', { exact: true }).waitFor();
+		assert.match((await sourceDrawer.textContent()) ?? '', /Printed date basis/);
 		await page.getByText('Synthetic transaction notice', { exact: false }).first().waitFor();
-		for (const name of ['Account reference', 'Account currency', 'Account section']) await first.getByRole('region', { name, exact: true }).waitFor();
-		assert.equal(await first.locator('img, script').count(), 0);
+		for (const name of ['Account reference', 'Account currency', 'Account section']) await sourceDrawer.getByRole('region', { name, exact: true }).waitFor();
+		assert.equal(await sourceDrawer.locator('img, script').count(), 0);
+		await sourceDrawer.getByRole('button', { name: 'Close', exact: true }).click();
 		assert.equal(await page.evaluate(() => window.__receiptmatchXss ?? null), null);
 		return { source: 'Explicit Store API presentation seed, not a parsed PDF or matching result', screenshot: await screenshot('exact-values-wide') };
 	});
@@ -875,12 +878,17 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		assert.ok(partialImport);
 		await selectStatement(partialImport);
 		await drafts().waitFor();
-		const summary = transactions().locator('tbody > tr').first().getByRole('button', { name: 'Source details', exact: true });
-		await summary.focus();
-		await page.keyboard.press('Enter');
-		await expect(summary).toHaveAttribute('aria-expanded', 'true');
-		await page.keyboard.press('Space');
-		await expect(summary).toHaveAttribute('aria-expanded', 'false');
+		await expect(transactions().getByRole('columnheader').last()).toHaveText('Actions');
+		const sourceAction = transactions().locator('tbody > tr').first().getByRole('button', { name: 'Source details', exact: true });
+		await sourceAction.press('Enter');
+		const sourceDrawer = page.getByRole('dialog', { name: 'Source details', exact: true });
+		await expect(sourceDrawer).toBeVisible();
+		await expect(sourceDrawer.getByRole('button', { name: 'Close', exact: true })).toBeFocused();
+		const edge = await sourceDrawer.evaluate(drawer => ({ right: drawer.getBoundingClientRect().right, viewport: document.documentElement.clientWidth }));
+		assert.ok(Math.abs(edge.right - edge.viewport) < 2, JSON.stringify(edge));
+		await page.keyboard.press('Escape');
+		await expect(sourceDrawer).toBeHidden();
+		await expect(sourceAction).toBeFocused();
 		await currentApplication().evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(680, 800));
 		await settle();
 		const region = page.getByRole('region', { name: 'Transactions table, horizontally scrollable', exact: true });
@@ -958,16 +966,17 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		assert.equal(normalized(await rows.nth(2).locator('.amount-cell').nth(1).textContent()), '4,19 EUR');
 		await page.getByRole('button', { name: 'Statement details', exact: true }).click();
 		assert.equal(normalized(await page.locator('.account-list dd').textContent()), 'Unknown account reference');
-		await rows.first().getByText('Source details', { exact: true }).click();
-		await sourceFact(rows.first(), 'Printed date basis').waitFor();
-		assert.equal(normalized(await sourceFact(rows.first(), 'Printed date basis').textContent()), 'Date (Central European Time)');
-		assert.equal(normalized(await sourceFact(rows.first(), 'Account reference').textContent()), 'Unknown');
+		await rows.first().getByRole('button', { name: 'Source details', exact: true }).click();
+		const sourceDrawer = page.getByRole('dialog', { name: 'Source details', exact: true });
+		await sourceFact(sourceDrawer, 'Printed date basis').waitFor();
+		assert.equal(normalized(await sourceFact(sourceDrawer, 'Printed date basis').textContent()), 'Date (Central European Time)');
+		assert.equal(normalized(await sourceFact(sourceDrawer, 'Account reference').textContent()), 'Unknown');
 		for (const label of ['Booking date', 'Description', 'Account amount', 'Account currency', 'Account section']) {
-			const group = rows.first().getByRole('region', { name: label, exact: true });
+			const group = sourceDrawer.getByRole('region', { name: label, exact: true });
 			assert.match((await group.textContent()) ?? '', /Page [123] · Embedded text/);
 			assert.match((await group.textContent()) ?? '', /Region in PDF points/);
 		}
-		await rows.first().getByText('Source details', { exact: true }).click();
+		await sourceDrawer.getByRole('button', { name: 'Close', exact: true }).click();
 		const wide = await screenshot('airwallex-complete-wide');
 		await clickCommand(page.getByRole('button', { name: 'Save', exact: true }), 'save');
 		await waitState({ dirty: false });
@@ -1192,13 +1201,15 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		const visible = normalized(await transactions().textContent());
 		for (const value of ['-16,43 EUR', '-13,07 EUR', '4,19 EUR', '-18,07 USD']) assert.ok(visible.includes(value), value);
 		const first = transactions().locator('tbody > tr').first();
-		await first.getByText('Source details', { exact: true }).click();
-		await first
+		await first.getByRole('button', { name: 'Source details', exact: true }).click();
+		const sourceDrawer = page.getByRole('dialog', { name: 'Source details', exact: true });
+		await sourceDrawer
 			.getByRole('region', { name: 'Account amount', exact: true })
 			.getByText(/Local English OCR/)
 			.first()
 			.waitFor();
-		assert.equal(normalized(await sourceFact(first, 'Printed date basis').textContent()), 'Date');
+		assert.equal(normalized(await sourceFact(sourceDrawer, 'Printed date basis').textContent()), 'Date');
+		await sourceDrawer.getByRole('button', { name: 'Close', exact: true }).click();
 		await clickCommand(page.getByRole('button', { name: 'Save', exact: true }), 'save');
 		await waitState({ dirty: false });
 		const retained = await bankRecords();

@@ -1,5 +1,6 @@
+import { NgTemplateOutlet } from '@angular/common';
 import { Component, DestroyRef, computed, effect, inject, input, output, signal, untracked } from '@angular/core';
-import { type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDropdownComponent, WigInputComponent, WigTableComponent,
+import { type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDrawerComponent, WigDropdownComponent, WigInputComponent, WigTableComponent,
     WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
 import { InputLength } from './app/input-length.js';
 import { OriginalPreviewButton } from './app/original-preview-button.js';
@@ -14,6 +15,7 @@ import { excludedDuplicateIds, type DuplicateDecision } from './shared/transacti
 import type { StoredBankImport } from './shared/workspace-import.js';
 
 type ImportRow = TransactionCandidate | UnresolvedDraft;
+type BookingAction = 'correction' | 'source';
 type DuplicateAction = Extract<WorkspaceCommand, { type: 'set-duplicate-decision' }>['decision'];
 type ExclusionAction = Extract<DuplicateAction, 'keep-first' | 'keep-second'>;
 type BookingLocation = Pick<StatementOverlap, 'statementId' | 'filePath' | 'transactionId' | 'transactionNumber'>;
@@ -26,52 +28,45 @@ function filename(value: string) { return value.split(/[\\/]/).at(-1) || value; 
 function directionLabel(value: ImportRow['direction']) { return value === 'incoming' ? 'Incoming' : value === 'outgoing' ? 'Outgoing' : 'Unknown'; }
 
 @Component({
-    selector: 'app-row-source', standalone: true, imports: [WigAccordionComponent, WigTemplateDirective],
+    selector: 'app-row-source', standalone: true,
     template: `
-      <wig-accordion #source class="source-details" [items]="sourceItems" [value]="null">
-        <ng-template wigTemplate="source">
-        @if (source.value()) {
-          <div class="source-detail-body">
-            <dl class="source-facts">
-              <div><dt>Full description</dt><dd class="raw-text">{{ row().description?.value || 'Unknown' }}</dd></div>
-              <div><dt>Booking date</dt><dd>{{ date(row().bookingDate?.value ?? null) }}</dd></div>
-              <div><dt>Printed date basis</dt><dd>{{ row().bookingDate?.basisLabel || 'Unknown' }}</dd></div>
-              <div><dt>Value date</dt><dd>{{ date(row().valueDate?.value ?? null) }}</dd></div>
-              <div><dt>Account amount</dt><dd>{{ money(row().accountAmount?.value ?? null) }}</dd></div>
-              <div><dt>Direction</dt><dd>{{ direction(row().direction) }}</dd></div>
-              <div><dt>Reported original amount</dt><dd>{{ money(row().reportedOriginalAmount?.value ?? null) }}</dd></div>
-              <div><dt>Counterparty candidate</dt><dd>{{ row().counterpartyCandidate?.value || 'Unknown' }}</dd></div>
-              <div><dt>Account reference</dt><dd>{{ account()?.accountReference?.value || 'Unknown' }}</dd></div>
-              <div><dt>Account currency</dt><dd>{{ account()?.currency?.value || 'Unknown' }}</dd></div>
-              <div><dt>Source file</dt><dd class="file-location">{{ record().filePath }}</dd></div>
-            </dl>
-            <h4>Labeled references</h4>
-            @if (row().references.length) {
-              <dl class="source-facts">@for (reference of row().references; track $index) { <div><dt>{{ reference.label }}</dt><dd>{{ reference.value }}</dd></div> }</dl>
-            } @else { <p class="muted">No labeled references reported.</p> }
-            <h4>Source evidence</h4>
-            @for (field of evidenceFields(); track $index) {
-              <section class="evidence-group" [attr.aria-label]="field.label">
-                <h5>{{ field.label }}</h5>
-                <ul class="evidence-list">@for (evidence of field.evidence; track $index) {
-                  <li>
-                    <p class="evidence-origin">Page {{ pageNumber(evidence.pageId) }} · {{ evidence.method === 'embedded-text' ? 'Embedded text' : 'Local English OCR' }}</p>
-                    <p class="raw-text">{{ evidence.rawText }}</p>
-                    <p class="evidence-region">Region in PDF points: {{ region(evidence) }}</p>
-                  </li>
-                }</ul>
-              </section>
-            }
-          </div>
+      <div class="source-detail-body">
+        <dl class="source-facts">
+          <div><dt>Full description</dt><dd class="raw-text">{{ row().description?.value || 'Unknown' }}</dd></div>
+          <div><dt>Booking date</dt><dd>{{ date(row().bookingDate?.value ?? null) }}</dd></div>
+          <div><dt>Printed date basis</dt><dd>{{ row().bookingDate?.basisLabel || 'Unknown' }}</dd></div>
+          <div><dt>Value date</dt><dd>{{ date(row().valueDate?.value ?? null) }}</dd></div>
+          <div><dt>Account amount</dt><dd>{{ money(row().accountAmount?.value ?? null) }}</dd></div>
+          <div><dt>Direction</dt><dd>{{ direction(row().direction) }}</dd></div>
+          <div><dt>Reported original amount</dt><dd>{{ money(row().reportedOriginalAmount?.value ?? null) }}</dd></div>
+          <div><dt>Counterparty candidate</dt><dd>{{ row().counterpartyCandidate?.value || 'Unknown' }}</dd></div>
+          <div><dt>Account reference</dt><dd>{{ account()?.accountReference?.value || 'Unknown' }}</dd></div>
+          <div><dt>Account currency</dt><dd>{{ account()?.currency?.value || 'Unknown' }}</dd></div>
+          <div><dt>Source file</dt><dd class="file-location">{{ record().filePath }}</dd></div>
+        </dl>
+        <h4>Labeled references</h4>
+        @if (row().references.length) {
+          <dl class="source-facts">@for (reference of row().references; track $index) { <div><dt>{{ reference.label }}</dt><dd>{{ reference.value }}</dd></div> }</dl>
+        } @else { <p class="muted">No labeled references reported.</p> }
+        <h4>Source evidence</h4>
+        @for (field of evidenceFields(); track $index) {
+          <section class="evidence-group" [attr.aria-label]="field.label">
+            <h5>{{ field.label }}</h5>
+            <ul class="evidence-list">@for (evidence of field.evidence; track $index) {
+              <li>
+                <p class="evidence-origin">Page {{ pageNumber(evidence.pageId) }} · {{ evidence.method === 'embedded-text' ? 'Embedded text' : 'Local English OCR' }}</p>
+                <p class="raw-text">{{ evidence.rawText }}</p>
+                <p class="evidence-region">Region in PDF points: {{ region(evidence) }}</p>
+              </li>
+            }</ul>
+          </section>
         }
-        </ng-template>
-      </wig-accordion>
+      </div>
     `
 })
 class RowSource {
     readonly row = input.required<ImportRow>();
     readonly record = input.required<StoredBankImport>();
-    readonly sourceItems = [{ id: 'source', header: 'Source details', template: 'source' }];
     readonly date = formatCalendarDate;
     readonly money = formatMoney;
     readonly direction = directionLabel;
@@ -102,8 +97,8 @@ class RowSource {
 }
 
 @Component({ selector: 'app-statement-imports', standalone: true,
-    imports: [RowSource, OriginalPreviewButton, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDropdownComponent, WigInputComponent,
-        WigTableComponent, WigTemplateDirective, InputLength],
+    imports: [RowSource, OriginalPreviewButton, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDrawerComponent, WigDropdownComponent, WigInputComponent,
+        WigTableComponent, WigTemplateDirective, InputLength, NgTemplateOutlet],
     templateUrl: './app/statement-imports.html' })
 export class StatementImports {
     readonly state = input.required<WorkspaceState>();
@@ -214,13 +209,22 @@ export class StatementImports {
             { field: 'direction', text: 'Direction', type: 'custom', template: 'direction' }
         ];
         if (originalAmount) columns.push({ field: 'reportedOriginalAmount', text: 'Reported original amount', type: 'custom', template: 'original-amount' });
+        columns.push({ field: 'rowId', text: 'Actions', type: 'custom', template: 'actions' });
         return { columns };
     }
-    private readonly edit = signal<{ loadRevision: number; recordId: string; rowId: string; originalRevision: number } | null>(null);
+    private readonly bookingAction = signal<{ mode: BookingAction; loadRevision: number; recordId: string; rowId: string; originalRevision: number } | null>(null);
+    readonly activeBookingAction = computed(() => {
+        const action = this.bookingAction();
+        return action && this.selectedId() === action.recordId && this.state().workspace?.loadRevision === action.loadRevision ? action : null;
+    });
+    readonly sourceRow = computed(() => {
+        const action = this.activeBookingAction();
+        return action?.mode === 'source' ? this.originalRows().get(action.rowId) : undefined;
+    });
     readonly editing = computed(() => {
-        const edit = this.edit();
+        const edit = this.activeBookingAction();
         const record = this.displayed();
-        if (!edit || !record || record.id !== edit.recordId || this.state().workspace?.loadRevision !== edit.loadRevision) return null;
+        if (edit?.mode !== 'correction' || !record) return null;
         const row = record.result.transactions.find(row => row.rowId === edit.rowId) ?? record.result.unresolvedDrafts.find(row => row.rowId === edit.rowId);
         const original = this.originalRows().get(edit.rowId);
         const id = this.rowIds().get(edit.rowId);
@@ -290,7 +294,7 @@ export class StatementImports {
     retryDetails() { this.loadRecords(this.state(), this.key(this.state())); }
     select(id: string | null) {
         if (this.records().some(record => record.id === id)) {
-            this.edit.set(null); this.expandedOverlapRows.set(new Set()); this.exclusion.set(null); this.selectedId.set(id);
+            this.bookingAction.set(null); this.expandedOverlapRows.set(new Set()); this.exclusion.set(null); this.selectedId.set(id);
         }
     }
     toggleOverlap(id: string, event: Event) {
@@ -306,7 +310,7 @@ export class StatementImports {
     }
     openOverlap(overlap: BookingLocation) {
         if (this.state().busy || !this.records().some(record => record.id === overlap.statementId)) return;
-        this.edit.set(null);
+        this.bookingAction.set(null);
         this.expandedOverlapRows.set(new Set());
         this.exclusion.set(null);
         this.selectedId.set(overlap.statementId);
@@ -337,21 +341,22 @@ export class StatementImports {
         this.exclusion.set(null);
         if (pending) requestAnimationFrame(() => document.getElementById('duplicate-' + pending.transactionId + '-' + pending.otherTransactionId + '-' + pending.action)?.querySelector('button')?.focus());
     }
-    startCorrection(rowId: string) {
+    openBookingAction(mode: BookingAction, rowId: string) {
         const record = this.selected();
         const workspace = this.state().workspace;
         const id = this.rowIds().get(rowId);
-        if (!record || !workspace || !id || this.state().busy) return;
+        if (!record || !workspace || !id || (mode === 'correction' && this.state().busy)) return;
         this.correctionError.set(null);
-        this.edit.set({ loadRevision: workspace.loadRevision, recordId: record.id, rowId, originalRevision: this.corrections().get(id)?.revision ?? 0 });
-        requestAnimationFrame(() => {
-            if (this.editing()?.id === id) document.getElementById('bank-correction-heading')?.focus();
-        });
+        this.bookingAction.set({ mode, loadRevision: workspace.loadRevision, recordId: record.id, rowId, originalRevision: this.corrections().get(id)?.revision ?? 0 });
     }
-    closeCorrection() {
-        const id = this.editing()?.id;
-        this.edit.set(null);
-        if (id) document.getElementById('bank-correction-' + id)?.querySelector('button')?.focus();
+    closeBookingAction() {
+        const editing = this.editing();
+        this.bookingAction.set(null);
+        if (editing && this.corrections().get(editing.id)?.revision !== editing.originalRevision) {
+            requestAnimationFrame(() => {
+                if (document.activeElement === document.body) document.getElementById('bank-correction-' + editing.id)?.querySelector('button')?.focus();
+            });
+        }
     }
     submitFromField(form: HTMLFormElement, event: Event) {
         if (event instanceof KeyboardEvent && !event.isComposing && event.target instanceof HTMLInputElement) this.applyCorrection(form, event);

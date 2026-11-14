@@ -46,7 +46,7 @@
 						[disabled]="state().busy"
 					/>
 					@if (workspace.filePath) {
-						<wig-accordion class="workspace-location" [items]="fileLocation()" [value]="null" />
+						<span #fileLocation class="workspace-location" (mouseenter)="showFileLocationTooltip(fileLocation)">{{ workspace.filePath }}</span>
 					}
 				</div>
 				<div class="toolbar-end">

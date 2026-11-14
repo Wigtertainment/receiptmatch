@@ -1,6 +1,6 @@
 import { Component, computed, effect, input, signal, untracked } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
-import { WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigCheckboxComponent, WigDropdownComponent, WigTagComponent,
+import { type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigCheckboxComponent, WigDropdownComponent, WigIconButtonComponent, WigTableComponent, WigTagComponent,
 	WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
 import { formatCalendarDate, formatMoney } from '../shared/display.js';
 import { formatDocumentTotal } from '../shared/document-display.js';
@@ -20,7 +20,7 @@ interface ReviewDocument { id: string; name: string; path: string; total: string
 @Component({
 	selector: 'app-match-suggestions', standalone: true, templateUrl: './match-suggestions.html',
 	imports: [NgTemplateOutlet, DocumentAnalysis, OriginalPreviewButton, ButtonPressed, WigAccordionComponent, WigAlertComponent, WigButtonComponent,
-		WigCheckboxComponent, WigDropdownComponent, WigTagComponent, WigTemplateDirective],
+		WigCheckboxComponent, WigDropdownComponent, WigIconButtonComponent, WigTableComponent, WigTagComponent, WigTemplateDirective],
 })
 export class MatchSuggestions {
 	readonly workspace = input.required<WorkspaceView>();
@@ -64,6 +64,14 @@ export class MatchSuggestions {
 		const firstLine = description.trim().split(/\r?\n/, 1)[0];
 		return firstLine.length > 140 ? firstLine.slice(0, 139) + '…' : firstLine || 'Transaction';
 	};
+	readonly tableRow = (row: MatchSummary) => row;
+	readonly transactionColumns: TableConfig<MatchSummary> = { columns: [
+		{ field: 'approvalSelection', text: 'Approval selection', type: 'custom', template: 'approval' },
+		{ field: 'bookingDate', text: 'Booking date', type: 'custom', template: 'date' },
+		{ field: 'description', text: 'Transaction', type: 'custom', template: 'transaction' },
+		{ field: 'accountAmount', text: 'Account amount', type: 'custom', template: 'amount' },
+		{ field: 'review', text: 'Review / suggestion', type: 'custom', template: 'review' }
+	] };
 	private readonly selected = signal<{ transactionId: string; loadRevision: number } | null>(null);
 	private readonly filterState = signal<{ filter: Filter; loadRevision: number } | null>(null);
 	private readonly summaryRequest = signal<{ revision: number; loadRevision: number; rows: MatchSummary[] | null } | null>(null);
@@ -223,12 +231,16 @@ export class MatchSuggestions {
 		this.filterState.set({ filter, loadRevision: this.workspace().loadRevision });
 		if (previous !== this.selectedRow()?.transactionId) this.resetDetail();
 	}
-	selectTransaction(transactionId: string, event: Event) {
+	selectTransaction(event: MouseEvent) {
+		const target = event.target;
+		if (!(target instanceof Element) || target.closest('wig-checkbox')) return;
+		const transactionId = target.closest('tbody tr')?.querySelector<HTMLElement>('[data-transaction-id]')?.dataset.transactionId;
+		if (!transactionId) return;
 		const { loadRevision } = this.workspace();
 		if (transactionId !== this.selectedRow()?.transactionId) this.resetDetail();
 		this.selected.set({ transactionId, loadRevision });
 		const stacked = window.matchMedia('(width < 1000px)').matches;
-		if ((event instanceof MouseEvent && event.detail === 0) || stacked) requestAnimationFrame(() => {
+		if (event.detail === 0 || stacked) requestAnimationFrame(() => {
 			if (this.active() && this.workspace().loadRevision === loadRevision && this.selectedRow()?.transactionId === transactionId) {
 				document.getElementById('match-detail-heading')?.focus({ preventScroll: !stacked });
 			}
@@ -238,7 +250,7 @@ export class MatchSuggestions {
 		const panel = document.getElementById('match-detail-panel');
 		if (panel) panel.scrollTop = 0;
 	}
-	focusSelectedTransaction(transactionId: string) { document.getElementById('match-transaction-' + transactionId)?.querySelector('button')?.focus(); }
+	focusSelectedTransaction(transactionId: string) { document.getElementById('match-transaction-' + transactionId)?.closest('tr')?.focus(); }
 	documentLabel(item: ReviewDocument, owner?: MatchSummary) {
 		const parts = [this.duplicateDocumentNames().has(item.name) ? item.path : item.name];
 		if (item.total) parts.push(item.total);
@@ -298,7 +310,7 @@ export class MatchSuggestions {
 			requestAnimationFrame(() => {
 				if (!this.active() || this.workspace().loadRevision !== loadRevision || (document.activeElement !== trigger && document.activeElement !== document.body)) return;
 				const element = document.getElementById(focusId);
-				const target = focusId === 'match-batch-result' ? element : element?.querySelector('button');
+				const target = focusId === 'match-batch-result' ? element : element?.closest('tr');
 				target?.focus({ preventScroll: true });
 				if (focusId !== 'match-batch-result') target?.scrollIntoView({ block: 'center', inline: 'nearest' });
 			});

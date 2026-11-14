@@ -1,6 +1,6 @@
 import { NgTemplateOutlet } from '@angular/common';
-import { Component, computed, effect, input, output, signal, untracked, viewChildren } from '@angular/core';
-import { WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigInputComponent, WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
+import { Component, computed, effect, input, output, signal, untracked } from '@angular/core';
+import { DrawerSize, type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDrawerComponent, WigInputComponent, WigTableComponent, WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
 import { InputLength } from './input-length.js';
 import { OriginalPreviewButton } from './original-preview-button.js';
 import { amountEntryExample, formatAmountEntry, parseAmountEntry } from '../shared/amount-entry.js';
@@ -282,11 +282,12 @@ export class DocumentAnalysis {
     }
 }
 
+interface DocumentFileRow { file: DocumentFileResult; total: string | null; projectedIssues: DocumentIssue[] | null; }
 interface ReportCache { workspaceKey: string; requestKey: string; records: Map<string, StoredDocumentImport>; }
 
 @Component({
     selector: 'app-document-imports', standalone: true,
-    imports: [DocumentAnalysis, OriginalPreviewButton, NgTemplateOutlet, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigTemplateDirective],
+    imports: [DocumentAnalysis, OriginalPreviewButton, NgTemplateOutlet, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDrawerComponent, WigTableComponent, WigTemplateDirective],
     templateUrl: './document-imports.html'
 })
 export class DocumentImports {
@@ -301,7 +302,6 @@ export class DocumentImports {
         id: report.id, header: `${basename(report.folderPath)} · ${report.status === 'cancelled' ? 'Cancelled' : 'Finished'} · ${this.reportCounts(report)}`,
         template: 'report', data: report
     })));
-    private readonly reportAccordions = viewChildren<WigAccordionComponent<DocumentImportSummary>>('reportAccordion');
     private readonly retryVersion = signal(0);
     private readonly cache = signal<ReportCache | null>(null);
     private readonly failedRequest = signal<string | null>(null);
@@ -315,7 +315,18 @@ export class DocumentImports {
         return cache?.workspaceKey === this.workspaceKey() ? cache.records : null;
     });
     readonly detailsError = computed(() => this.requestKey() !== null && this.failedRequest() === this.requestKey());
-    readonly openFileIds = signal<ReadonlySet<string>>(new Set());
+    private readonly selectedFile = signal<{ workspaceKey: string; reportId: string; index: number } | null>(null);
+    readonly selectedFileRow = computed(() => {
+        const selection = this.selectedFile();
+        return selection?.workspaceKey === this.workspaceKey() ? this.fileRows().get(selection.reportId)?.[selection.index] : undefined;
+    });
+    readonly detailsDrawerSize = DrawerSize.md;
+    readonly fileColumns: TableConfig<{ index: number }> = { columns: [
+        { field: 'index', text: 'Document', type: 'custom', template: 'name' },
+        { field: 'index', text: 'Billed total', type: 'custom', template: 'total' },
+        { field: 'index', text: 'Status', type: 'custom', template: 'status' },
+        { field: 'index', text: 'Actions', type: 'custom', template: 'actions' }
+    ] };
     readonly correctionsByDocument = computed(() => {
         const byDocument = new Map<string, Map<string, DocumentCorrection>>();
         for (const correction of this.state().workspace?.documentCorrections ?? []) {
@@ -327,7 +338,7 @@ export class DocumentImports {
     });
     readonly fileRows = computed(() => {
         const records = this.records();
-        const rows = new Map<string, { file: DocumentFileResult; total: string | null; projectedIssues: DocumentIssue[] | null }[]>();
+        const rows = new Map<string, DocumentFileRow[]>();
         if (records) {
             const corrections = this.correctionsByDocument();
             for (const { id } of this.summaries()) {
@@ -343,6 +354,12 @@ export class DocumentImports {
         }
         return rows;
     });
+    // WigTable tracks rows by object identity. Keep the action components mounted when a report is refreshed.
+    readonly tableRows = computed(() => ({
+        workspaceKey: this.workspaceKey(),
+        reports: new Map([...this.fileRows()].map(([id, rows]) => [id, rows.map((_, index) => ({ index }))]))
+    }), { equal: (previous, next) => previous.workspaceKey === next.workspaceKey && previous.reports.size === next.reports.size &&
+        [...previous.reports].every(([id, rows]) => next.reports.get(id)?.length === rows.length) });
     readonly basename = basename;
     readonly timestamp = (value: string) => dateTimeFormat.format(new Date(value));
     readonly filePath = (file: DocumentFileResult) => file.status === 'imported' ? file.record.filePath : file.filePath;
@@ -357,14 +374,10 @@ export class DocumentImports {
 
     constructor() {
         effect(() => {
-            const closed = this.reportAccordions().filter(accordion => !accordion.value()).map(accordion => accordion.items()[0].id);
-            if (closed.length) untracked(() => this.openFileIds.update(open => new Set([...open].filter(key => !closed.some(id => key.startsWith('document-file-' + id + '-'))))));
-        });
-        effect(() => {
             const workspaceKey = this.workspaceKey();
             untracked(() => {
                 if (this.cache()?.workspaceKey !== workspaceKey) this.cache.set(null);
-                this.openFileIds.set(new Set());
+                this.selectedFile.set(null);
             });
         });
         effect(onCleanup => {
@@ -389,13 +402,10 @@ export class DocumentImports {
             });
         });
     }
-    toggleFile(key: string) {
-        this.openFileIds.update(current => {
-            const next = new Set(current);
-            if (!next.delete(key)) next.add(key);
-            return next;
-        });
+    openFile(reportId: string, index: number) {
+        this.selectedFile.set({ workspaceKey: this.workspaceKey(), reportId, index });
     }
+    closeFile() { this.selectedFile.set(null); }
     private billedTotal(file: DocumentFileResult) {
         return file.status === 'imported' ? formatDocumentTotal(file.record.result) : null;
     }

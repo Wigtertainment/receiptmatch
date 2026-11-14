@@ -1,6 +1,6 @@
 import { Component, computed, DestroyRef, inject, signal, viewChild } from '@angular/core';
 import { bootstrapApplication } from '@angular/platform-browser';
-import { WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigInputComponent } from '@wigtertainment-ltd/comp-lib';
+import { WigAlertComponent, WigButtonComponent, WigInputComponent } from '@wigtertainment-ltd/comp-lib';
 import { DocumentImports } from './app/document-imports.js';
 import { ExportSettings } from './app/export-settings.js';
 import { LocalOcrSettings } from './app/local-ocr-settings.js';
@@ -15,7 +15,7 @@ type WorkspaceSection = 'sources' | 'matches' | 'export-settings' | 'settings';
 
 @Component({
   selector: 'app-root', standalone: true,
-  imports: [StatementImports, DocumentImports, MatchSuggestions, ExportSettings, LocalOcrSettings, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigInputComponent, InputLength],
+  imports: [StatementImports, DocumentImports, MatchSuggestions, ExportSettings, LocalOcrSettings, WigAlertComponent, WigButtonComponent, WigInputComponent, InputLength],
   templateUrl: './app/workspace-shell.html'
 })
 class ReceiptMatchApp {
@@ -23,7 +23,6 @@ class ReceiptMatchApp {
   readonly commandError = signal<string | null>(null);
   readonly welcomeSettings = signal(false);
   private readonly welcomeSettingsButton = viewChild<WigButtonComponent>('welcomeSettingsButton');
-  readonly fileLocation = computed(() => [{ id: 'location', header: 'File location', content: this.state().workspace?.filePath ?? undefined }]);
   private readonly navigation = signal<{ loadRevision: number; section: WorkspaceSection } | null>(null);
   readonly section = computed(() => {
     const navigation = this.navigation();
@@ -75,6 +74,9 @@ class ReceiptMatchApp {
         else this.welcomeSettingsButton()?.nativeButton.focus();
       }
     });
+  }
+  showFileLocationTooltip(path: HTMLElement) {
+    path.title = path.scrollWidth > path.clientWidth ? path.textContent ?? '' : '';
   }
   rename(name: string) { void this.run({ type: 'rename', name }); }
 }
