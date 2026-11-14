@@ -37,6 +37,9 @@ import type { LocalDocumentOcr } from './extraction/host.js';
 const { extractPdfBytes, extractDocumentBytes }: Pick<typeof import("./extraction/host.js"), "extractPdfBytes" | "extractDocumentBytes"> = createRequire(__filename)('./extraction-host.cjs') as Pick<typeof import('./extraction/host.js'), 'extractPdfBytes' | 'extractDocumentBytes'>;
 
 app.setName('ReceiptMatch');
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.wigtertainment.receiptmatch');
+}
 protocol.registerSchemesAsPrivileged([
   { scheme: 'receiptmatch', privileges: { standard: true, secure: true, supportFetchAPI: true } },
   { scheme: 'receiptmatch-extraction', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } }
@@ -47,6 +50,8 @@ async function launch(): Promise<void> {
   const startUrl: string | undefined = process.env.ELECTRON_START_URL;
   const appUrl: ReturnType<typeof resolveRendererUrl> = resolveRendererUrl(app.isPackaged, startUrl?.length ? startUrl : undefined);
   const assetRoot: string = path.join(__dirname, 'ui', 'browser');
+  const iconRoot: string = app.isPackaged ? assetRoot : path.join(app.getAppPath(), 'media', 'receiptmatch');
+  const windowIcon: string = path.join(iconRoot, process.platform === 'win32' ? 'receiptmatch.ico' : 'receiptmatch-logo.png');
   const assets: Map<string, string> = new Map<string, string>();
   async function collect(directory: string): Promise<void> {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -67,7 +72,8 @@ async function launch(): Promise<void> {
     if (!file) {
       return new Response('Not found', { status: 404 });
     }
-    const types: Record<string, string> = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
+    const types: Record<string, string> = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.svg': 'image/svg+xml',
+      '.png': 'image/png', '.ico': 'image/vnd.microsoft.icon' };
     // Angular attaches this per-document nonce to the component styles it creates.
     const nonce: string | null = url.pathname === '/index.html' ? randomBytes(18).toString('base64') : null;
     const body: string | NonSharedBuffer = nonce ? (await readFile(file, 'utf8')).replaceAll('__RECEIPTMATCH_STYLE_NONCE__', nonce) : await readFile(file);
@@ -79,14 +85,16 @@ async function launch(): Promise<void> {
   session.defaultSession.webRequest.onBeforeRequest((details: Electron.OnBeforeRequestListenerDetails, callback: (response: Electron.CallbackResponse) => void): void => callback({ cancel: !isRendererRequestAllowed(appUrl, details.url) }));
   session.defaultSession.setPermissionRequestHandler((_contents: Electron.WebContents, _permission: "ar" | "automatic-fullscreen" | "background-fetch" | "background-sync" | "captured-surface-control" | "clipboard-read" | "clipboard-sanitized-write" | "deprecated-sync-clipboard-read" | "display-capture" | "fileSystem" | "fullscreen" | "geolocation" | "geolocation-approximate" | "hand-tracking" | "hid" | "idle-detection" | "keyboardLock" | "local-fonts" | "local-network" | "local-network-access" | "loopback-network" | "media" | "mediaKeySystem" | "midi" | "midiSysex" | "nfc" | "notifications" | "openExternal" | "payment-handler" | "periodic-background-sync" | "persistent-storage" | "pointerLock" | "screen-wake-lock" | "sensors" | "serial" | "smart-card" | "speaker-selection" | "storage-access" | "system-wake-lock" | "top-level-storage-access" | "usb" | "vr" | "web-app-installation" | "web-printing" | "window-management" | "unknown", callback: (permissionGranted: boolean) => void): void => callback(false));
   session.defaultSession.setPermissionCheckHandler((): false => false);
-  const window: BrowserWindow = new BrowserWindow({ title: 'ReceiptMatch', width: 1120, height: 780, minWidth: 680, minHeight: 540, backgroundColor: '#edf2f0', show: !process.argv.includes('--hidden'), webPreferences: { preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, spellcheck: false } });
+  const window: BrowserWindow = new BrowserWindow({ title: 'ReceiptMatch', icon: windowIcon, width: 1120, height: 780, minWidth: 680, minHeight: 540,
+    backgroundColor: '#edf2f0', show: !process.argv.includes('--hidden'), webPreferences: { preload: path.join(__dirname, 'preload.cjs'), sandbox: true,
+      contextIsolation: true, nodeIntegration: false, spellcheck: false } });
   const userData: string = app.getPath('userData');
   const runtimes: string = path.join(app.isPackaged ? process.resourcesPath : userData, 'local-ocr-runtimes');
   const localOcr: LocalOcrSettings = new LocalOcrSettings(path.join(userData, 'local-ocr'), {
     'pp-ocrv6-medium': path.join(runtimes, 'python', process.platform === 'win32' ? 'python.exe' : 'bin/python3.12'),
     'paddleocr-vl-1.6': path.join(runtimes, 'llama', process.platform === 'win32' ? 'llama-mtmd-cli.exe' : 'llama-mtmd-cli')
   });
-  const previews: OriginalPreviewWindows = new OriginalPreviewWindows(process.argv.includes('--hidden'));
+  const previews: OriginalPreviewWindows = new OriginalPreviewWindows(process.argv.includes('--hidden'), windowIcon);
   let previewLoadRevision: number | undefined;
   const publish: (state: WorkspaceState) => void = (state: WorkspaceState): void => {
     if (window.isDestroyed()) {
