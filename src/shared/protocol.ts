@@ -70,6 +70,7 @@ export interface WorkspaceState {
   documentOutcome: { status: 'finished' | 'cancelled' | 'failed'; importId: string | null; issues: ImportIssue[] } | null;
 }
 export interface WorkspaceBridge {
+  appVersion(): Promise<string>;
   command(value: WorkspaceCommand): Promise<WorkspaceState>;
   bankImports(): Promise<StoredBankImport[]>;
   documentImports(): Promise<StoredDocumentImport[]>;

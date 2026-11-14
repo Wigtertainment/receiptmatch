@@ -20,6 +20,8 @@ import { commandSchema, documentExportRequestSchema, documentSnapshotRequestSche
 import type { DocumentExportResponse } from '../src/shared/document-export.js';
 import { originalAdoptionRequestSchema, originalPreviewRequestSchema, originalSourceExtensions } from '../src/shared/original-preview.js';
 import { WorkspaceSession } from './workspace-session.js';
+import { offerStartupUpdate } from './desktop-update.js';
+import type { BaseUpdater } from 'electron-updater';
 import { StatementImportService } from './import/service.js';
 import { FolderDocumentImportService } from './documents/service.js';
 import { isRendererRequestAllowed, resolveRendererUrl } from './runtime-policy.js';
@@ -158,7 +160,7 @@ async function launch(): Promise<void> {
           .format(model.downloadBytes / (unit === 'gigabyte' ? 1_000_000_000 : 1_000_000));
         const confirmation: Electron.MessageBoxReturnValue = await dialog.showMessageBox(window, {
           type: 'question', title: 'Download OCR model', message: `Download ${model.name} to this device?`,
-          detail: `Download size: ${size}. ReceiptMatch processes documents on this device. Only the model download uses the network.`,
+            detail: `Download size: ${size}. ReceiptMatch processes documents on this device.`,
           buttons: ['Download', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true
         });
         if (confirmation.response === 0 && !closeRequested && !window.isDestroyed()) {
@@ -188,7 +190,7 @@ async function launch(): Promise<void> {
   });
   let exportSettingsWrite: Promise<string> | null = null;
   ipcMain.handle('app:export-settings', async (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<string> => {
-    if (!authorized(event) || payload.length !== 1) {
+    if (!authorized(event) || payload.length !== 1 || closeRequested) {
       throw new Error('Export settings request denied.');
     }
     const request: ZodSafeParseResult<{ type: "read"; } | { type: "save"; pattern: string; }> = exportSettingsRequestSchema.safeParse(payload[0]);
@@ -215,9 +217,19 @@ async function launch(): Promise<void> {
     }
   });
 
+  ipcMain.handle('app:version', (event: Electron.IpcMainInvokeEvent): string => {
+    if (!authorized(event)) {
+      throw new Error('Application version request denied.');
+    }
+    return app.getVersion();
+  });
+
   ipcMain.handle('workspace:command', (event: Electron.IpcMainInvokeEvent, payload: unknown): WorkspaceState | Promise<WorkspaceState> => {
     if (!authorized(event)) {
       throw new Error('Workspace request denied.');
+    }
+    if (closeRequested) {
+      return workspace.state();
     }
     const command: ZodSafeParseResult<{ type: "get-state"; } | { type: "new"; } | { type: "open"; } | { type: "save"; } | { type: "import-statement"; } | { type: "import-documents"; } | { type: "cancel-import"; } | { type: "rename"; name: string; } | { type: "set-transaction-ignored"; revision: number; transactionId: string; ignored: boolean; remember?: true | undefined; } | { type: "review-match"; revision: number; transactionId: string; review: { status: "open"; } | { status: "assigned"; documentId: string; } | { status: "completed-without-document"; }; } | { type: "set-duplicate-decision"; revision: number; transactionId: string; otherTransactionId: string; decision: "separate" | "keep-first" | "keep-second" | "clear"; } | { type: "correct-bank-row"; revision: number; rowId: string; changes: { bookingDate?: string | undefined; accountAmount?: { coefficient: string; currency: string; scale: number; } | undefined; }; } | { change: { kind: "amount"; value: { coefficient: string; currency: string; scale: number; }; } | { kind: "date"; value: string; }; documentId: string; sectionId: string; fieldId: string | null; type: "correct-document-field"; revision: number; } | { type: "approve-matches"; loadRevision: number; selections: MatchApprovalSelection[]; }> = commandSchema.safeParse(payload);
     return command.success ? workspace.dispatch(command.data) : workspace.rejectRequest();
@@ -273,7 +285,7 @@ async function launch(): Promise<void> {
   });
 
   ipcMain.handle('workspace:relink-original', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<OriginalRelinkResult> => {
-    if (!authorized(event) || payload.length !== 1) {
+    if (!authorized(event) || payload.length !== 1 || closeRequested) {
       throw new Error('Workspace request denied.');
     }
     const request: ZodSafeParseResult<{ kind: "document" | "statement"; id: string; loadRevision: number; }> = originalPreviewRequestSchema.safeParse(payload[0]);
@@ -284,7 +296,7 @@ async function launch(): Promise<void> {
   });
 
   ipcMain.handle('workspace:analyze-original', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<OriginalAnalysisResult> => {
-    if (!authorized(event) || payload.length !== 1) {
+    if (!authorized(event) || payload.length !== 1 || closeRequested) {
       throw new Error('Workspace request denied.');
     }
     const request: ZodSafeParseResult<{ kind: "document" | "statement"; id: string; loadRevision: number; }> = originalPreviewRequestSchema.safeParse(payload[0]);
@@ -295,7 +307,7 @@ async function launch(): Promise<void> {
   });
 
   ipcMain.handle('workspace:accept-original-analysis', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<OriginalAdoptionResult> => {
-    if (!authorized(event) || payload.length !== 1) {
+    if (!authorized(event) || payload.length !== 1 || closeRequested) {
       throw new Error('Workspace request denied.');
     }
     const request: ZodSafeParseResult<{ token: string; loadRevision: number; acknowledgeConflicts: boolean; }> = originalAdoptionRequestSchema.safeParse(payload[0]);
@@ -410,19 +422,51 @@ async function launch(): Promise<void> {
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: 'File', submenu: [
       { label: 'New workspace', accelerator: 'CmdOrCtrl+N', click: (): void => {
-        void workspace.dispatch({ type: 'new' });
+        if (!closeRequested) {
+          void workspace.dispatch({ type: 'new' });
+        }
       } },
       { label: 'Open workspace…', accelerator: 'CmdOrCtrl+O', click: (): void => {
-        void workspace.dispatch({ type: 'open' });
+        if (!closeRequested) {
+          void workspace.dispatch({ type: 'open' });
+        }
       } },
       { label: 'Save workspace', accelerator: 'CmdOrCtrl+S', click: (): void => {
-        void workspace.dispatch({ type: 'save' });
+        if (!closeRequested) {
+          void workspace.dispatch({ type: 'save' });
+        }
       } },
       { type: 'separator' }, { role: 'quit' }
     ] },
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] }
   ]));
   await window.loadURL(appUrl);
+  void offerStartupUpdate(window, async (updater: BaseUpdater): Promise<void> => {
+    if (closeRequested || window.isDestroyed()) {
+      return;
+    }
+    if (exportRequested || workspace.state().busy) {
+      await dialog.showMessageBox(window, { type: 'info', title: 'ReceiptMatch update', message: 'Finish the current action and restart ReceiptMatch to install the update.' });
+      return;
+    }
+    closeRequested = true;
+    try {
+      if (!await workspace.requestClose()) {
+        return;
+      }
+      await exportSettingsWrite?.catch((): null => null);
+      await localOcr.cancel();
+      if (!updater.install(false, true)) {
+        throw new Error('The update installer could not start.');
+      }
+      closing = true;
+      app.quit();
+    } finally {
+      if (!closing) {
+        closeRequested = false;
+      }
+    }
+  }).catch((error: unknown): void => console.warn('ReceiptMatch update check could not finish.', error));
 }
 
 app.on('window-all-closed', (): void => app.quit());

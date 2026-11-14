@@ -28,7 +28,7 @@ module.exports = [
 		// Load the separately emitted extraction host through Node's shared CommonJS cache.
 		module: { rules: [typescript], parser: { javascript: { createRequire: false } } },
 		resolve,
-		externals: { electron: 'commonjs electron', 'better-sqlite3': 'commonjs better-sqlite3' },
+		externals: { electron: 'commonjs electron', 'better-sqlite3': 'commonjs better-sqlite3', 'electron-updater': 'commonjs electron-updater' },
 		node: { __dirname: false, __filename: false },
 		devtool: false,
 		optimization: { minimize: false, splitChunks: false, runtimeChunk: false }
