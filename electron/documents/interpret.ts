@@ -1,4 +1,5 @@
 import { bankImportInputSchema, calendarDateSchema, type BankImportInput, type ImportPage, type PositionedSpan, type SourceEvidence } from '../../src/shared/bank-import.js';
+import { recoveredReceiptTaxPrefix } from '../../src/shared/document-display.js';
 import { documentScalarConflicts, supportingDocumentSchema, type DocumentIssue, type DocumentSection, type SupportingDocument } from '../../src/shared/supporting-document.js';
 
 interface Line { page: ImportPage; spans: PositionedSpan[]; text: string; }
@@ -250,7 +251,7 @@ function receiptItemTotal(section: DocumentSection, lines: Line[], currency: str
 	if (!established) return null;
 	const existing = totals[0];
 	if (existing && (existing.candidates.length !== 1 || existing.candidates[0].coefficient !== BigInt(suffix).toString() ||
-		existing.candidates[0].scale !== 2 || existing.candidates[0].currency !== established ||
+		existing.candidates[0].scale !== 2 || (existing.candidates[0].currency !== null && existing.candidates[0].currency !== established) ||
 		!existing.evidence.some(item => item.pageId === line.page.pageId && sameVisualRow(item.region, amount.region)))) return null;
 
 	const rightEdge = amount.region.x + amount.region.width;
@@ -280,6 +281,48 @@ function receiptItemTotal(section: DocumentSection, lines: Line[], currency: str
 		/[\p{L}\d]/u.test(span.text) && !counted.has(span))) return null;
 	return { existing, amount: { coefficient: cents, scale: 2, currency: established },
 		evidence: [...source({ ...line, spans: totalRow }), ...items.reverse().flatMap(item => source({ ...line, spans: item }))] };
+}
+
+function defaultDocumentCurrency(lines: Line[]) {
+	return lines.some(({ text }) => currencies(text).length > 0 || /\p{Sc}|\b(?:currency|währung)\s*[:=]\s*\p{L}/iu.test(text)) ? null : 'EUR';
+}
+
+function recoverStoredReceipt(result: SupportingDocument, section: DocumentSection) {
+	const total = section.amounts.find(field => field.role === 'billed-total');
+	if (result.sections.length !== 1 || !result.input || !total || total.candidates.length !== 1 || total.candidates[0].currency !== null ||
+		!total.evidence.some(item => item.method === 'local-ocr')) return undefined;
+	const pages = result.input.pages.filter(page => section.pageIds.includes(page.pageId));
+	const lines = pages.flatMap(page => linesOf({ ...page, spans: [...page.spans].sort(order) }));
+	const declared = new Set(section.currencies.filter(field => field.role === 'settlement').flatMap(field => field.candidates));
+	if (declared.size > 1) return undefined;
+	const recovered = receiptItemTotal(section, lines, [...declared][0] ?? defaultDocumentCurrency(lines));
+	if (!recovered) return undefined;
+	return { lines, total: { ...total, label: 'Total reconstructed from receipt items', candidates: [recovered.amount], evidence: recovered.evidence } };
+}
+
+
+export function evaluateStoredReceipt(result: SupportingDocument): SupportingDocument {
+	const section = result.sections[0];
+	if (!section) return result;
+	const recovered = recoverStoredReceipt(result, section);
+	if (!recovered) return result;
+	const { lines, total } = recovered;
+	const falseTaxes = new Set(section.amounts.filter(field => field.role === 'tax' &&
+		field.evidence.length && field.evidence.every(item => taxRegistration(item.rawText))).map(field => field.id));
+	const amounts = section.amounts.filter(field => !falseTaxes.has(field.id)).map(field => field.id === total.id ? total : field);
+	const fieldIds = new Set([section.sectionId, ...[...section.amounts, ...section.dates, ...section.merchants, ...section.references, ...section.currencies]
+		.map(field => field.id)]);
+	let taxNumber = 0;
+	for (const tax of receiptCategoryTaxes(section, lines, total.candidates[0].currency)) {
+		if (amounts.some(field => field.role === 'tax' && field.label === tax.label)) continue;
+		let id: string;
+		do { id = recoveredReceiptTaxPrefix + ++taxNumber; } while (fieldIds.has(id));
+		amounts.push({ ...tax, id });
+	}
+	const issues = result.issues.filter(item => !item.fieldId || (!falseTaxes.has(item.fieldId) && (item.fieldId !== total.id || item.code !== 'missing-currency')));
+	issues.push(issue('reconstructed-total', 'The total was reconstructed from the printed item amounts because the OCR missed a leading digit.',
+		section.sectionId, total.id, total.role, total.evidence));
+	return { ...result, sections: [{ ...section, amounts }], issues };
 }
 
 function receiptCategoryTaxes(section: DocumentSection, lines: Line[], currency: string | null): Omit<DocumentSection['amounts'][number], 'id'>[] {
@@ -570,8 +613,7 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 			}
 		}
 	}
-	const defaultCurrency = [...sectionLines.values()].some(lines => lines.some(({ text }) =>
-		currencies(text).length > 0 || /\p{Sc}|\b(?:currency|währung)\s*[:=]\s*\p{L}/iu.test(text))) ? null : 'EUR';
+	const defaultCurrency = defaultDocumentCurrency([...sectionLines.values()].flat());
 	for (const section of sections) {
 		const lines = sectionLines.get(section.sectionId) ?? [];
 		section.dates = withGenericIssueDate(section, input.pages);

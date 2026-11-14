@@ -2,6 +2,8 @@ import { formatMoney } from './display.js';
 import { sameMoneyValue } from './money.js';
 import type { SupportingDocument } from './supporting-document.js';
 
+export const recoveredReceiptTaxPrefix = 'recovered-receipt-tax-';
+
 export function formatDocumentTotal({ sections, issues }: SupportingDocument): string | null {
     if (sections.length !== 1) return null;
     const totals = sections[0].amounts.filter(field => field.role === 'billed-total');

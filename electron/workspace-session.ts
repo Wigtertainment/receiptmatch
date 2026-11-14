@@ -1,10 +1,10 @@
 import { isDeepStrictEqual } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { ZodError } from 'zod';
-import type { WorkspaceCommand, WorkspaceState } from '../src/shared/protocol.js';
+import type { DocumentSnapshot, DocumentSnapshotRequest, WorkspaceCommand, WorkspaceState } from '../src/shared/protocol.js';
 import { importIssue } from '../src/shared/bank-import.js';
 import { applyBankCorrections, bankCorrectionSchema, type BankCorrection } from '../src/shared/bank-corrections.js';
-import { applyDocumentCorrections, documentCorrectionKey, documentCorrectionSchema, type DocumentCorrection } from '../src/shared/document-corrections.js';
+import { documentCorrectionKey, documentCorrectionSchema, type DocumentCorrection } from '../src/shared/document-corrections.js';
 import { sameMoneyValue } from '../src/shared/money.js';
 import { advanceReviewRevision, currentMatchApprovals, documentRevisionIndex, sameApprovalSelection,
   type MatchApprovalSelection, type ReviewApprovalState } from '../src/shared/match-approvals.js';
@@ -20,6 +20,7 @@ import { storedDocumentImportSchema, type StoredDocumentImport, type WorkspaceSo
 import type { MatchDetails, MatchReviewCounts, MatchSummary, ReviewMatch, TransactionMatch } from '../src/shared/workspace-matching.js';
 import { suggestWorkspaceMatches } from './matching.js';
 import { describeMatch, summarizeMatches } from './match-view.js';
+import { WorkspaceDocumentState } from './documents/document-state.js';
 import { evaluateReviewMatches } from './review-matching.js';
 import { approvedExportDocuments, copyApprovedDocuments } from './document-export.js';
 import { writeReconciliationExport } from './reconciliation-export.js';
@@ -63,7 +64,7 @@ export class WorkspaceSession {
   private effectiveImports: StoredBankImport[] = [];
   private bankCorrections = new Map<string, BankCorrection>();
   private documentRecords: StoredDocumentImport[] = [];
-  private effectiveDocuments: StoredDocumentImport[] = [];
+  private documentView: WorkspaceDocumentState | null = null;
   private documentCorrections = new Map<string, DocumentCorrection>();
   private matches: TransactionMatch[] = [];
   private reviewMatches: { source: TransactionMatch[]; results: ReviewMatch[] } | null = null;
@@ -132,7 +133,23 @@ export class WorkspaceSession {
     };
   }
   bankImports(): StoredBankImport[] { return structuredClone(this.importRecords); }
-  documentImports(): StoredDocumentImport[] { return structuredClone(this.documentRecords); }
+  private documents(): WorkspaceDocumentState {
+    if (this.documentView?.imports !== this.documentRecords || this.documentView.corrections !== this.documentCorrections) {
+      this.documentView = new WorkspaceDocumentState(this.documentRecords, this.documentCorrections);
+    }
+    return this.documentView;
+  }
+  documentImports(): StoredDocumentImport[] { return structuredClone(this.documents().correctionBase); }
+  documentSnapshot(request: DocumentSnapshotRequest): DocumentSnapshot | null {
+    if (!this.metadata || request.loadRevision !== this.loadRevision || request.revision !== this.matchRevision) return null;
+    const documents = this.documents();
+    const originals = Object.fromEntries(documents.imports.flatMap(run => run.files.flatMap(file => {
+      if (file.status !== 'imported') return [];
+      const { id, result: { sections, issues } } = file.record;
+      return [[id, { sections, issues }]];
+    })));
+    return structuredClone({ ...request, reports: documents.effective, originals });
+  }
   savedWorkspaceFingerprint(): string | null { return this.saved?.fingerprint ?? null; }
   private importedOriginal({ kind, id, loadRevision }: OriginalPreviewRequest): (OriginalSource & { sourceId: string }) | null {
     if (!this.metadata || this.loadRevision !== loadRevision) return null;
@@ -241,17 +258,17 @@ export class WorkspaceSession {
       const documents = replacement.kind === 'document' ? [...this.documentRecords, replacement.run] : this.documentRecords;
       const replacements = validateSourceReplacements(new Map(this.sourceReplacements).set(oldSourceId, provenance.sourceId), banks, documents);
       const correctedBanks = applyBankCorrections(banks, plan.bankCorrections);
-      const correctedDocuments = applyDocumentCorrections(documents, plan.documentCorrections);
       const active = excludeDuplicateTransactions(activeStatements(correctedBanks, replacements), this.duplicateDecisions.values());
-      const matches = suggestWorkspaceMatches(active, activeSupportingDocuments(correctedDocuments, replacements));
+      const documentView = new WorkspaceDocumentState(documents, plan.documentCorrections);
+      const matches = suggestWorkspaceMatches(active, activeSupportingDocuments(documentView.effective, replacements));
       if (plan.archive.size) this.archivedSourceReviews.set(oldSourceId, plan.archive);
       this.importRecords = banks;
       this.documentRecords = documents;
       this.sourceReplacements = replacements;
       this.bankCorrections = plan.bankCorrections;
       this.documentCorrections = plan.documentCorrections;
+      this.documentView = documentView;
       this.effectiveImports = correctedBanks;
-      this.effectiveDocuments = correctedDocuments;
       this.matchDecisions = plan.reviews;
       this.reviewApprovals = plan.approvals;
       this.ignoredTransactions = plan.ignoredTransactions;
@@ -271,7 +288,7 @@ export class WorkspaceSession {
   private activeImports(imports = this.effectiveImports, decisions = this.duplicateDecisions) {
     return excludeDuplicateTransactions(activeStatements(imports, this.sourceReplacements), decisions.values());
   }
-  private activeDocuments(imports = this.effectiveDocuments) {
+  private activeDocuments(imports = this.documents().effective) {
     return activeSupportingDocuments(imports, this.sourceReplacements);
   }
   private restoreMatches(saved: SavedWorkspace) {
@@ -280,7 +297,9 @@ export class WorkspaceSession {
     this.sourceReplacements = new Map(saved.sourceReplacements);
     this.archivedSourceReviews = structuredClone(saved.archivedSourceReviews);
     const active = this.activeImports();
-    this.matches = active === this.effectiveImports ? structuredClone(saved.matches) : suggestWorkspaceMatches(active, this.activeDocuments());
+    const documentView = this.documents();
+    this.matches = active === this.effectiveImports && !this.sourceReplacements.size && !documentView.hasAutomaticChanges ?
+      structuredClone(saved.matches) : suggestWorkspaceMatches(active, this.activeDocuments(documentView.effective));
   }
   private ignoredByRule(): ReadonlySet<string> {
     if (this.ruleMatches?.imports !== this.effectiveImports || this.ruleMatches.rules !== this.ignoreRules) {
@@ -310,7 +329,7 @@ export class WorkspaceSession {
   matchDetails(revision: number, transactionId: string): MatchDetails | null {
     if (!this.metadata || revision !== this.matchRevision) return null;
     const match = this.matchesForReview().find(row => row.transactionId === transactionId);
-    return match ? describeMatch(match, this.effectiveImports, this.effectiveDocuments, this.documentCorrections) : null;
+    return match ? describeMatch(match, this.effectiveImports, this.documents().effective, this.documentCorrections) : null;
   }
   private currentApprovals() {
     return currentMatchApprovals(this.reviewApprovals, this.matchDecisions, this.bankCorrections, documentRevisionIndex(this.documentCorrections.values()));
@@ -386,7 +405,6 @@ export class WorkspaceSession {
     this.documentCorrections = new Map(this.saved.documentCorrections);
     this.reviewApprovals = new Map(this.saved.reviewApprovals);
     this.sourceRelocations = new Map(this.saved.sourceRelocations);
-    this.effectiveDocuments = applyDocumentCorrections(this.documentRecords, this.documentCorrections);
     this.restoreMatches(this.saved);
     return true;
   }
@@ -483,11 +501,11 @@ export class WorkspaceSession {
       } else if (file.status === 'failed' && file.analysis?.input) reserve(file.analysis.input.source.sourceId);
     }
     const imports = [...this.documentRecords, record];
-    const effective = [...this.effectiveDocuments, record];
+    const documentView = new WorkspaceDocumentState(imports, this.documentCorrections);
     const hasNewDocuments = record.files.some(file => file.status === 'imported');
-    const matches = hasNewDocuments ? suggestWorkspaceMatches(this.activeImports(), this.activeDocuments(effective)) : this.matches;
+    const matches = hasNewDocuments ? suggestWorkspaceMatches(this.activeImports(), this.activeDocuments(documentView.effective)) : this.matches;
     this.documentRecords = imports;
-    this.effectiveDocuments = effective;
+    this.documentView = documentView;
     this.matches = matches;
     if (hasNewDocuments) this.matchRevision++;
     this.documentOutcome = { status: record.status, importId: record.id, issues: [] };
@@ -676,10 +694,10 @@ export class WorkspaceSession {
     for (const correction of this.documentCorrections.values()) if (correction.documentId === documentId) latest = Math.max(latest, correction.revision);
     const correction = documentCorrectionSchema.parse({ ...target, revision: latest + 1, change });
     const corrections = new Map(this.documentCorrections).set(key, correction);
-    const effective = applyDocumentCorrections(this.documentRecords, corrections);
-    const matches = suggestWorkspaceMatches(this.activeImports(), this.activeDocuments(effective));
+    const documentView = new WorkspaceDocumentState(this.documentRecords, corrections);
+    const matches = suggestWorkspaceMatches(this.activeImports(), this.activeDocuments(documentView.effective));
     this.documentCorrections = corrections;
-    this.effectiveDocuments = effective;
+    this.documentView = documentView;
     this.matches = matches;
     this.matchRevision++;
   }
@@ -723,7 +741,7 @@ export class WorkspaceSession {
             if (this.ignoreRulesDirectory) this.ignoreRules = await readTransactionIgnoreRules(this.ignoreRulesDirectory);
             this.metadata = newMetadata(); this.saved = null; this.importRecords = []; this.documentRecords = []; this.matches = []; this.matchDecisions.clear();
             this.bankCorrections.clear(); this.effectiveImports = [];
-            this.documentCorrections.clear(); this.effectiveDocuments = [];
+            this.documentCorrections.clear(); this.documentView = null;
             this.reviewApprovals.clear(); this.ignoredTransactions.clear(); this.duplicateDecisions.clear(); this.sourceRelocations.clear();
             this.sourceReplacements.clear(); this.archivedSourceReviews.clear(); this.pendingAnalysis = null;
             this.importOutcome = null; this.documentOutcome = null; this.loadRevision++; this.matchRevision++;
@@ -742,7 +760,6 @@ export class WorkspaceSession {
           this.bankCorrections = new Map(loaded.bankCorrections);
           this.effectiveImports = applyBankCorrections(this.importRecords, this.bankCorrections);
           this.documentCorrections = new Map(loaded.documentCorrections);
-          this.effectiveDocuments = applyDocumentCorrections(this.documentRecords, this.documentCorrections);
           this.restoreMatches(loaded);
           this.pendingAnalysis = null;
           this.importOutcome = null; this.documentOutcome = null; this.loadRevision++; this.matchRevision++;

@@ -5,8 +5,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { test, vi, type TestContext } from 'vitest';
+import { SupportingDocumentState } from '../../electron/documents/document-state.js';
 import { interpretSupportingDocument } from '../../electron/documents/interpret.js';
 import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERSION } from '../../electron/store.js';
+import { reconciliationRows } from '../../electron/reconciliation-csv.js';
 import { WorkspaceSession } from '../../electron/workspace-session.js';
 import { commandSchema } from '../../src/shared/protocol.js';
 import type { StoredDocumentImport, StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
@@ -99,6 +101,108 @@ test('combines independent signals for existing workspaces with no exact amount 
 	assert.equal(candidates.get(near.id)?.signals.filename.state, 'different');
 	assert.equal(session.state().workspace?.dirty, false);
 	assert.deepEqual(await readFile(file), savedBytes);
+});
+
+test('ranks a previously imported OCR receipt first when item totals recover a missing digit', async context => {
+	const root = await directory(context);
+	const file = path.join(root, 'legacy-ocr.receiptmatch');
+	const bank = retainedBank(root);
+	const booking = bank.result.transactions[0];
+	booking.description.value = "Marlow's Bar & Grill";
+	booking.counterpartyCandidate = null;
+	booking.reportedOriginalAmount = null;
+	booking.accountAmount.value = { coefficient: '-11890', currency: 'EUR', scale: 2 };
+	const receipt = document(root, 'Marlows.pdf', 'Receipt', 'VAT: 3000', 'Total: 08.20');
+	const result = receipt.result;
+	const total = result.sections[0].amounts.find(field => field.role === 'billed-total')!;
+	const tax = result.sections[0].amounts.find(field => field.role === 'tax')!;
+	const page = result.input!.pages[0];
+	const ocr = (text: string, x: number, y: number, width = 30) => ({ text, region: { x, y, width, height: 16 }, method: 'local-ocr' as const });
+	page.spans = [
+		ocr('Receipt', 40, 40), ocr('VAT: 812345000', 40, 66, 150),
+		ocr('2', 35, 104), ocr('Lunch', 75, 103, 75), ocr('29.50', 400, 105, 46),
+		ocr('1', 35, 127), ocr('Drinks', 75, 126, 75), ocr('19.20', 402, 129, 44),
+		ocr('1', 35, 150), ocr('Dessert', 75, 150, 75), ocr('59.50', 402, 151, 44),
+		ocr('Total', 90, 187, 50), ocr('08.20', 371, 189, 75),
+		ocr('Food 9% 4.50', 90, 216, 190), ocr('Drinks 9% 2.10', 90, 239, 190), ocr('All Taxes are Included', 90, 275, 220),
+	];
+	tax.candidates = [{ coefficient: '812345000', currency: 'EUR', scale: 0 }];
+	tax.evidence = [{ region: page.spans[1].region, pageId: page.pageId, method: 'local-ocr', rawText: page.spans[1].text }];
+	total.candidates = [{ coefficient: '820', currency: null, scale: 2 }];
+	total.evidence = [{ pageId: page.pageId, region: { x: 90, y: 187, width: 356, height: 18 }, method: 'local-ocr', rawText: 'Total 08.20' }];
+	result.issues.push({ code: 'missing-currency', severity: 'warning', message: 'Missing currency', sectionId: result.sections[0].sectionId,
+		fieldId: total.id, field: total.role, evidence: total.evidence });
+	const other = document(root, 'Another-Bistro.pdf', 'Receipt', 'Issue Date: 2032-02-24', 'Total: EUR 130.00');
+	await createWorkspace(file, newMetadata(), [bank], [documentRun(root, [receipt, other])]);
+	const savedBytes = await readFile(file);
+	const session = new WorkspaceSession({ open: async () => file, save: async () => file, unsaved: async () => 'discard' });
+	assert.equal((await session.dispatch({ type: 'open' })).error, null);
+
+	const display = session.documentImports()[0].files[0];
+	assert.equal(display.status, 'imported');
+	if (display.status !== 'imported') assert.fail();
+	const shown = display.record.result;
+	assert.deepEqual(shown.sections[0].amounts.map(field => [field.role, field.candidates[0].coefficient]), [
+		['billed-total', '10820'], ['tax', '450'], ['tax', '210'],
+	]);
+	assert.ok(shown.issues.some(issue => issue.code === 'reconstructed-total' && issue.fieldId === total.id));
+	assert.ok(shown.input!.pages[0].spans.some(span => span.text === 'VAT: 812345000'));
+	const model = new SupportingDocumentState(result);
+	assert.deepEqual(model.original.sections[0].amounts, [tax, total]);
+	assert.deepEqual(model.automatic, shown);
+	assert.deepEqual(model.automatic.sections[0].amounts, new SupportingDocumentState(result).automatic.sections[0].amounts);
+	assert.strictEqual(model.effective, model.automatic);
+	assert.strictEqual(model.automatic.input, model.original.input);
+
+	const sectionId = result.sections[0].sectionId;
+	const correction = (fieldId: string, coefficient: string): DocumentCorrection => ({
+		documentId: receipt.id, sectionId, fieldId, revision: 2, change: { kind: 'amount', value: { coefficient, currency: 'EUR', scale: 2 } },
+	});
+	const edited = new SupportingDocumentState(result, [correction(total.id, '10900'), correction(tax.id, '395')]);
+	assert.deepEqual(edited.automatic, model.automatic);
+	assert.equal(edited.effective.sections[0].amounts.find(field => field.id === total.id)?.candidates[0].coefficient, '10900');
+	assert.equal(edited.effective.sections[0].amounts.find(field => field.id === tax.id)?.candidates[0].coefficient, '395');
+	const derivedTax = model.automatic.sections[0].amounts.find(field => field.role === 'tax')!;
+	assert.throws(() => new SupportingDocumentState(result, [correction(derivedTax.id, '395')]).effective, /not available/);
+	assert.equal(model.original.sections[0].amounts.find(field => field.id === total.id)?.candidates[0].coefficient, '820');
+	const fresh = interpretSupportingDocument(result.input);
+	const imported = new SupportingDocumentState(fresh);
+	assert.strictEqual(imported.automatic, fresh);
+	assert.equal(imported.effective.sections[0].amounts.find(field => field.role === 'billed-total')?.candidates[0].coefficient, '10820');
+
+	const { transactionId } = bank.transactions[0];
+	let revision = session.state().workspace!.matchRevision;
+	const candidates = session.matchDetails(revision, transactionId)!.candidates;
+	assert.deepEqual(candidates.map(candidate => candidate.documentId), [receipt.id, other.id]);
+	assert.deepEqual(candidates[0].amounts[0].documentAmount, { coefficient: '10820', currency: 'EUR', scale: 2 });
+	assert.equal(candidates[0].signals.filename.state, 'partial');
+	assert.ok(candidates[0].documentEvidence.some(evidence => evidence.text.includes('29.50')));
+	const summary = session.matchSummaries(revision)!.find(row => row.transactionId === transactionId)!;
+	assert.equal(summary.status, 'uncertain');
+	assert.equal(summary.review.status, 'open');
+	assert.deepEqual(await readFile(file), savedBytes);
+	assert.equal((await session.dispatch({ type: 'review-match', revision, transactionId, review: { status: 'assigned', documentId: receipt.id } })).error, null);
+	const workspace = session.state().workspace!;
+	const selection = session.matchSummaries(workspace.matchRevision)!.find(row => row.transactionId === transactionId)!.approvalSelection!;
+	assert.equal((await session.dispatch({ type: 'approve-matches', loadRevision: workspace.loadRevision, selections: [selection] })).error, null);
+	assert.equal((await session.dispatch({ type: 'save' })).error, null);
+	const saved = await loadWorkspace(file);
+	assert.equal(saved.matches.find(match => match.transactionId === transactionId)?.status, 'unmatched');
+	assert.deepEqual(saved.documentImports[0].files[0], { status: 'imported', record: receipt });
+	const exported = reconciliationRows(saved).find(row => row.transaction_id === transactionId)!;
+	assert.equal(exported.document_file, 'Marlows.pdf');
+	assert.equal(exported.match_status, 'uncertain');
+	assert.equal(exported.approval_status, 'approved');
+
+	assert.equal((await session.dispatch({ type: 'open' })).error, null);
+	revision = session.state().workspace!.matchRevision;
+	assert.equal(session.matchDetails(revision, transactionId)?.candidates[0].documentId, receipt.id);
+	assert.equal(session.matchSummaries(revision)?.find(row => row.transactionId === transactionId)?.approvalStatus.status, 'approved');
+
+	assert.equal((await session.dispatch({ type: 'correct-document-field', revision, documentId: receipt.id,
+		sectionId: result.sections[0].sectionId, fieldId: total.id, change: { kind: 'amount', value: { coefficient: '100', currency: 'EUR', scale: 2 } } })).error, null);
+	revision = session.state().workspace!.matchRevision;
+	assert.deepEqual(session.matchDetails(revision, transactionId)!.candidates.map(candidate => candidate.documentId), [other.id]);
 });
 
 test.for(['Date', 'ORIGINAL'])('recovers an OCR date using %s in match suggestions for an already imported receipt', async (label, context) => {

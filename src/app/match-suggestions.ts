@@ -4,7 +4,6 @@ import { type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonCo
 	WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
 import { formatCalendarDate, formatMoney } from '../shared/display.js';
 import { formatDocumentTotal } from '../shared/document-display.js';
-import { applyDocumentCorrections, documentCorrectionKey } from '../shared/document-corrections.js';
 import type { MatchApprovalSelection } from '../shared/match-approvals.js';
 import type { WorkspaceView } from '../shared/protocol.js';
 import type { MatchCandidateView, MatchDetails, MatchReview, MatchSummary } from '../shared/workspace-matching.js';
@@ -90,7 +89,7 @@ export class MatchSuggestions {
 	private readonly documentRetry = signal(0);
 	private readonly documentKey = computed(() => {
 		const workspace = this.workspace();
-		return JSON.stringify([workspace.loadRevision, workspace.documentImports.map(report => report.id), workspace.documentCorrections.map(correction => correction.revision)]);
+		return JSON.stringify([workspace.loadRevision, workspace.matchRevision]);
 	});
 	private readonly documentDraft = signal<{ loadRevision: number; transactionId: string; id: string } | null>(null);
 	private readonly pending = signal(false);
@@ -240,7 +239,7 @@ export class MatchSuggestions {
 			const key = this.documentKey();
 			this.documentRetry();
 			if (!this.active() || untracked(() => this.documentRequest()?.key === key)) return;
-			const { documentImports, documentCorrections, supersededDocuments } = untracked(this.workspace);
+			const { documentImports, loadRevision, matchRevision, supersededDocuments } = untracked(this.workspace);
 			const reportIds = documentImports.map(report => report.id);
 			if (!reportIds.length) { this.documentRequest.set({ key, documents: [] }); return; }
 			let current = true;
@@ -248,11 +247,12 @@ export class MatchSuggestions {
 			const update = (documents: ReviewDocument[] | null) => {
 				if (current && this.active() && this.documentKey() === key) this.documentRequest.set({ key, documents });
 			};
-			void window.receiptmatch.documentImports().then(records => {
+			void window.receiptmatch.documentSnapshot({ loadRevision, revision: matchRevision }).then(snapshot => {
+				if (!snapshot || snapshot.loadRevision !== loadRevision || snapshot.revision !== matchRevision) return update(null);
+				const records = snapshot.reports;
 				if (records.length !== reportIds.length || records.some((record, index) => record.id !== reportIds[index])) return update(null);
-				const corrections = new Map(documentCorrections.map(correction => [documentCorrectionKey(correction, correction.change.kind), correction]));
 				const archived = new Set(supersededDocuments);
-				const documents = applyDocumentCorrections(records, corrections).flatMap(record => record.files.flatMap(file => file.status === 'imported' && !archived.has(file.record.id) ? [{
+				const documents = records.flatMap(record => record.files.flatMap(file => file.status === 'imported' && !archived.has(file.record.id) ? [{
 					id: file.record.id, name: this.basename(file.record.filePath), path: file.record.filePath, total: formatDocumentTotal(file.record.result), record: file.record,
 				}] : []));
 				update(documents.sort((a, b) => a.name.localeCompare(b.name) || a.path.localeCompare(b.path)));

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { ExportSettingsRequest, WorkspaceBridge, WorkspaceCommand, WorkspaceState } from '../src/shared/protocol.js';
+import type { DocumentSnapshot, DocumentSnapshotRequest, ExportSettingsRequest, WorkspaceBridge, WorkspaceCommand, WorkspaceState } from '../src/shared/protocol.js';
 import type { DocumentExportResponse } from '../src/shared/document-export.js';
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
 import type { StoredDocumentImport } from '../src/shared/workspace-documents.js';
@@ -11,6 +11,7 @@ const bridge: WorkspaceBridge = Object.freeze({
   command: (command: WorkspaceCommand) => ipcRenderer.invoke('workspace:command', command) as Promise<WorkspaceState>,
   bankImports: () => ipcRenderer.invoke('workspace:bank-imports') as Promise<StoredBankImport[]>,
   documentImports: () => ipcRenderer.invoke('workspace:document-imports') as Promise<StoredDocumentImport[]>,
+  documentSnapshot: (request: DocumentSnapshotRequest) => ipcRenderer.invoke('workspace:document-snapshot', request) as Promise<DocumentSnapshot | null>,
   matchSummaries: (revision: number) => ipcRenderer.invoke('workspace:matches', { revision }) as Promise<MatchSummary[] | null>,
   matchDetails: (revision: number, transactionId: string) => ipcRenderer.invoke('workspace:matches', { revision, transactionId }) as Promise<MatchDetails | null>,
   openOriginal: (request: OriginalPreviewRequest) => ipcRenderer.invoke('workspace:open-original', request) as Promise<OriginalPreviewResult>,

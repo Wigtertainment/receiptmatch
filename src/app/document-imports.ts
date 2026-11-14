@@ -8,10 +8,10 @@ import { calendarDateSchema, type ImportIssue, type ImportPage, type PositionedS
 import { formatCalendarDate, formatMoney } from '../shared/display.js';
 import { formatDocumentTotal } from '../shared/document-display.js';
 import {
-    applyDocumentCorrections, documentCorrectionKey, type DocumentCorrection, type DocumentCorrectionTarget, type DocumentCorrectionValue
+    documentCorrectionKey, type DocumentCorrection, type DocumentCorrectionTarget, type DocumentCorrectionValue
 } from '../shared/document-corrections.js';
 import { sameMoneyValue } from '../shared/money.js';
-import type { DocumentImportSummary, WorkspaceCommand, WorkspaceState } from '../shared/protocol.js';
+import type { DocumentImportSummary, OriginalDocumentFields, WorkspaceCommand, WorkspaceState } from '../shared/protocol.js';
 import type { DocumentIssue, DocumentSection, SupportingDocument } from '../shared/supporting-document.js';
 import type { DocumentFileResult, DocumentFormat, StoredDocumentImport } from '../shared/workspace-documents.js';
 
@@ -54,7 +54,7 @@ interface FieldCorrectionView {
 }
 interface FieldView {
     id: string; role: string; label: string; values: string[]; evidence: SourceEvidence[]; issues: DocumentIssue[];
-    reviewNeeded: boolean; newConflict: string | undefined; correction?: FieldCorrectionView;
+    reviewNeeded: boolean; originalValues?: string[]; correction?: FieldCorrectionView;
 }
 
 @Component({
@@ -110,7 +110,7 @@ export class DocumentAnalysis {
     readonly documentId = input<string | null>(null);
     readonly busy = input(false);
     readonly workspaceError = input<string | null>(null);
-    readonly projectedIssues = input<DocumentIssue[] | null>(null);
+    readonly original = input<OriginalDocumentFields | null>(null);
     readonly corrections = input<ReadonlyMap<string, DocumentCorrection> | null>(null);
     readonly correction = output<DocumentCorrectionTarget & { change: DocumentCorrectionValue }>();
     readonly sourceOpen = signal(false);
@@ -154,34 +154,33 @@ export class DocumentAnalysis {
     readonly sections = computed(() => {
         const analysis = this.analysis();
         const fieldIssues = new Map<string, DocumentIssue[]>();
-        const effectiveFieldIssues = new Map<string, DocumentIssue[]>();
-        for (const issue of this.projectedIssues() ?? analysis.issues) {
-            if (!issue.fieldId) continue;
-            const issues = effectiveFieldIssues.get(issue.fieldId) ?? [];
-            issues.push(issue);
-            effectiveFieldIssues.set(issue.fieldId, issues);
-        }
+
         const missingBySection = new Map<string, Set<string>>();
         for (const issue of analysis.issues) {
-            if (issue.sectionId && issue.fieldId === null && issue.field && issue.code === 'missing-field') {
-                const missing = missingBySection.get(issue.sectionId) ?? new Set<string>();
-                missing.add(issue.field);
-                missingBySection.set(issue.sectionId, missing);
-            }
             if (!issue.fieldId) continue;
             const issues = fieldIssues.get(issue.fieldId) ?? [];
             issues.push(issue);
             fieldIssues.set(issue.fieldId, issues);
         }
-        const field = (source: { id: string; label: string; evidence: SourceEvidence[] }, role: string, values: string[], correction?: FieldCorrectionView): FieldView => {
+        for (const issue of (this.original()?.issues ?? analysis.issues)) {
+            if (issue.sectionId && issue.fieldId === null && issue.field && issue.code === 'missing-field') {
+                const missing = missingBySection.get(issue.sectionId) ?? new Set<string>();
+                missing.add(issue.field);
+                missingBySection.set(issue.sectionId, missing);
+            }
+        }
+        const field = (source: { id: string; label: string; evidence: SourceEvidence[] }, role: string, values: string[],
+            correction?: FieldCorrectionView, originalValues?: string[]): FieldView => {
             const issues = fieldIssues.get(source.id) ?? [];
-            const effective = effectiveFieldIssues.get(source.id) ?? [];
-            const newConflict = issues.some(issue => issue.code === 'conflicting-field') ? undefined : effective.find(issue => issue.code === 'conflicting-field')?.message;
-            return { ...source, role, values, issues, reviewNeeded: effective.length > 0, newConflict, correction };
+            return { ...source, role, values, issues, reviewNeeded: issues.length > 0, correction, originalValues };
         };
         const documentId = this.documentId();
         const corrections = this.corrections();
+        const originalSections = new Map((this.original()?.sections ?? analysis.sections).map(section => [section.sectionId, section]));
         return analysis.sections.map(section => {
+            const original = originalSections.get(section.sectionId)!;
+            const originalAmounts = new Map(original.amounts.map(value => [value.id, value]));
+            const originalDates = new Map(original.dates.map(value => [value.id, value]));
             const declared = [...new Set(section.currencies.filter(value => value.role === 'settlement').flatMap(value => value.candidates))];
             const editable = (fieldId: string | null, kind: DocumentCorrectionValue['kind'], role: string, inputValue = '', currency = '') => {
                 if (!documentId) return undefined;
@@ -193,23 +192,29 @@ export class DocumentAnalysis {
             const missing = missingBySection.get(section.sectionId);
             if (documentId && missing && section.kind !== 'unknown') {
                 const totalRole = section.kind === 'credit-note' ? 'credit-note-component' : 'billed-total';
-                if (missing.has('billed-total') && !section.amounts.some(value => value.role === totalRole)) {
+                if (missing.has('billed-total') && !original.amounts.some(value => value.role === totalRole)) {
                     missingFields.push(editable(null, 'amount', amountRoles[totalRole], '', declared.length === 1 ? declared[0] : '')!);
                 }
-                if (missing.has('issue') && !section.dates.some(value => value.role === 'issue')) missingFields.push(editable(null, 'date', 'Issue date')!);
+                if (missing.has('issue') && !original.dates.some(value => value.role === 'issue')) missingFields.push(editable(null, 'date', 'Issue date')!);
             }
             return {
                 id: section.sectionId, kind: kinds[section.kind], evidence: section.evidence, pages: section.pageIds.map(pageId => this.pageNumber(pageId)), missingFields,
                 fields: [
-                    ...section.amounts.map(value => {
+                    ...section.amounts.filter(value => !documentId || originalAmounts.has(value.id) || value.evidence.length > 0).map(value => {
+                        const previous = originalAmounts.get(value.id);
                         const currencies = [...new Set(value.candidates.flatMap(candidate => candidate.currency ? [candidate.currency] : []))];
                         const currency = currencies.length === 1 ? currencies[0] : !currencies.length && declared.length === 1 ? declared[0] : '';
                         const initial = value.candidates.length === 1 ? formatAmountEntry(value.candidates[0]) : '';
                         return field(value, amountRoles[value.role], value.candidates.map(candidate => formatMoney(candidate)),
-                            editable(value.id, 'amount', amountRoles[value.role], initial, currency));
+                            previous ? editable(value.id, 'amount', amountRoles[value.role], initial, currency) : undefined,
+                            previous?.candidates.map(candidate => formatMoney(candidate)));
                     }),
-                    ...section.dates.map(value => field(value, dateRoles[value.role], value.candidates.map(candidate => formatCalendarDate(candidate)),
-                        editable(value.id, 'date', dateRoles[value.role], value.candidates.length === 1 ? value.candidates[0] : ''))),
+                    ...section.dates.filter(value => !documentId || originalDates.has(value.id) || value.evidence.length > 0).map(value => {
+                        const previous = originalDates.get(value.id);
+                        return field(value, dateRoles[value.role], value.candidates.map(candidate => formatCalendarDate(candidate)),
+                            previous ? editable(value.id, 'date', dateRoles[value.role], value.candidates.length === 1 ? value.candidates[0] : '') : undefined,
+                            previous?.candidates.map(candidate => formatCalendarDate(candidate)));
+                    }),
                     ...section.merchants.map(value => field(value, 'Merchant', value.candidates)),
                     ...section.references.map(value => field(value, referenceRoles[value.role], value.candidates)),
                     ...section.currencies.map(value => field(value, currencyRoles[value.role], value.candidates))
@@ -282,8 +287,8 @@ export class DocumentAnalysis {
     }
 }
 
-interface DocumentFileRow { file: DocumentFileResult; total: string | null; projectedIssues: DocumentIssue[] | null; }
-interface ReportCache { workspaceKey: string; requestKey: string; records: Map<string, StoredDocumentImport>; }
+interface DocumentFileRow { file: DocumentFileResult; total: string | null; original: OriginalDocumentFields | null; }
+interface ReportCache { workspaceKey: string; requestKey: string; records: Map<string, StoredDocumentImport>; originals: Record<string, OriginalDocumentFields>; }
 
 @Component({
     selector: 'app-document-imports', standalone: true,
@@ -308,12 +313,13 @@ export class DocumentImports {
     private readonly requestKey = computed(() => {
         const summaries = this.summaries();
         if (!summaries.length) return null;
-        return JSON.stringify([this.workspaceKey(), summaries.map(report => report.id)]);
+        return JSON.stringify([this.workspaceKey(), this.state().workspace?.matchRevision]);
     });
     readonly records = computed(() => {
         const cache = this.cache();
         return cache?.workspaceKey === this.workspaceKey() ? cache.records : null;
     });
+    readonly detailsCurrent = computed(() => this.cache()?.requestKey === this.requestKey());
     readonly detailsError = computed(() => this.requestKey() !== null && this.failedRequest() === this.requestKey());
     private readonly selectedFile = signal<{ workspaceKey: string; reportId: string; index: number } | null>(null);
     readonly selectedFileRow = computed(() => {
@@ -340,16 +346,13 @@ export class DocumentImports {
         const records = this.records();
         const rows = new Map<string, DocumentFileRow[]>();
         if (records) {
-            const corrections = this.correctionsByDocument();
+            const originals = this.cache()?.originals;
             for (const { id } of this.summaries()) {
                 const record = records.get(id);
                 if (!record) continue;
-                const fields = new Map(record.files.flatMap(file => file.status === 'imported' ? [...(corrections.get(file.record.id) ?? [])] : []));
-                const [effective] = applyDocumentCorrections([record], fields);
-                rows.set(id, record.files.map((file, index) => {
-                    const projected = effective.files[index];
-                    return { file, total: this.billedTotal(projected), projectedIssues: projected.status === 'imported' ? projected.record.result.issues : null };
-                }));
+                rows.set(id, record.files.map(file => ({
+                    file, total: this.billedTotal(file), original: file.status === 'imported' ? originals?.[file.record.id] ?? null : null,
+                })));
             }
         }
         return rows;
@@ -384,19 +387,23 @@ export class DocumentImports {
             const requestKey = this.requestKey();
             this.retryVersion();
             if (!requestKey) return;
-            const { workspaceKey, summaries } = untracked(() => ({ workspaceKey: this.workspaceKey(), summaries: this.summaries() }));
+            const { workspaceKey, summaries, workspace } = untracked(() => ({ workspaceKey: this.workspaceKey(), summaries: this.summaries(), workspace: this.state().workspace }));
+            if (!workspace) return;
+            const { loadRevision, matchRevision: revision } = workspace;
             if (untracked(() => this.cache()?.requestKey === requestKey)) return;
             let current = true;
             onCleanup(() => { current = false; });
             this.failedRequest.set(null);
             const isCurrent = () => current && requestKey === this.requestKey();
-            void Promise.resolve().then(() => isCurrent() ? window.receiptmatch.documentImports() : null).then(records => {
+            void window.receiptmatch.documentSnapshot({ loadRevision, revision }).then(snapshot => {
                 if (!isCurrent()) return;
+                if (!snapshot || snapshot.loadRevision !== loadRevision || snapshot.revision !== revision) throw new Error('The document snapshot is stale.');
+                const records = snapshot.reports;
                 if (!Array.isArray(records) || records.length !== summaries.length ||
                     records.some((record, index) => record?.id !== summaries[index].id || record.folderPath !== summaries[index].folderPath)) {
                     throw new Error('The report does not match the current workspace.');
                 }
-                this.cache.set({ workspaceKey, requestKey, records: new Map(records.map(record => [record.id, record])) });
+                this.cache.set({ workspaceKey, requestKey, records: new Map(records.map(record => [record.id, record])), originals: snapshot.originals });
             }).catch(() => {
                 if (isCurrent()) this.failedRequest.set(requestKey);
             });
@@ -411,7 +418,7 @@ export class DocumentImports {
     }
     correctField(value: DocumentCorrectionTarget & { change: DocumentCorrectionValue }) {
         const workspace = this.state().workspace;
-        if (workspace && !this.state().busy) this.workspaceCommand.emit({ ...value, type: 'correct-document-field', revision: workspace.matchRevision });
+        if (workspace && !this.state().busy && this.detailsCurrent()) this.workspaceCommand.emit({ ...value, type: 'correct-document-field', revision: workspace.matchRevision });
     }
     retryDetails() { this.retryVersion.update(value => value + 1); }
     reportCounts(report: DocumentImportSummary) {

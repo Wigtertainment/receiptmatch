@@ -21,10 +21,13 @@ export function documentCorrectionKey(target: DocumentCorrectionTarget, kind: Do
     return JSON.stringify([target.documentId, target.sectionId, target.fieldId, target.fieldId === null ? kind : null]);
 }
 
-function projectDocument(result: SupportingDocument, corrections: DocumentCorrection[]): SupportingDocument {
+export function applyDocumentFieldCorrections(
+    result: SupportingDocument, corrections: readonly DocumentCorrection[], original = result,
+): SupportingDocument {
+    if (!corrections.length) return result;
     const sections = result.sections.map(section => ({ ...section, amounts: [...section.amounts], dates: [...section.dates] }));
     const bySection = new Map(sections.map(section => [section.sectionId, section]));
-    const originals = new Map(result.sections.map(section => [section.sectionId, section]));
+    const originals = new Map(original.sections.map(section => [section.sectionId, section]));
     const ids = new Set(sections.flatMap(section => [section.sectionId, ...[...section.amounts, ...section.dates, ...section.merchants, ...section.references,
         ...section.currencies].map(field => field.id)]));
     const correctedFields = new Set<string>();
@@ -32,23 +35,24 @@ function projectDocument(result: SupportingDocument, corrections: DocumentCorrec
     const affectedSections = new Set<DocumentSection>();
     for (const { sectionId, fieldId, change } of corrections) {
         const section = bySection.get(sectionId);
-        if (!section) throw new Error('The document section for this correction is not available.');
+        const originalSection = originals.get(sectionId);
+        if (!section || !originalSection) throw new Error('The document section for this correction is not available.');
         affectedSections.add(section);
         if (fieldId !== null) {
-            const original = originals.get(sectionId)!;
-            const fields = change.kind === 'amount' ? original.amounts : original.dates;
+            const originalFields = change.kind === 'amount' ? originalSection.amounts : originalSection.dates;
+            const fields = change.kind === 'amount' ? section.amounts : section.dates;
             const index = fields.findIndex(field => field.id === fieldId);
-            if (index < 0) throw new Error('The document field for this correction is not available.');
+            if (index < 0 || !originalFields.some(field => field.id === fieldId)) throw new Error('The document field for this correction is not available.');
             if (change.kind === 'amount') section.amounts[index] = { ...section.amounts[index], candidates: [change.value] };
             else section.dates[index] = { ...section.dates[index], candidates: [change.value] };
             correctedFields.add(fieldId);
             continue;
         }
         const missing = change.kind === 'amount' ? 'billed-total' : 'issue';
-        const totalRole = section.kind === 'credit-note' ? 'credit-note-component' : 'billed-total';
-        const exists = change.kind === 'amount' ? section.amounts.some(field => field.role === totalRole) : section.dates.some(field => field.role === 'issue');
-        const isMissing = result.issues.some(issue => issue.sectionId === sectionId && issue.fieldId === null && issue.field === missing && issue.code === 'missing-field');
-        if (exists || section.kind === 'unknown' || !isMissing) {
+        const totalRole = originalSection.kind === 'credit-note' ? 'credit-note-component' : 'billed-total';
+        const exists = change.kind === 'amount' ? originalSection.amounts.some(field => field.role === totalRole) : originalSection.dates.some(field => field.role === 'issue');
+        const isMissing = original.issues.some(issue => issue.sectionId === sectionId && issue.fieldId === null && issue.field === missing && issue.code === 'missing-field');
+        if (exists || originalSection.kind === 'unknown' || !isMissing) {
             throw new Error('This document section has no matching missing field to correct.');
         }
         const base = `manual-${change.kind}-${sections.indexOf(section) + 1}`;
@@ -95,7 +99,7 @@ export function applyDocumentCorrections(imports: StoredDocumentImport[], correc
             const fields = pending.get(file.record.id);
             if (!fields) return file;
             pending.delete(file.record.id);
-            return { ...file, record: { ...file.record, result: projectDocument(file.record.result, fields) } };
+            return { ...file, record: { ...file.record, result: applyDocumentFieldCorrections(file.record.result, fields) } };
         });
         return files.some((file, index) => file !== record.files[index]) ? { ...record, files } : record;
     });
