@@ -47,6 +47,7 @@
     "@angular/router": "22.2.5",
     "@eslint/js": "10.0.1",
     "@playwright/test": "1.65.0",
+    "@stylistic/eslint-plugin": "6.0.0",
     "@tesseract.js-data/eng": "1.0.0",
     "@types/better-sqlite3": "9.6.0",
     "@types/node": "26.6.6",
@@ -58,6 +59,8 @@
     "electron": "45.2.3",
     "electron-builder": "26.18.0",
     "eslint": "10.14.0",
+    "eslint-plugin-electron-security": "0.3.0",
+    "eslint-plugin-sonarjs": "4.2.2",
     "globals": "17.14.0",
     "image-size": "2.1.0",
     "pdf-lib": "1.17.1",
@@ -79,6 +82,9 @@
   "overrides": {
     "eslint": {
       "minimatch": "11.0.5"
+    },
+    "eslint-plugin-electron-security": {
+      "eslint": "$eslint"
     },
     "@eslint/config-array": {
       "minimatch": "11.0.5"

@@ -1,7 +1,7 @@
 import { NgTemplateOutlet } from '@angular/common';
-import { Component, DestroyRef, ElementRef, TemplateRef, computed, inject, input, signal, viewChild } from '@angular/core';
+import { Component, DestroyRef, ElementRef, TemplateRef, computed, inject, input, signal, viewChild, type Signal, type WritableSignal, type InputSignal } from '@angular/core';
 import { WigButtonComponent, WigCheckboxComponent, WigIconButtonComponent } from '@wigtertainment-ltd/comp-lib';
-import type { OriginalAnalysisComparison, OriginalPreviewRequest, OriginalPreviewResult } from '../shared/original-preview.js';
+import type { OriginalAdoptionResult, OriginalAnalysisComparison, OriginalAnalysisResult, OriginalPreviewRequest, OriginalPreviewResult, OriginalRelinkResult } from '../shared/original-preview.js';
 
 interface PreviewFeedback extends OriginalPreviewResult {
     source: OriginalPreviewRequest;
@@ -107,50 +107,60 @@ interface PreviewFeedback extends OriginalPreviewResult {
     `
 })
 export class OriginalPreviewButton {
-    readonly kind = input.required<'statement' | 'document'>();
-    readonly sourceId = input.required<string | undefined>();
-    readonly sourceName = input.required<string>();
-    readonly loadRevision = input.required<number | undefined>();
-    readonly iconOnly = input(false);
-    readonly iconTooltip = input<string>();
-    readonly iconButtonStyle = { width: '44px', 'min-width': '44px', 'min-height': '44px', padding: '0' };
-    readonly acknowledgeConflicts = signal(false);
-    private readonly request = signal<PreviewFeedback | null>(null);
-    private readonly destroyed = inject(DestroyRef);
-    private readonly openButton = viewChild('openButton', { read: ElementRef<HTMLElement> });
-    private readonly analysisDialog = viewChild<ElementRef<HTMLDialogElement>>('analysisDialog');
-    readonly feedbackContent = viewChild<TemplateRef<unknown>>('feedbackContent');
-    readonly feedback = computed(() => {
-        const request = this.request();
+    readonly kind: InputSignal<"statement" | "document"> = input.required<'statement' | 'document'>();
+    readonly sourceId: InputSignal<string | undefined> = input.required<string | undefined>();
+    readonly sourceName: InputSignal<string> = input.required<string>();
+    readonly loadRevision: InputSignal<number | undefined> = input.required<number | undefined>();
+    readonly iconOnly: InputSignal<boolean> = input(false);
+    readonly iconTooltip: InputSignal<string | undefined> = input<string>();
+    readonly iconButtonStyle: { width: string; 'min-width': string; 'min-height': string; padding: string; } = { width: '44px', 'min-width': '44px', 'min-height': '44px', padding: '0' };
+    readonly acknowledgeConflicts: WritableSignal<boolean> = signal(false);
+    private readonly request: WritableSignal<PreviewFeedback | null> = signal<PreviewFeedback | null>(null);
+    private readonly destroyed: DestroyRef = inject(DestroyRef);
+	private readonly openButton: Signal<ElementRef<HTMLElement> | undefined> = viewChild('openButton', { read: ElementRef<HTMLElement> });
+    private readonly analysisDialog: Signal<ElementRef<HTMLDialogElement> | undefined> = viewChild<ElementRef<HTMLDialogElement>>('analysisDialog');
+    readonly feedbackContent: Signal<TemplateRef<unknown> | undefined> = viewChild<TemplateRef<unknown>>('feedbackContent');
+    readonly feedback: Signal<PreviewFeedback | null> = computed((): PreviewFeedback | null => {
+        const request: PreviewFeedback | null = this.request();
         return request && request.source.id === this.sourceId() && request.source.kind === this.kind() && request.source.loadRevision === this.loadRevision() ? request : null;
     });
-    readonly hasFeedback = computed(() => {
-        const current = this.feedback();
-        return !!(current?.error || current?.notice || current?.status === 'missing' || current?.status === 'changed');
+    readonly hasFeedback: Signal<boolean> = computed((): boolean => {
+        const current: PreviewFeedback | null = this.feedback();
+        return Boolean(current?.error) || Boolean(current?.notice) || current?.status === 'missing' || current?.status === 'changed';
     });
 
-    async open() {
-        const loadRevision = this.loadRevision(), id = this.sourceId();
-        if (id === undefined || loadRevision === undefined || this.feedback()?.pending) return;
+    async open(): Promise<void> {
+        const loadRevision: number | undefined = this.loadRevision(), id: string | undefined = this.sourceId();
+        if (id === undefined || loadRevision === undefined || this.feedback()?.pending) {
+            return;
+        }
         const request: PreviewFeedback = { source: { kind: this.kind(), id, loadRevision }, pending: 'open', error: null };
         this.request.set(request);
         try {
-            const result = await window.receiptmatch.openOriginal(request.source);
-            if (this.request() === request) this.request.set({ ...request, ...result, pending: null });
+            const result: OriginalPreviewResult = await window.receiptmatch.openOriginal(request.source);
+            if (this.request() === request) {
+                this.request.set({ ...request, ...result, pending: null });
+            }
         } catch {
-            if (this.request() === request) this.request.set({ ...request, pending: null, error: 'The original could not be opened. Try again.' });
+            if (this.request() === request) {
+                this.request.set({ ...request, pending: null, error: 'The original could not be opened. Try again.' });
+            }
         }
     }
 
-    async relink() {
-        const current = this.feedback();
-        if (!current || current.pending || (current.status !== 'missing' && current.status !== 'changed')) return;
+    async relink(): Promise<void> {
+        const current: PreviewFeedback | null = this.feedback();
+        if (!current || current.pending || (current.status !== 'missing' && current.status !== 'changed')) {
+            return;
+        }
         const request: PreviewFeedback = { ...current, pending: 'relink', actionError: undefined };
         this.request.set(request);
-        const failure = 'The original could not be relinked. Try again.';
+        const failure: "The original could not be relinked. Try again." = 'The original could not be relinked. Try again.';
         try {
-            const result = await window.receiptmatch.relinkOriginal(request.source);
-            if (this.request() !== request) return;
+            const result: OriginalRelinkResult = await window.receiptmatch.relinkOriginal(request.source);
+            if (this.request() !== request) {
+                return;
+            }
             if (result.status === 'linked') {
                 this.request.set({ source: request.source, pending: null, error: null, notice: 'Original relinked. You can open it again.' });
                 this.restoreOpenFocus(request.source);
@@ -158,18 +168,24 @@ export class OriginalPreviewButton {
                 this.request.set({ ...request, pending: null, actionError: result.status === 'failed' ? result.error ?? failure : undefined });
             }
         } catch {
-            if (this.request() === request) this.request.set({ ...request, pending: null, actionError: failure });
+            if (this.request() === request) {
+                this.request.set({ ...request, pending: null, actionError: failure });
+            }
         }
     }
 
-    async analyze() {
-        const current = this.feedback();
-        if (!current || current.pending || (current.status !== 'missing' && current.status !== 'changed')) return;
+    async analyze(): Promise<void> {
+        const current: PreviewFeedback | null = this.feedback();
+        if (!current || current.pending || (current.status !== 'missing' && current.status !== 'changed')) {
+            return;
+        }
         const request: PreviewFeedback = { ...current, pending: 'analyze', comparison: undefined, actionError: undefined };
         this.request.set(request);
         try {
-            const result = await window.receiptmatch.analyzeOriginal(request.source);
-            if (this.destroyed.destroyed || this.feedback() !== request) return;
+            const result: OriginalAnalysisResult = await window.receiptmatch.analyzeOriginal(request.source);
+            if (this.destroyed.destroyed || this.feedback() !== request) {
+                return;
+            }
             if (result.status !== 'ready') {
                 this.request.set({ ...request, pending: null, actionError: result.status === 'failed' ? result.error : undefined });
                 return;
@@ -177,50 +193,68 @@ export class OriginalPreviewButton {
             this.acknowledgeConflicts.set(false);
             const ready: PreviewFeedback = { ...request, pending: null, comparison: result.comparison };
             this.request.set(ready);
-            requestAnimationFrame(() => {
-                if (this.destroyed.destroyed || this.feedback() !== ready) return;
+            requestAnimationFrame((): void => {
+                if (this.destroyed.destroyed || this.feedback() !== ready) {
+                    return;
+                }
                 this.analysisDialog()?.nativeElement.showModal();
             });
         } catch {
-            if (this.request() === request) this.request.set({ ...request, pending: null, actionError: 'The file could not be analyzed. Try again.' });
+            if (this.request() === request) {
+                this.request.set({ ...request, pending: null, actionError: 'The file could not be analyzed. Try again.' });
+            }
         }
     }
 
-    async applyAnalysis(dialog: HTMLDialogElement) {
-        const current = this.feedback();
-        const acknowledgeConflicts = this.acknowledgeConflicts();
-        if (!current?.comparison || current.pending || (current.comparison.conflicts.length && !acknowledgeConflicts)) return;
+    async applyAnalysis(dialog: HTMLDialogElement): Promise<void> {
+        const current: PreviewFeedback | null = this.feedback();
+        const acknowledgeConflicts: boolean = this.acknowledgeConflicts();
+        if (!current?.comparison || current.pending || (current.comparison.conflicts.length && !acknowledgeConflicts)) {
+            return;
+        }
         const request: PreviewFeedback = { ...current, pending: 'adopt', actionError: undefined };
         this.request.set(request);
         try {
-            const result = await window.receiptmatch.acceptOriginalAnalysis({ token: current.comparison.token, loadRevision: request.source.loadRevision, acknowledgeConflicts });
-            if (this.destroyed.destroyed || this.request() !== request) return;
+            const result: OriginalAdoptionResult = await window.receiptmatch.acceptOriginalAnalysis({ token: current.comparison.token, loadRevision: request.source.loadRevision, acknowledgeConflicts });
+            if (this.destroyed.destroyed || this.request() !== request) {
+                return;
+            }
             if (result.status === 'adopted') {
-                if (dialog.open) dialog.close();
+                if (dialog.open) {
+                    dialog.close();
+                }
                 this.request.set({ source: request.source, pending: null, error: null, notice: 'Analyzed file applied.' });
                 this.restoreOpenFocus(request.source);
             } else {
                 this.request.set({ ...request, pending: null, actionError: result.error });
             }
         } catch {
-            if (this.request() === request) this.request.set({ ...request, pending: null, actionError: 'The analyzed file could not be applied. Try again.' });
+            if (this.request() === request) {
+                this.request.set({ ...request, pending: null, actionError: 'The analyzed file could not be applied. Try again.' });
+            }
         }
     }
 
-    private restoreOpenFocus(source: OriginalPreviewRequest) {
-        requestAnimationFrame(() => {
-            if (!this.destroyed.destroyed && this.feedback()?.source === source) this.openButton()?.nativeElement.querySelector('button')?.focus();
+    private restoreOpenFocus(source: OriginalPreviewRequest): void {
+        requestAnimationFrame((): void => {
+            if (!this.destroyed.destroyed && this.feedback()?.source === source) {
+                this.openButton()?.nativeElement.querySelector('button')?.focus();
+            }
         });
     }
 
-    closeAnalysis(dialog: HTMLDialogElement, event?: Event) {
+    closeAnalysis(dialog: HTMLDialogElement, event?: Event): void {
         event?.preventDefault();
-        if (this.feedback()?.pending !== 'adopt') dialog.close();
+        if (this.feedback()?.pending !== 'adopt') {
+            dialog.close();
+        }
     }
 
-    dismissAnalysis() {
-        const current = this.feedback();
-        if (current?.comparison) this.request.set({ ...current, comparison: undefined, actionError: undefined });
+    dismissAnalysis(): void {
+        const current: PreviewFeedback | null = this.feedback();
+        if (current?.comparison) {
+            this.request.set({ ...current, comparison: undefined, actionError: undefined });
+        }
         this.acknowledgeConflicts.set(false);
     }
 }
