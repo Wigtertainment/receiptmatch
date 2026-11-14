@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Lint, build and test (Windows)
+    runs-on: windows-2025
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.13.0'
+          cache: npm
+
+      - name: Install dependencies
+        # The lockfile includes the native binaries used by the Windows build.
+        run: npm ci --ignore-scripts
+
+      - name: Check ESLint and Prettier
+        run: npm run check
+
+      - name: Run unit tests
+        run: npm run test:unit
+
+      - name: Build and package ReceiptMatch
+        run: npm run pack:win
+
+      - name: Run packaged Electron tests
+        run: npm run test:electron
