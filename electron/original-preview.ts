@@ -73,7 +73,7 @@ export class OriginalPreviewWindows {
     private previewSession?: Promise<Session>;
     private generation: number = 0;
 
-    constructor(private readonly hidden: boolean) {
+    constructor(private readonly hidden: boolean, private readonly icon: string) {
         ipcMain.handle('preview:read', (event: Electron.IpcMainInvokeEvent, ...args: unknown[]): OriginalPreviewData => {
             const data: OriginalPreviewData | undefined = this.payloads.get(event.sender);
             if (!data || args.length || event.senderFrame !== event.sender.mainFrame || event.senderFrame.url !== previewUrl) {
@@ -129,7 +129,7 @@ export class OriginalPreviewWindows {
                 return { error: null };
             }
             const name: string = path.basename(source.filePath);
-            preview = new BrowserWindow({ title: `${name} — ReceiptMatch`, width: 860, height: 760, minWidth: 360, minHeight: 300,
+            preview = new BrowserWindow({ title: `${name} — ReceiptMatch`, icon: this.icon, width: 860, height: 760, minWidth: 360, minHeight: 300,
                 show: false, webPreferences: { session: isolated, preload: path.join(__dirname, 'preview-preload.cjs'), sandbox: true, contextIsolation: true,
                     nodeIntegration: false, spellcheck: false } });
             preview.setMenu(null);

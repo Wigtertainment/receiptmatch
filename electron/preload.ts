@@ -26,6 +26,7 @@ const bridge: WorkspaceBridge = Object.freeze({
     const handler: (_event: Electron.IpcRendererEvent, state: WorkspaceState) => void = (_event: Electron.IpcRendererEvent, state: WorkspaceState): void => listener(state);
     ipcRenderer.on('workspace:state', handler);
     return (): Electron.IpcRenderer => ipcRenderer.removeListener('workspace:state', handler);
-  }
+  },
+  appVersion: (): Promise<string> => ipcRenderer.invoke('app:version') as Promise<string>
 });
 contextBridge.exposeInMainWorld('receiptmatch', bridge);

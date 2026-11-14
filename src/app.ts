@@ -21,6 +21,7 @@ type WorkspaceSection = 'sources' | 'matches' | 'export-settings' | 'settings';
   templateUrl: './app/workspace-shell.html'
 })
 class ReceiptMatchApp {
+  readonly version: WritableSignal<string | null> = signal<string | null>(null);
   readonly state: WritableSignal<WorkspaceState> = signal<WorkspaceState>({ workspace: null, busy: true, error: null, statementImport: null, importOutcome: null, documentImport: null, documentOutcome: null });
   readonly commandError: WritableSignal<string | null> = signal<string | null>(null);
   readonly welcomeSettings: WritableSignal<boolean> = signal(false);
@@ -44,6 +45,11 @@ class ReceiptMatchApp {
       this.disposed = true; this.commandGeneration++; unsubscribe();
     });
     void this.run({ type: 'get-state' });
+    void window.receiptmatch.appVersion().then((version: string): void => {
+      if (!this.disposed) {
+        this.version.set(version);
+      }
+    }).catch((): null => null);
   }
 
   async run(command: WorkspaceCommand): Promise<void> {
