@@ -75,7 +75,8 @@
 												<tr>
 													<th scope="col">Document</th>
 													<th scope="col" class="document-amount">Billed total</th>
-													<th scope="col">Status</th>
+													<th scope="col" class="document-status">Status</th>
+													<th scope="col" class="document-actions">Actions</th>
 												</tr>
 											</thead>
 											<tbody>
@@ -96,14 +97,6 @@
 															>
 																{{ basename(filePath(file)) }}
 															</button>
-															@if (file.status === 'imported') {
-																<app-original-preview-button
-																	kind="document"
-																	[sourceId]="file.record.id"
-																	[sourceName]="basename(file.record.filePath)"
-																	[loadRevision]="state().workspace?.loadRevision"
-																/>
-															}
 														</th>
 														<td class="document-amount">
 															@if (row.total; as total) {
@@ -122,9 +115,26 @@
 																<span class="source-status">Corrected</span>
 															}
 														</td>
+														<td class="document-actions">
+															<app-original-preview-button
+																#preview
+																kind="document"
+																[sourceId]="file.status === 'imported' ? file.record.id : undefined"
+																[sourceName]="basename(filePath(file))"
+																[loadRevision]="state().workspace?.loadRevision"
+																[iconOnly]="true"
+															/>
+														</td>
 													</tr>
+													@if (preview.hasFeedback()) {
+														<tr class="document-preview-feedback">
+															<td colspan="4">
+																<ng-container [ngTemplateOutlet]="preview.feedbackContent() ?? null" />
+															</td>
+														</tr>
+													}
 													<tr class="document-file-row" [hidden]="!expanded" [id]="fileKey">
-														<td colspan="3">
+														<td colspan="4">
 															@if (expanded) {
 																<p class="file-location">{{ filePath(file) }}</p>
 																@if (file.status === 'imported') {

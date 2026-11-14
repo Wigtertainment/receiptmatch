@@ -44,6 +44,7 @@ test('opens local originals independently from statements, documents and match s
         const lines = ['Invoice', 'Merchant: Cedar Workshop', 'Invoice Number: SYNTHETIC-A', 'Invoice Date: 2032-02-28', 'Invoice Total: EUR 1,234.56'];
         const receipt = await original(root, 'receipt.pdf', 'pdf', await pdf([lines]), lines);
         const movedReceipt = path.join(root, 'moved-receipt.pdf');
+        const movedPng = path.join(root, 'moved-receipt.png');
         const movedStatement = path.join(root, 'moved-statement.pdf');
         const changedReceipt = path.join(root, 'changed-receipt.pdf');
         const pictures = await Promise.all((['png', 'jpeg'] as const).map(async format => {
@@ -65,7 +66,7 @@ test('opens local originals independently from statements, documents and match s
                 return filePath ? { canceled: false, filePaths: [filePath] } : { canceled: true, filePaths: [] };
             };
             dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
-        }, [workspaceFile, null, changedReceipt, movedReceipt, movedStatement, workspaceFile]);
+        }, [workspaceFile, movedPng, null, changedReceipt, movedReceipt, movedStatement, workspaceFile]);
         await main.getByRole('button', { name: 'Open workspace', exact: false }).click();
         const invalid = await main.evaluate(async () => {
             const payload = { kind: 'statement' as const, id: crypto.randomUUID(), loadRevision: 1, filePath: 'unrelated.pdf' };
@@ -88,10 +89,28 @@ test('opens local originals independently from statements, documents and match s
         expect(independent).toBe(true);
 
         const sources = main.getByRole('region', { name: 'Supporting documents' });
-        await sources.getByText(path.basename(root), { exact: true }).click();
-        const png = await openPreview(main, 'receipt.png');
+        const files = sources.getByRole('table', { name: `Files in ${path.basename(root)}` });
+        await expect(files.getByRole('columnheader', { name: 'Actions' })).toBeVisible();
+        const previewButton = files.locator('.document-actions').getByRole('button', { name: 'Open original receipt.png', exact: true });
+        await expect(previewButton.locator('svg')).toBeVisible();
+        await expect(previewButton).toHaveText('');
+        await expect(previewButton).toHaveCSS('width', '44px');
+        await expect(previewButton).toHaveCSS('height', '44px');
+        const [png] = await Promise.all([app.waitForEvent('window'), previewButton.press('Enter')]);
+        await expect.poll(() => png.url()).toBe('receiptmatch-extraction://preview/index.html');
         await expect(png.getByRole('img')).toBeVisible();
         await expect.poll(() => png.getByRole('img').evaluate(image => (image as HTMLImageElement).naturalWidth)).toBe(600);
+        const columns = () => files.getByRole('columnheader').evaluateAll(headers => headers.map(header => header.getBoundingClientRect().width));
+        const widthsBeforeError = await columns();
+        await rename(path.join(root, 'receipt.png'), movedPng);
+        await previewButton.click();
+        const feedback = files.locator('.document-preview-feedback');
+        await expect(feedback.getByRole('alert')).toContainText('no longer at its imported location');
+        await expect(feedback.locator('td')).toHaveAttribute('colspan', '4');
+        expect(await columns()).toEqual(widthsBeforeError);
+        await feedback.getByRole('button', { name: 'Relink original receipt.png' }).click();
+        await expect(feedback.getByRole('status')).toContainText('Original relinked');
+        await expect(previewButton).toBeFocused();
         await main.getByRole('button', { name: 'Match suggestions', exact: true }).click();
         const matches = main.getByRole('region', { name: 'Match suggestions', exact: true });
         await expect(matches.getByRole('heading', { name: 'receipt.pdf' })).toBeVisible();
