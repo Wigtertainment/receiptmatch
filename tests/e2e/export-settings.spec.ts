@@ -1,42 +1,44 @@
+import type { StoredBankImport } from "../../src/shared/workspace-import.js";
+import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator, type Page, type ElectronApplication, type TestInfo, type PlaywrightWorkerOptions, type PlaywrightWorkerArgs, type PlaywrightTestOptions, type PlaywrightTestArgs } from '@playwright/test';
 import Database from 'better-sqlite3';
 import { createWorkspace, newMetadata } from '../../electron/store.js';
 import { documentRun, retainedBank, retainedDocument } from '../unit/document-fixtures.js';
 
-const executablePath = path.resolve(process.platform === 'win32' ? 'release/win-unpacked/ReceiptMatch.exe' : 'release/linux-unpacked/receiptmatch');
+const executablePath: string = path.resolve(process.platform === 'win32' ? 'release/win-unpacked/ReceiptMatch.exe' : 'release/linux-unpacked/receiptmatch');
 
-test('previews, validates and saves an export filename pattern across Electron restarts', async ({ playwright }, testInfo) => {
-	const root = testInfo.outputPath('export-settings');
+test('previews, validates and saves an export filename pattern across Electron restarts', async ({ playwright }: PlaywrightTestArgs & PlaywrightTestOptions & PlaywrightWorkerArgs & PlaywrightWorkerOptions, testInfo: TestInfo): Promise<void> => {
+	const root: string = testInfo.outputPath('export-settings');
 	await mkdir(root, { recursive: true });
-	const workspacePath = path.join(root, 'workspace.receiptmatch');
+	const workspacePath: string = path.join(root, 'workspace.receiptmatch');
 	await createWorkspace(workspacePath, newMetadata());
-	const profile = path.join(root, 'profile');
-	const launch = async () => {
-		const app = await playwright._electron.launch({ executablePath, args: ['--hidden', '--disable-gpu', '--user-data-dir=' + profile] });
+	const profile: string = path.join(root, 'profile');
+	const launch: () => Promise<{ app: ElectronApplication; page: Page; input: Locator; preview: Locator; save: Locator; }> = async (): Promise<{ app: ElectronApplication; page: Page; input: Locator; preview: Locator; save: Locator; }> => {
+		const app: ElectronApplication = await playwright._electron.launch({ executablePath, args: ['--hidden', '--disable-gpu', '--user-data-dir=' + profile] });
 		try {
-			const page = await app.firstWindow();
-			expect(await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'))).toBe(profile);
-			await app.evaluate(({ BrowserWindow, dialog }, filePath) => {
+			const page: Page = await app.firstWindow();
+			expect(await app.evaluate(({ app: electronApp }: typeof Electron.CrossProcessExports): string => electronApp.getPath('userData'))).toBe(profile);
+			await app.evaluate(({ BrowserWindow, dialog }: typeof Electron.CrossProcessExports, filePath: string): void => {
 				BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
-				dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [filePath] });
+				dialog.showOpenDialog = async (): Promise<{ canceled: false; filePaths: string[]; }> => Promise.resolve(({ canceled: false, filePaths: [filePath] }));
 			}, workspacePath);
 			await page.getByRole('button', { name: 'Open workspace' }).click();
-			const exportNav = page.getByRole('navigation', { name: 'Workspace views' }).getByRole('button', { name: 'Export', exact: true });
+			const exportNav: Locator = page.getByRole('navigation', { name: 'Workspace views' }).getByRole('button', { name: 'Export', exact: true });
 			await exportNav.press('Enter');
 			await expect(exportNav).toHaveAttribute('aria-current', 'page');
 			await expect(page.getByRole('heading', { name: 'Export', exact: true })).toBeFocused();
-			const input = page.getByRole('textbox', { name: 'Filename pattern' });
+			const input: Locator = page.getByRole('textbox', { name: 'Filename pattern' });
 			await expect(input).toBeEnabled();
 			return { app, page, input, preview: page.locator('#export-pattern-preview'), save: page.getByRole('button', { name: 'Save pattern' }) };
-		} catch (error) {
+		} catch (error: unknown) {
 			await app.close();
 			throw error;
 		}
 	};
 
-	const first = await launch();
+	const first: { app: ElectronApplication; page: Page; input: Locator; preview: Locator; save: Locator; } = await launch();
 	try {
 		await expect(first.preview).toHaveText('2026-10-21_Example-Merchant_EUR_-176.77.pdf');
 		await first.input.fill('../{date}');
@@ -47,58 +49,65 @@ test('previews, validates and saves an export filename pattern across Electron r
 		await first.input.press('Enter');
 		await expect(first.page.getByText('Pattern saved.', { exact: true })).toBeVisible();
 		await expect(first.page.getByText('All changes saved', { exact: true })).toBeVisible();
-	} finally { await first.app.close(); }
+	} finally {
+		await first.app.close();
+	}
 
-	const second = await launch();
+	const second: { app: ElectronApplication; page: Page; input: Locator; preview: Locator; save: Locator; } = await launch();
 	try {
 		await expect(second.input).toHaveValue('{counterparty} - {date}');
 		await second.page.getByRole('button', { name: 'Use default' }).click();
 		await expect(second.preview).toHaveText('2026-10-21_Example-Merchant_EUR_-176.77.pdf');
 		await second.save.click();
 		await expect(second.page.getByText('Pattern saved.', { exact: true })).toBeVisible();
-	} finally { await second.app.close(); }
+	} finally {
+		await second.app.close();
+	}
 });
 
-test('exports copies and the saved reconciliation CSV and shows mixed outcomes and collisions', async ({ playwright }, testInfo) => {
+test('exports copies and the saved reconciliation CSV and shows mixed outcomes and collisions', async ({ playwright }: PlaywrightTestArgs & PlaywrightTestOptions & PlaywrightWorkerArgs & PlaywrightWorkerOptions, testInfo: TestInfo): Promise<void> => {
 	test.setTimeout(90_000);
-	const root = testInfo.outputPath('document-export');
-	const originals = path.join(root, 'originals');
-	const destination = path.join(root, 'destination');
-	const reportOnly = path.join(root, 'report-only');
-	const combined = path.join(root, 'combined');
-	const workspacePath = path.join(root, 'workspace.receiptmatch');
-	const profile = path.join(root, 'profile');
-	const firstFolder = path.join(originals, 'first');
-	const secondFolder = path.join(originals, 'second');
-	await Promise.all([firstFolder, secondFolder, destination, reportOnly, combined].map(folder => mkdir(folder, { recursive: true })));
-	const bank = retainedBank(root);
-	const [first, second] = bank.transactions;
-	const approved = retainedDocument(firstFolder, 'receipt.pdf', 'verified original');
-	const missing = retainedDocument(secondFolder, 'receipt.pdf');
+	const root: string = testInfo.outputPath('document-export');
+	const originals: string = path.join(root, 'originals');
+	const destination: string = path.join(root, 'destination');
+	const reportOnly: string = path.join(root, 'report-only');
+	const combined: string = path.join(root, 'combined');
+	const workspacePath: string = path.join(root, 'workspace.receiptmatch');
+	const profile: string = path.join(root, 'profile');
+	const firstFolder: string = path.join(originals, 'first');
+	const secondFolder: string = path.join(originals, 'second');
+	await Promise.all([firstFolder, secondFolder, destination, reportOnly, combined].map((folder: string): Promise<string | undefined> => mkdir(folder, { recursive: true })));
+	const bank: StoredBankImport = retainedBank(root);
+	const [first, second]: { rowId: string; transactionId: string; }[] = bank.transactions;
+	const approved: StoredSupportingDocument = retainedDocument(firstFolder, 'receipt.pdf', 'verified original');
+	const missing: StoredSupportingDocument = retainedDocument(secondFolder, 'receipt.pdf');
 	await writeFile(approved.filePath, 'verified original');
 	await createWorkspace(workspacePath, newMetadata(), [bank], [documentRun(originals, [approved, missing])],
 		new Map([[first.transactionId, approved.id], [second.transactionId, missing.id]]));
-	const database = new Database(workspacePath);
-	try { database.exec('DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; PRAGMA user_version = 7;'); }
-	finally { database.close(); }
-	const app = await playwright._electron.launch({ executablePath, args: ['--hidden', '--disable-gpu', '--user-data-dir=' + profile] });
+	const database: Database.Database = new Database(workspacePath);
 	try {
-		const page = await app.firstWindow();
-		expect(await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'))).toBe(profile);
-		await app.evaluate(({ BrowserWindow, dialog }, { workspacePath, destination, reportOnly, combined }) => {
-			const paths = [workspacePath, null, destination, destination, reportOnly, combined, combined];
+		database.exec('DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; PRAGMA user_version = 7;');
+	} finally {
+		database.close();
+	}
+	const app: ElectronApplication = await playwright._electron.launch({ executablePath, args: ['--hidden', '--disable-gpu', '--user-data-dir=' + profile] });
+	try {
+		const page: Page = await app.firstWindow();
+		expect(await app.evaluate(({ app: electronApp }: typeof Electron.CrossProcessExports): string => electronApp.getPath('userData'))).toBe(profile);
+		await app.evaluate(({ BrowserWindow, dialog }: typeof Electron.CrossProcessExports, { workspacePath, destination, reportOnly, combined }: { workspacePath: string; destination: string; reportOnly: string; combined: string; }): void => {
+			const paths: (string | null)[] = [workspacePath, null, destination, destination, reportOnly, combined, combined];
 			BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
-			dialog.showOpenDialog = async () => {
-				const file = paths.shift();
-				return { canceled: !file, filePaths: file ? [file] : [] };
+			dialog.showOpenDialog = async (): Promise<{ canceled: boolean; filePaths: string[]; }> => {
+				const file: string | null | undefined = paths.shift();
+				return Promise.resolve({ canceled: !file, filePaths: file ? [file] : [] });
 			};
-			dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
+			dialog.showMessageBox = async (): Promise<{ response: number; checkboxChecked: false; }> => Promise.resolve(({ response: 1, checkboxChecked: false }));
 		}, { workspacePath, destination, reportOnly, combined });
 		await page.getByRole('button', { name: 'Open workspace' }).click();
-		const nav = page.getByRole('navigation', { name: 'Workspace views' });
-		const exportNav = nav.getByRole('button', { name: 'Export', exact: true });
-		const choose = page.getByRole('button', { name: 'Export copies only' });
-		const chooseCombined = page.getByRole('button', { name: 'Export CSV and copies' });
+		const nav: Locator = page.getByRole('navigation', { name: 'Workspace views' });
+		const exportNav: Locator = nav.getByRole('button', { name: 'Export', exact: true });
+		const choose: Locator = page.getByRole('button', { name: 'Export copies only' });
+		const chooseCombined: Locator = page.getByRole('button', { name: 'Export CSV and copies' });
 		await exportNav.click();
 		await expect(choose).toBeDisabled();
 		await expect(page.getByText('0 approved documents in the open workspace', { exact: true })).toBeVisible();
@@ -119,14 +128,14 @@ test('exports copies and the saved reconciliation CSV and shows mixed outcomes a
 		expect(await readdir(destination)).toEqual([]);
 		await choose.click();
 		await expect(page.getByText('1 copied · 0 skipped · 1 failed', { exact: true })).toBeVisible();
-		const results = page.getByRole('region', { name: 'Export results' });
-		const filename = 'Orchard-Workshop_-1234.56.pdf';
-		const copied = results.getByRole('row').filter({ has: page.getByText(approved.filePath, { exact: true }) });
+		const results: Locator = page.getByRole('region', { name: 'Export results' });
+		const filename: "Orchard-Workshop_-1234.56.pdf" = 'Orchard-Workshop_-1234.56.pdf';
+		const copied: Locator = results.getByRole('row').filter({ has: page.getByText(approved.filePath, { exact: true }) });
 		await expect(copied.getByText(filename)).toBeVisible();
 		await expect(copied.getByText('Copied', { exact: true })).toBeVisible();
-		const failed = results.getByRole('row').filter({ has: page.getByText(missing.filePath, { exact: true }) });
+		const failed: Locator = results.getByRole('row').filter({ has: page.getByText(missing.filePath, { exact: true }) });
 		await expect(failed.getByText('The original file is missing.')).toBeVisible();
-		const output = path.join(destination, 'documents');
+		const output: string = path.join(destination, 'documents');
 		expect(await readdir(output)).toEqual([filename]);
 		expect(await readFile(path.join(output, filename), 'utf8')).toBe('verified original');
 
@@ -151,9 +160,9 @@ test('exports copies and the saved reconciliation CSV and shows mixed outcomes a
 		await expect(page.getByText('CSV report written.', { exact: true })).toBeVisible();
 		await expect(page.getByText('1 copied · 0 skipped · 1 failed', { exact: true })).toBeVisible();
 		await expect(failed.getByText('The original file is missing.')).toBeVisible();
-		const csvPath = path.join(combined, 'reconciliation.csv');
+		const csvPath: string = path.join(combined, 'reconciliation.csv');
 		await expect(page.getByText(csvPath, { exact: true })).toBeVisible();
-		const csv = await readFile(csvPath, 'utf8');
+		const csv: string = await readFile(csvPath, 'utf8');
 		expect(csv).toMatch(/^\uFEFFrow_type,transaction_id,/u);
 		expect(csv).toContain(',copied,documents/' + filename + ',');
 		expect(csv).toContain(',failed,,source-missing,');
@@ -163,5 +172,7 @@ test('exports copies and the saved reconciliation CSV and shows mixed outcomes a
 		await expect(page.getByRole('alert')).toHaveText('reconciliation.csv already exists. Choose another export folder.');
 		expect(await readFile(csvPath, 'utf8')).toBe(csv);
 		expect(await readdir(path.join(combined, 'documents'))).toEqual([filename]);
-	} finally { await app.close(); }
+	} finally {
+		await app.close();
+	}
 });

@@ -228,7 +228,12 @@
 									<p>A saved rule skips bookings with the same description, direction and currency across workspaces on this device.</p>
 									<div class="match-review-actions">
 										<wig-button label="Ignore once" severity="secondary" [disabled]="reviewDisabled()" (click)="changeIgnored(selected, true)" />
-										<wig-button label="Remember for future bookings" severity="secondary" [disabled]="reviewDisabled()" (click)="changeIgnored(selected, true, true)" />
+										<wig-button
+											label="Remember for future bookings"
+											severity="secondary"
+											[disabled]="reviewDisabled()"
+											(click)="changeIgnored(selected, true, true)"
+										/>
 									</div>
 								</div>
 							}

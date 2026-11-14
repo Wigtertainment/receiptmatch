@@ -1,4 +1,4 @@
-import { Component, computed, input, signal } from '@angular/core';
+import { Component, computed, input, signal, type Signal, type WritableSignal, type InputSignal } from '@angular/core';
 import { type TableConfig, WigAlertComponent, WigButtonComponent, WigInputComponent, WigTableComponent, WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
 import { InputLength } from './input-length.js';
 import { defaultExportFilenamePattern, exportFilenameExample, exportFilenamePatternLimit, renderExportFilename } from '../shared/export-filename.js';
@@ -10,34 +10,44 @@ import type { WorkspaceView } from '../shared/protocol.js';
 	imports: [WigAlertComponent, WigButtonComponent, WigInputComponent, WigTableComponent, WigTemplateDirective, InputLength],
 })
 export class ExportSettings {
-	readonly workspace = input.required<WorkspaceView>();
-	readonly workspaceBusy = input.required<boolean>();
-	readonly pattern = signal(defaultExportFilenamePattern);
-	readonly savedPattern = signal<string | null>(null);
-	readonly preview = computed(() => renderExportFilename(this.pattern(), exportFilenameExample));
-	readonly busy = signal(true);
-	readonly error = signal<string | null>(null);
-	readonly saved = signal(false);
-	readonly exporting = signal(false);
-	private readonly exportFeedback = signal<{ loadRevision: number; result: DocumentExportResponse } | null>(null);
-	readonly exportResult = computed(() => {
-		const feedback = this.exportFeedback();
+	readonly workspace: InputSignal<WorkspaceView> = input.required<WorkspaceView>();
+	readonly workspaceBusy: InputSignal<boolean> = input.required<boolean>();
+	readonly pattern: WritableSignal<string> = signal<string>(defaultExportFilenamePattern);
+	readonly savedPattern: WritableSignal<string | null> = signal<string | null>(null);
+	readonly preview: Signal<{ filename: string; error?: never; } | { filename?: never; error: string; }> = computed((): { filename: string; error?: never; } | { filename?: never; error: string; } => renderExportFilename(this.pattern(), exportFilenameExample));
+	readonly busy: WritableSignal<boolean> = signal(true);
+	readonly error: WritableSignal<string | null> = signal<string | null>(null);
+	readonly saved: WritableSignal<boolean> = signal(false);
+	readonly exporting: WritableSignal<boolean> = signal(false);
+	private readonly exportFeedback: WritableSignal<{ loadRevision: number; result: DocumentExportResponse; } | null> = signal<{ loadRevision: number; result: DocumentExportResponse } | null>(null);
+	readonly exportResult: Signal<DocumentExportResponse | null> = computed((): DocumentExportResponse | null => {
+		const feedback: { loadRevision: number; result: DocumentExportResponse; } | null = this.exportFeedback();
 		return feedback?.loadRevision === this.workspace().loadRevision ? feedback.result : null;
 	});
-	readonly exportCounts = computed(() => {
-		const counts = { copied: 0, skipped: 0, failed: 0 };
-		const result = this.exportResult();
-		if (result?.status === 'completed') for (const outcome of result.report.outcomes) counts[outcome.status]++;
+	readonly exportCounts: Signal<{ copied: number; skipped: number; failed: number; }> = computed((): { copied: number; skipped: number; failed: number; } => {
+		const counts: { copied: number; skipped: number; failed: number; } = { copied: 0, skipped: 0, failed: 0 };
+		const result: DocumentExportResponse | null = this.exportResult();
+		if (result?.status === 'completed') {
+			for (const outcome of result.report.outcomes) {
+				counts[outcome.status]++;
+			}
+		}
 		return counts;
 	});
-	readonly repeatedSourceNames = computed(() => {
-		const names = new Set<string>();
-		const repeated = new Set<string>();
-		const result = this.exportResult();
-		if (result?.status !== 'completed') return repeated;
+	readonly repeatedSourceNames: Signal<Set<string>> = computed((): Set<string> => {
+		const names: Set<string> = new Set<string>();
+		const repeated: Set<string> = new Set<string>();
+		const result: DocumentExportResponse | null = this.exportResult();
+		if (result?.status !== 'completed') {
+			return repeated;
+		}
 		for (const { sourceName } of result.report.outcomes) {
-			if (!sourceName) continue;
-			if (names.has(sourceName)) repeated.add(sourceName);
+			if (!sourceName) {
+				continue;
+			}
+			if (names.has(sourceName)) {
+				repeated.add(sourceName);
+			}
 			names.add(sourceName);
 		}
 		return repeated;
@@ -49,25 +59,29 @@ export class ExportSettings {
 		'source-unreadable': 'The original file could not be read.',
 		'write-failed': 'The copy could not be written.',
 	};
-	readonly defaultPattern = defaultExportFilenamePattern;
-	readonly patternLimit = exportFilenamePatternLimit;
+	readonly defaultPattern: "{date}_{counterparty}_{currency}_{amount}" = defaultExportFilenamePattern;
+	readonly patternLimit: number = exportFilenamePatternLimit;
 	readonly outcomeColumns: TableConfig<DocumentExportOutcome> = { columns: [
 		{ field: 'sourceName', text: 'Original', type: 'custom', template: 'original' },
 		{ field: 'filename', text: 'Export filename', type: 'custom', template: 'filename' },
 		{ field: 'status', text: 'Result', type: 'custom', template: 'result' },
 	] };
-	readonly placeholders = [
+	readonly placeholders: { token: string; label: string; }[] = [
 		{ token: '{date}', label: 'Booking date' }, { token: '{counterparty}', label: 'Counterparty' },
 		{ token: '{currency}', label: 'Currency' }, { token: '{amount}', label: 'Booking amount' },
 	];
 
-	constructor() { void this.load(); }
+	constructor() {
+		void this.load();
+	}
 
-	failureLabel(outcome: Extract<DocumentExportOutcome, { status: 'failed' }>) { return this.failureLabels[outcome.reason]; }
+	failureLabel(outcome: Extract<DocumentExportOutcome, { status: 'failed' }>): string {
+		return this.failureLabels[outcome.reason];
+	}
 
-	private async load() {
+	private async load(): Promise<void> {
 		try {
-			const pattern = await window.receiptmatch.exportSettings({ type: 'read' });
+			const pattern: string = await window.receiptmatch.exportSettings({ type: 'read' });
 			this.savedPattern.set(pattern);
 			this.pattern.set(pattern);
 		} catch {
@@ -77,19 +91,21 @@ export class ExportSettings {
 		}
 	}
 
-	update(value: string) {
+	update(value: string): void {
 		this.pattern.set(value);
 		this.saved.set(false);
 		this.error.set(null);
 	}
 
-	async save(event?: Event) {
+	async save(event?: Event): Promise<void> {
 		event?.preventDefault();
-		if (this.busy() || this.exporting() || !this.preview().filename || this.savedPattern() === this.pattern().trim()) return;
+		if (this.busy() || this.exporting() || !this.preview().filename || this.savedPattern() === this.pattern().trim()) {
+			return;
+		}
 		this.busy.set(true);
 		this.error.set(null);
 		try {
-			const pattern = await window.receiptmatch.exportSettings({ type: 'save', pattern: this.pattern() });
+			const pattern: string = await window.receiptmatch.exportSettings({ type: 'save', pattern: this.pattern() });
 			this.savedPattern.set(pattern);
 			this.pattern.set(pattern);
 			this.saved.set(true);
@@ -100,13 +116,15 @@ export class ExportSettings {
 		}
 	}
 
-	async exportDocuments(includeCsv = false) {
-		const { loadRevision, approvedDocumentCount, filePath } = this.workspace();
-		if ((includeCsv ? !filePath : !approvedDocumentCount) || this.exporting() || this.busy() || this.workspaceBusy()) return;
+	async exportDocuments(includeCsv: boolean = false): Promise<void> {
+		const { loadRevision, approvedDocumentCount, filePath }: WorkspaceView = this.workspace();
+		if ((includeCsv ? !filePath : !approvedDocumentCount) || this.exporting() || this.busy() || this.workspaceBusy()) {
+			return;
+		}
 		this.exporting.set(true);
 		this.exportFeedback.set(null);
 		try {
-			const result = includeCsv ? await window.receiptmatch.exportReconciliation(loadRevision) : await window.receiptmatch.exportDocuments(loadRevision);
+			const result: DocumentExportResponse = includeCsv ? await window.receiptmatch.exportReconciliation(loadRevision) : await window.receiptmatch.exportDocuments(loadRevision);
 			this.exportFeedback.set({ loadRevision, result });
 		} catch {
 			this.exportFeedback.set({ loadRevision, result: { status: 'failed', message: 'The export could not be started. Try again.' } });

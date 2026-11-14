@@ -1,8 +1,9 @@
+import type { ImportPage } from "../../src/shared/bank-import.js";
 import type { BankImportInput, PositionedSpan } from '../../src/shared/bank-import.js';
 import { emptyPage, span } from './bank-fixtures.js';
 
 // Independently invented values and text; these fixtures contain no user statement data.
-export function airwallexHeader(y = 200): PositionedSpan[] {
+export function airwallexHeader(y: number = 200): PositionedSpan[] {
     return [span('Date', 40, y, 25), span('Details', 110, y, 35), span('Credit', 320, y, 35), span('Debit', 410, y, 30), span('Balance', 500, y, 45)];
 }
 
@@ -17,10 +18,10 @@ export interface AirwallexFixtureRow {
 }
 
 export function airwallexRow(options: AirwallexFixtureRow): PositionedSpan[] {
-    const { y, date = 'Mar 01 2032', kind = 'Card', details = ['Lantern Supplies, USA,', '(Main Card, **0000): USD 18.07'], credit, debit, balance = '980.50 EUR' } = options;
+    const { y, date = 'Mar 01 2032', kind = 'Card', details = ['Lantern Supplies, USA,', '(Main Card, **0000): USD 18.07'], credit, debit, balance = '980.50 EUR' }: AirwallexFixtureRow = options;
     return [
         ...(kind ? [span(kind, 110, y, 80)] : []),
-        ...details.filter(Boolean).map((text, index) => span(text, 110, y + 12 * (index + 1), 195)),
+        ...details.filter(Boolean).map((text: string, index: number): PositionedSpan => span(text, 110, y + 12 * (index + 1), 195)),
         ...(date ? [span(date, 40, y + 24, 65)] : []),
         ...(credit ? [span(credit, 310, y + 24, 65)] : []),
         ...(debit ? [span(debit, 400, y + 24, 75)] : []),
@@ -29,7 +30,7 @@ export function airwallexRow(options: AirwallexFixtureRow): PositionedSpan[] {
 }
 
 export function airwallexStatement(): BankImportInput {
-    const first = emptyPage(1);
+    const first: ImportPage = emptyPage(1);
     first.spans = [
         span('Web: airwallex.com', 400, 30, 150),
         span('Account Holder', 40, 70, 90),
@@ -45,7 +46,7 @@ export function airwallexStatement(): BankImportInput {
         ...airwallexRow({ y: 330, date: 'Mar 02 2032', kind: 'Payout', details: ['Pay EUR 13.07 to Silver Birch', 'Workshop'], debit: '13.07 EUR', balance: '967.43 EUR' }),
         span('Page 1 of 3', 500, 790, 70)
     ];
-    const second = emptyPage(2);
+    const second: ImportPage = emptyPage(2);
     second.spans = [
         span('Web: airwallex.com', 400, 30, 150),
         span('EUR Account Activity (Continued)', 40, 130, 230),
@@ -59,7 +60,7 @@ export function airwallexStatement(): BankImportInput {
         span('Ending balance', 110, 380, 100), span('999.15 EUR', 490, 380, 80),
         span('Page 2 of 3', 500, 790, 70)
     ];
-    const information = emptyPage(3);
+    const information: ImportPage = emptyPage(3);
     information.spans = [
         span('Web: airwallex.com', 400, 30, 150),
         span('Important information', 40, 80, 150),

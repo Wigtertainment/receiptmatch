@@ -1,34 +1,36 @@
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator, type Page, type ElectronApplication, type TestInfo, type PlaywrightWorkerOptions, type PlaywrightWorkerArgs, type PlaywrightTestOptions, type PlaywrightTestArgs } from '@playwright/test';
 import { createWorkspace, newMetadata } from '../../electron/store.js';
 import { retainedBank } from '../unit/document-fixtures.js';
 
-test('ignores transactions once or by rule and restores them from the separate table', async ({ playwright }, testInfo) => {
-	const root = testInfo.outputPath('ignore-workspace');
+test('ignores transactions once or by rule and restores them from the separate table', async ({ playwright }: PlaywrightTestArgs & PlaywrightTestOptions & PlaywrightWorkerArgs & PlaywrightWorkerOptions, testInfo: TestInfo): Promise<void> => {
+	const root: string = testInfo.outputPath('ignore-workspace');
 	await mkdir(root, { recursive: true });
-	const file = path.join(root, 'test.receiptmatch');
+	const file: string = path.join(root, 'test.receiptmatch');
 	await createWorkspace(file, newMetadata(), [retainedBank(root)]);
 	const executablePath: unknown = (await import('electron')).default;
-	if (typeof executablePath !== 'string') throw new Error('Electron is unavailable.');
-	const app = await playwright._electron.launch({
+	if (typeof executablePath !== 'string') {
+		throw new Error('Electron is unavailable.');
+	}
+	const app: ElectronApplication = await playwright._electron.launch({
 		executablePath, args: ['.', '--hidden', '--disable-gpu', '--user-data-dir=' + path.join(root, 'profile')],
 		env: { ...process.env, ELECTRON_START_URL: '' },
 		chromiumSandbox: true,
 	});
 	try {
-		await app.evaluate(({ dialog, BrowserWindow }, workspace) => {
+		await app.evaluate(({ dialog, BrowserWindow }: typeof Electron.CrossProcessExports, workspace: string): void => {
 			BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
-			dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [workspace] });
+			dialog.showOpenDialog = async (): Promise<{ canceled: false; filePaths: string[]; }> => Promise.resolve(({ canceled: false, filePaths: [workspace] }));
 		}, file);
-		const page = await app.firstWindow();
+		const page: Page = await app.firstWindow();
 		await page.getByRole('button', { name: 'Open workspace', exact: true }).click();
 		await page.getByRole('button', { name: 'Match suggestions', exact: true }).click();
-		const transactions = page.getByRole('region', { name: 'Transactions', exact: true });
-		const ignored = page.getByRole('region', { name: 'Ignored transactions', exact: true });
-		const manual = page.getByRole('region', { name: 'Manual review' });
-		const options = manual.getByRole('group', { name: 'Ignore transaction options' });
-		const ignore = manual.getByRole('button', { name: 'Ignore transaction', exact: true });
+		const transactions: Locator = page.getByRole('region', { name: 'Transactions', exact: true });
+		const ignored: Locator = page.getByRole('region', { name: 'Ignored transactions', exact: true });
+		const manual: Locator = page.getByRole('region', { name: 'Manual review' });
+		const options: Locator = manual.getByRole('group', { name: 'Ignore transaction options' });
+		const ignore: Locator = manual.getByRole('button', { name: 'Ignore transaction', exact: true });
 
 		await expect(transactions.getByRole('row', { name: /Orchard Workshop/ })).toBeVisible();
 		await ignore.press('Enter');

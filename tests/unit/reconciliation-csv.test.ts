@@ -1,37 +1,41 @@
+import type { BankImportInput, PositionedSpan } from "../../src/shared/bank-import.js";
+import type { StoredBankImport } from "../../src/shared/workspace-import.js";
+import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
+import type { ReconciliationRow } from "../../electron/reconciliation-csv.js";
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { test } from 'vitest';
+import { test, type TestContext } from 'vitest';
 import { reconciliationCsvColumns, reconciliationRows, serializeReconciliationCsv } from '../../electron/reconciliation-csv.js';
-import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace } from '../../electron/store.js';
+import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, type SavedWorkspace } from '../../electron/store.js';
 import { advanceReviewRevision, approvalSelectionFor } from '../../src/shared/match-approvals.js';
 import type { DocumentExportOutcome } from '../../src/shared/document-export.js';
 import { row, statement } from './bank-fixtures.js';
 import { documentRun, retainedBank, retainedDocument } from './document-fixtures.js';
 
-test('projects saved bookings, approval and copy outcomes, and unresolved rows without duplicating promoted drafts', async context => {
-	const root = await mkdtemp(path.join(tmpdir(), 'receiptmatch-reconciliation-'));
-	context.onTestFinished(() => rm(root, { recursive: true, force: true }));
-	const input = statement();
+test('projects saved bookings, approval and copy outcomes, and unresolved rows without duplicating promoted drafts', async (context: TestContext & object): Promise<void> => {
+	const root: string = await mkdtemp(path.join(tmpdir(), 'receiptmatch-reconciliation-'));
+	context.onTestFinished((): Promise<void> => rm(root, { recursive: true, force: true }));
+	const input: BankImportInput = statement();
 	input.pages[0].spans.push(...row(335, '26 Feb 2032', 'To: Cedar Tools', null, null),
-		...row(385, '25 Feb 2032', '', null, null).filter(span => span.text));
-	const bank = retainedBank(root, input);
+		...row(385, '25 Feb 2032', '', null, null).filter((span: PositionedSpan): string => span.text));
+	const bank: StoredBankImport = retainedBank(root, input);
 	bank.filePath = 'C:\\synthetic\\bank.pdf';
-	const [{ transactionId: first }, { transactionId: second }] = bank.transactions;
-	const [{ draftId: promoted }, { draftId: unresolved }] = bank.drafts;
-	const document = retainedDocument(root, 'Résumé.pdf');
-	const replacement = retainedDocument(root, 'replacement.pdf');
-	const approval = { ...approvalSelectionFor(first, document.id), batchId: randomUUID(), approvedAt: '2032-02-29T12:00:00.000Z' };
-	const file = path.join(root, 'workspace.receiptmatch');
+	const [{ transactionId: first }, { transactionId: second }]: { rowId: string; transactionId: string; }[] = bank.transactions;
+	const [{ draftId: promoted }, { draftId: unresolved }]: { rowId: string; draftId: string; }[] = bank.drafts;
+	const document: StoredSupportingDocument = retainedDocument(root, 'Résumé.pdf');
+	const replacement: StoredSupportingDocument = retainedDocument(root, 'replacement.pdf');
+	const approval: { batchId: `${string}-${string}-${string}-${string}-${string}`; approvedAt: string; transactionId: string; documentId: string; transactionRevision: number; documentRevision: number; associationRevision: number; } = { ...approvalSelectionFor(first, document.id), batchId: randomUUID(), approvedAt: '2032-02-29T12:00:00.000Z' };
+	const file: string = path.join(root, 'workspace.receiptmatch');
 	await createWorkspace(file, newMetadata(), [bank], [documentRun(root, [document, replacement])], new Map([[first, document.id], [second, null]]),
 		new Map([[promoted, { rowId: promoted, revision: 2, accountAmount: { currency: 'EUR', coefficient: '-90071992547409932700', scale: 4 } }]]),
 		new Map(), new Map([[first, { associationRevision: 1, approval }]]));
-	const snapshot = await loadWorkspace(file);
-	const rows = reconciliationRows(snapshot);
+	const snapshot: SavedWorkspace = await loadWorkspace(file);
+	const rows: import('../../electron/reconciliation-csv.js').ReconciliationRow[] = reconciliationRows(snapshot);
 	assert.equal(rows.length, 4);
-	const [approved, completed, corrected, draft] = rows;
+	const [approved, completed, corrected, draft]: import('../../electron/reconciliation-csv.js').ReconciliationRow[] = rows;
 	assert.equal(approved.transaction_id, first);
 	assert.equal(approved.statement_id, bank.accounts[0].statementId);
 	assert.equal(approved.statement_file, 'bank.pdf');
@@ -66,26 +70,26 @@ test('projects saved bookings, approval and copy outcomes, and unresolved rows w
 
 	const outcome: DocumentExportOutcome = { transactionId: first, documentId: document.id, sourceName: 'Résumé.pdf',
 		sourcePath: document.filePath, status: 'copied', filename: '2026_Export.pdf' };
-	const [copied] = reconciliationRows(snapshot, [outcome]);
+	const [copied]: import('../../electron/reconciliation-csv.js').ReconciliationRow[] = reconciliationRows(snapshot, [outcome]);
 	assert.equal(copied.copy_status, 'copied');
 	assert.equal(copied.exported_file, 'documents/2026_Export.pdf');
 	assert.equal(copied.copy_reason, '');
-	const [skipped] = reconciliationRows(snapshot, [{ ...outcome, status: 'skipped', reason: 'collision' }]);
+	const [skipped]: import('../../electron/reconciliation-csv.js').ReconciliationRow[] = reconciliationRows(snapshot, [{ ...outcome, status: 'skipped', reason: 'collision' }]);
 	assert.equal(skipped.copy_status, 'skipped');
 	assert.equal(skipped.exported_file, '');
 	assert.equal(skipped.copy_reason, 'collision');
-	const [failed] = reconciliationRows(snapshot, [{ ...outcome, status: 'failed', reason: 'source-changed' }]);
+	const [failed]: import('../../electron/reconciliation-csv.js').ReconciliationRow[] = reconciliationRows(snapshot, [{ ...outcome, status: 'failed', reason: 'source-changed' }]);
 	assert.equal(failed.copy_status, 'failed');
 	assert.equal(failed.exported_file, '');
 	assert.equal(failed.copy_reason, 'source-changed');
-	assert.throws(() => reconciliationRows(snapshot, [outcome, outcome]), /saved approvals/);
-	assert.throws(() => reconciliationRows(snapshot, [{ ...outcome, transactionId: second }]), /saved approvals/);
-	assert.throws(() => reconciliationRows(snapshot, [{ ...outcome, documentId: randomUUID() }]), /saved approvals/);
+	assert.throws((): import('../../electron/reconciliation-csv.js').ReconciliationRow[] => reconciliationRows(snapshot, [outcome, outcome]), /saved approvals/);
+	assert.throws((): import('../../electron/reconciliation-csv.js').ReconciliationRow[] => reconciliationRows(snapshot, [{ ...outcome, transactionId: second }]), /saved approvals/);
+	assert.throws((): import('../../electron/reconciliation-csv.js').ReconciliationRow[] => reconciliationRows(snapshot, [{ ...outcome, documentId: randomUUID() }]), /saved approvals/);
 
-	const reassigned = await saveWorkspace(snapshot, snapshot.metadata, snapshot.imports, snapshot.documentImports,
+	const reassigned: SavedWorkspace = await saveWorkspace(snapshot, snapshot.metadata, snapshot.imports, snapshot.documentImports,
 		new Map(snapshot.matchDecisions).set(first, replacement.id), snapshot.bankCorrections, snapshot.documentCorrections,
 		new Map(snapshot.reviewApprovals).set(first, advanceReviewRevision(snapshot.reviewApprovals.get(first))));
-	const [revoked] = reconciliationRows(reassigned);
+	const [revoked]: import('../../electron/reconciliation-csv.js').ReconciliationRow[] = reconciliationRows(reassigned);
 	assert.equal(revoked.document_id, replacement.id);
 	assert.equal(revoked.approval_status, 'revoked');
 	assert.equal(revoked.approval_batch_id, '');
@@ -93,13 +97,13 @@ test('projects saved bookings, approval and copy outcomes, and unresolved rows w
 	assert.equal(revoked.copy_status, 'not-eligible');
 });
 
-test('writes a fixed UTF-8 CSV header and escapes free text without changing exact decimal amounts', () => {
-	const blank = Object.fromEntries(reconciliationCsvColumns.map(column => [column, ''])) as Parameters<typeof serializeReconciliationCsv>[0][number];
-	const data = { ...blank, row_type: 'transaction', description: 'Café "Blue", Terrace\r\nSecond line', account_amount: '-9007199254740993.2700',
+test('writes a fixed UTF-8 CSV header and escapes free text without changing exact decimal amounts', (): void => {
+	const blank: import('../../electron/reconciliation-csv.js').ReconciliationRow = Object.fromEntries(reconciliationCsvColumns.map((column: "description" | "row_type" | "transaction_id" | "draft_id" | "statement_id" | "statement_file" | "booking_date" | "account_amount" | "account_currency" | "original_amount" | "original_currency" | "review_status" | "match_status" | "approval_status" | "approval_batch_id" | "approved_at" | "document_id" | "document_file" | "copy_status" | "exported_file" | "copy_reason" | "import_issue_codes"): ["description" | "row_type" | "transaction_id" | "draft_id" | "statement_id" | "statement_file" | "booking_date" | "account_amount" | "account_currency" | "original_amount" | "original_currency" | "review_status" | "match_status" | "approval_status" | "approval_batch_id" | "approved_at" | "document_id" | "document_file" | "copy_status" | "exported_file" | "copy_reason" | "import_issue_codes", string] => [column, ''])) as Parameters<typeof serializeReconciliationCsv>[0][number];
+	const data: ReconciliationRow = { ...blank, row_type: 'transaction', description: 'Café "Blue", Terrace\r\nSecond line', account_amount: '-9007199254740993.2700',
 		original_amount: '0.0001', document_file: '  ＝1+1.pdf', copy_reason: '\t@note' };
-	const header = reconciliationCsvColumns.join(',');
+	const header: string = reconciliationCsvColumns.join(',');
 	assert.equal(serializeReconciliationCsv([]), '\uFEFF' + header + '\r\n');
-	const output = serializeReconciliationCsv([data]);
+	const output: string = serializeReconciliationCsv([data]);
 	assert.deepEqual([...Buffer.from(output).subarray(0, 3)], [0xef, 0xbb, 0xbf]);
 	assert.ok(output.startsWith('\uFEFF' + header + '\r\ntransaction,'));
 	assert.ok(output.includes('"Café ""Blue"", Terrace\r\nSecond line",-9007199254740993.2700,,0.0001,'));

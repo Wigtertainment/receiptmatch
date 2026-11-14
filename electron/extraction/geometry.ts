@@ -24,46 +24,55 @@ export interface GeometryResult {
 function transformed(matrix: readonly number[], x: number, y: number): [number, number] {
     return [matrix[0] * x + matrix[2] * y + matrix[4], matrix[1] * x + matrix[3] * y + matrix[5]];
 }
+
 function visibleBox(points: [number, number][], width: number, height: number): { region: PositionedSpan['region'] | null; clipped: boolean } {
-    if (![width, height, ...points.flat()].every(Number.isFinite) || width <= 0 || height <= 0) throw new Error('Invalid page geometry.');
-    const left = Math.min(...points.map((point) => point[0]));
-    const top = Math.min(...points.map((point) => point[1]));
-    const right = Math.max(...points.map((point) => point[0]));
-    const bottom = Math.max(...points.map((point) => point[1]));
-    const x = Math.max(0, left);
-    const y = Math.max(0, top);
-    const endX = Math.min(width, right);
-    const endY = Math.min(height, bottom);
-    const clipped = left < 0 || top < 0 || right > width || bottom > height;
+    if (![width, height, ...points.flat()].every(Number.isFinite) || width <= 0 || height <= 0) {
+        throw new Error('Invalid page geometry.');
+    }
+    const left: number = Math.min(...points.map((point: [number, number]): number => point[0]));
+    const top: number = Math.min(...points.map((point: [number, number]): number => point[1]));
+    const right: number = Math.max(...points.map((point: [number, number]): number => point[0]));
+    const bottom: number = Math.max(...points.map((point: [number, number]): number => point[1]));
+    const x: number = Math.max(0, left);
+    const y: number = Math.max(0, top);
+    const endX: number = Math.min(width, right);
+    const endY: number = Math.min(height, bottom);
+    const clipped: boolean = left < 0 || top < 0 || right > width || bottom > height;
     return { region: endX > x && endY > y ? { x, y, width: endX - x, height: endY - y } : null, clipped };
 }
+
 export function embeddedTextGeometry(item: TextGeometry, font: FontGeometry, viewport: ViewportGeometry): GeometryResult {
     if (item.transform.length !== 6 || viewport.transform.length !== 6 || ![...item.transform, ...viewport.transform, item.width, item.height].every(Number.isFinite)) {
         throw new Error('Invalid text transform.');
     }
-    if (font.vertical) throw new Error('Vertical embedded text needs a supported geometry mapping.');
-    const [a, b, c, d, e, f] = item.transform;
-    const baseline = transformed(viewport.transform, e, f);
-    const horizontal = transformed(viewport.transform, e + a, f + b);
-    const vertical = transformed(viewport.transform, e + c, f + d);
-    const axisX = horizontal[0] - baseline[0];
-    const axisY = horizontal[1] - baseline[1];
-    const normalX = vertical[0] - baseline[0];
-    const normalY = vertical[1] - baseline[1];
-    const axisLength = Math.hypot(axisX, axisY);
-    const pageScale = Math.hypot(viewport.transform[0], viewport.transform[1]);
-    if (item.width <= 0 || axisLength <= 0 || Math.hypot(normalX, normalY) <= 0) throw new Error('Degenerate text geometry.');
-    const validMetrics = Number.isFinite(font.ascent) && Number.isFinite(font.descent) && font.ascent! > font.descent!;
-    const ascent = validMetrics ? font.ascent! : 1;
-    const descent = validMetrics ? font.descent! : 0;
-    const advanceX = (axisX / axisLength) * item.width * pageScale;
-    const advanceY = (axisY / axisLength) * item.width * pageScale;
-    const points: [number, number][] = [ascent, descent].flatMap((metric) => [
+    if (font.vertical) {
+        throw new Error('Vertical embedded text needs a supported geometry mapping.');
+    }
+    const [a, b, c, d, e, f]: readonly number[] = item.transform;
+    const baseline: [number, number] = transformed(viewport.transform, e, f);
+    const horizontal: [number, number] = transformed(viewport.transform, e + a, f + b);
+    const vertical: [number, number] = transformed(viewport.transform, e + c, f + d);
+    const axisX: number = horizontal[0] - baseline[0];
+    const axisY: number = horizontal[1] - baseline[1];
+    const normalX: number = vertical[0] - baseline[0];
+    const normalY: number = vertical[1] - baseline[1];
+    const axisLength: number = Math.hypot(axisX, axisY);
+    const pageScale: number = Math.hypot(viewport.transform[0], viewport.transform[1]);
+    if (item.width <= 0 || axisLength <= 0 || Math.hypot(normalX, normalY) <= 0) {
+        throw new Error('Degenerate text geometry.');
+    }
+    const validMetrics: boolean = Number.isFinite(font.ascent) && Number.isFinite(font.descent) && font.ascent! > font.descent!;
+    const ascent: number = validMetrics ? font.ascent! : 1;
+    const descent: number = validMetrics ? font.descent! : 0;
+    const advanceX: number = (axisX / axisLength) * item.width * pageScale;
+    const advanceY: number = (axisY / axisLength) * item.width * pageScale;
+    const points: [number, number][] = [ascent, descent].flatMap((metric: number): [[number, number], [number, number]] => [
         [baseline[0] + normalX * metric, baseline[1] + normalY * metric] as [number, number],
         [baseline[0] + normalX * metric + advanceX, baseline[1] + normalY * metric + advanceY] as [number, number]
     ]);
     return { ...visibleBox(points, viewport.width, viewport.height), approximate: !validMetrics };
 }
+
 export function ocrWordGeometry(
     bbox: { x0: number; y0: number; x1: number; y1: number },
     page: { width: number; height: number },

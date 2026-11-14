@@ -1,12 +1,13 @@
 import type { BankImportInput, ImportPage, PositionedSpan } from '../../src/shared/bank-import.js';
 
 // Independently invented data: no user documents, paths, references or source hashes.
-export function span(text: string, x: number, y: number, width = 45, method: PositionedSpan['method'] = 'embedded-text'): PositionedSpan {
+export function span(text: string, x: number, y: number, width: number = 45, method: PositionedSpan['method'] = 'embedded-text'): PositionedSpan {
     return { text, region: { x, y, width, height: 9 }, method };
 }
-export function header(y = 200, tokenized = false): PositionedSpan[] {
-    if (tokenized)
-        return [
+
+export function header(y: number = 200, tokenized: boolean = false): PositionedSpan[] {
+    if (tokenized) {
+            return [
             span('Date', 40, y, 20),
             span('(UTC)', 62, y, 25),
             span('Description', 170, y, 60),
@@ -16,10 +17,12 @@ export function header(y = 200, tokenized = false): PositionedSpan[] {
             span('in', 465, y, 15),
             span('Balance', 520, y, 40)
         ];
+        }
     return [span('Date (UTC)', 40, y, 50), span('Description', 170, y, 60), span('Money out', 350, y, 48), span('Money in', 435, y, 45), span('Balance', 520, y, 40)];
 }
-export function row(y: number, date: string, description: string, outgoing: string | null, incoming: string | null, tokenized = false): PositionedSpan[] {
-    const dates = tokenized ? date.split(' ').map((part, index) => span(part, 40 + index * 24, y, 22)) : [span(date, 40, y, 80)];
+
+export function row(y: number, date: string, description: string, outgoing: string | null, incoming: string | null, tokenized: boolean = false): PositionedSpan[] {
+    const dates: PositionedSpan[] = tokenized ? date.split(' ').map((part: string, index: number): PositionedSpan => span(part, 40 + index * 24, y, 22)) : [span(date, 40, y, 80)];
     return [
         ...dates,
         span(description, 170, y, 150),
@@ -28,6 +31,7 @@ export function row(y: number, date: string, description: string, outgoing: stri
         span('987,654.32', 510, y, 50)
     ];
 }
+
 export function statement(): BankImportInput {
     return {
         source: { sourceId: 'synthetic-source', sha256: 'a'.repeat(64) },
@@ -58,6 +62,7 @@ export function statement(): BankImportInput {
         ]
     };
 }
-export function emptyPage(pageNumber = 2): ImportPage {
+
+export function emptyPage(pageNumber: number = 2): ImportPage {
     return { pageId: `page-${pageNumber}`, pageNumber, width: 600, height: 840, status: 'complete', spans: [] };
 }

@@ -7,11 +7,11 @@ export interface ModelAsset {
     sha256: string;
 }
 
-const publisher = 'https://huggingface.co/PaddlePaddle';
-const mediumDetection = `${publisher}/PP-OCRv6_medium_det_onnx/resolve/61323801669c338b7891481ec7bac61ce31b576a`;
-const mediumRecognition = `${publisher}/PP-OCRv6_medium_rec_onnx/resolve/50c7eacafc52fa7bcf4194e8cd08e46f8558504b`;
-const vlWeights = `${publisher}/PaddleOCR-VL-1.6-GGUF/resolve/511b09642bb324401f15f97cc23bc67e8f0a291d`;
-const vlTemplate = `${publisher}/PaddleOCR-VL-1.6/resolve/132c45f52c0a26ed5a6b2f6bd8e3985794cc27dd/chat_template.jinja`;
+const publisher: "https://huggingface.co/PaddlePaddle" = 'https://huggingface.co/PaddlePaddle';
+const mediumDetection: "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_det_onnx/resolve/61323801669c338b7891481ec7bac61ce31b576a" = `${publisher}/PP-OCRv6_medium_det_onnx/resolve/61323801669c338b7891481ec7bac61ce31b576a`;
+const mediumRecognition: "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx/resolve/50c7eacafc52fa7bcf4194e8cd08e46f8558504b" = `${publisher}/PP-OCRv6_medium_rec_onnx/resolve/50c7eacafc52fa7bcf4194e8cd08e46f8558504b`;
+const vlWeights: "https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6-GGUF/resolve/511b09642bb324401f15f97cc23bc67e8f0a291d" = `${publisher}/PaddleOCR-VL-1.6-GGUF/resolve/511b09642bb324401f15f97cc23bc67e8f0a291d`;
+const vlTemplate: "https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6/resolve/132c45f52c0a26ed5a6b2f6bd8e3985794cc27dd/chat_template.jinja" = `${publisher}/PaddleOCR-VL-1.6/resolve/132c45f52c0a26ed5a6b2f6bd8e3985794cc27dd/chat_template.jinja`;
 
 export const LOCAL_OCR_ASSETS: Readonly<Record<LocalOcrModel, readonly ModelAsset[]>> = {
     'pp-ocrv6-medium': [

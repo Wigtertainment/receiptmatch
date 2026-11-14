@@ -1,8 +1,8 @@
 import { formatAmountEntry } from './amount-entry.js';
 import type { Money } from './money.js';
 
-export const defaultExportFilenamePattern = '{date}_{counterparty}_{currency}_{amount}';
-export const exportFilenamePatternLimit = 160;
+export const defaultExportFilenamePattern: "{date}_{counterparty}_{currency}_{amount}" = '{date}_{counterparty}_{currency}_{amount}';
+export const exportFilenamePatternLimit: number = 160;
 
 interface ExportFilenameData {
 	date: string;
@@ -18,21 +18,23 @@ export const exportFilenameExample: ExportFilenameData = {
 	extension: 'pdf',
 };
 
-const unsafeCharacters = /[<>:"/\\|?*]/;
-const reservedName = /^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(?:COM|LPT)[1-9¹²³])(?:[. ]|$)/i;
-const utf8 = new TextEncoder();
+const unsafeCharacters: RegExp = /[<>:"/\\|?*]/;
+const reservedName: RegExp = /^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(?:COM|LPT)[1-9¹²³])(?:[. ]|$)/i;
+const utf8: TextEncoder = new TextEncoder();
 
 function isControl(character: string): boolean {
-	const code = character.charCodeAt(0);
+	const code: number = character.charCodeAt(0);
 	return code < 32 || (code >= 127 && code <= 159);
 }
 
 function safeCounterparty(value: string | null): string {
-	const clean = [...(value ?? '').normalize('NFC')].map(character => unsafeCharacters.test(character) || /[\s{}]/u.test(character) || isControl(character) ? '-' : character)
+	const clean: string = [...(value ?? '').normalize('NFC')].map((character: string): string => unsafeCharacters.test(character) || /[\s{}]/u.test(character) || isControl(character) ? '-' : character)
 		.join('').replace(/-+/g, '-').replace(/^[. -]+|[. -]+$/g, '');
-	let name = '';
+	let name: string = '';
 	for (const character of clean) {
-		if (utf8.encode(name + character).length > 80) break;
+		if (utf8.encode(name + character).length > 80) {
+			break;
+		}
 		name += character;
 	}
 	name = name.replace(/[. -]+$/g, '') || 'Unknown';
@@ -40,17 +42,29 @@ function safeCounterparty(value: string | null): string {
 }
 
 export function renderExportFilename(pattern: string, data: ExportFilenameData): { filename: string; error?: never } | { filename?: never; error: string } {
-	const template = pattern.trim();
-	if (!template || pattern.length > exportFilenamePatternLimit) return { error: 'Enter a pattern of up to 160 characters.' };
-	if (unsafeCharacters.test(pattern) || [...pattern].some(isControl)) return { error: 'Use a filename pattern without folder separators or other invalid characters.' };
-	const values = new Map([
+	const template: string = pattern.trim();
+	if (!template || pattern.length > exportFilenamePatternLimit) {
+		return { error: 'Enter a pattern of up to 160 characters.' };
+	}
+	if (unsafeCharacters.test(pattern) || [...pattern].some(isControl)) {
+		return { error: 'Use a filename pattern without folder separators or other invalid characters.' };
+	}
+	const values: Map<string, string> = new Map([
 		['date', data.date], ['counterparty', safeCounterparty(data.counterparty)], ['currency', data.amount.currency], ['amount', formatAmountEntry(data.amount, '.')],
 	]);
-	const stem = template.replace(/\{([^{}]+)\}/g, (match: string, token: string) => values.get(token) ?? match);
-	if (/[{}]/.test(stem)) return { error: 'Use only the listed placeholders, including both braces.' };
-	if (unsafeCharacters.test(stem) || [...stem].some(isControl)) return { error: 'The generated filename contains invalid characters.' };
-	if (!stem || stem === '.' || stem === '..' || stem.endsWith('.') || reservedName.test(stem)) return { error: 'Enter a portable filename without a reserved name or trailing period.' };
-	const filename = stem + '.' + data.extension;
-	if (utf8.encode(filename).length > 255) return { error: 'The generated filename is too long.' };
+	const stem: string = template.replace(/\{([^{}]+)\}/g, (match: string, token: string): string => values.get(token) ?? match);
+	if (/[{}]/.test(stem)) {
+		return { error: 'Use only the listed placeholders, including both braces.' };
+	}
+	if (unsafeCharacters.test(stem) || [...stem].some(isControl)) {
+		return { error: 'The generated filename contains invalid characters.' };
+	}
+	if (!stem || stem === '.' || stem === '..' || stem.endsWith('.') || reservedName.test(stem)) {
+		return { error: 'Enter a portable filename without a reserved name or trailing period.' };
+	}
+	const filename: string = stem + '.' + data.extension;
+	if (utf8.encode(filename).length > 255) {
+		return { error: 'The generated filename is too long.' };
+	}
 	return { filename };
 }

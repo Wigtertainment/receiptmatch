@@ -44,7 +44,9 @@ const artifacts = {
 
 async function download({ url, hash }, target) {
     const response = await fetch(url, { signal: AbortSignal.timeout(300_000) });
-    if (!response.ok || !response.body) throw new Error(`Could not download ${url} (HTTP ${response.status}).`);
+    if (!response.ok || !response.body) {
+        throw new Error(`Could not download ${url} (HTTP ${response.status}).`);
+    }
     const digest = createHash('sha256');
     const verify = new Transform({
         transform(chunk, _encoding, done) {
@@ -53,13 +55,19 @@ async function download({ url, hash }, target) {
         }
     });
     await pipeline(response.body, verify, createWriteStream(target, { flags: 'wx' }));
-    if (digest.digest('hex') !== hash) throw new Error(`The SHA-256 digest did not match for ${url}.`);
+    if (digest.digest('hex') !== hash) {
+        throw new Error(`The SHA-256 digest did not match for ${url}.`);
+    }
 }
 
 function run(command, args, env) {
     const result = spawnSync(command, args, { cwd: repo, env, stdio: 'inherit', windowsHide: true });
-    if (result.error) throw result.error;
-    if (result.status !== 0) throw new Error(`${path.basename(command)} failed (${result.status ?? result.signal}).`);
+    if (result.error) {
+        throw result.error;
+    }
+    if (result.status !== 0) {
+        throw new Error(`${path.basename(command)} failed (${result.status ?? result.signal}).`);
+    }
 }
 
 async function prepare() {
@@ -90,9 +98,13 @@ async function prepare() {
             : /^(?:llama-mtmd-cli|lib(?:llama(?:-common)?|mtmd|ggml(?:-base|-cpu-[\w-]+)?)\.so(?:\.[\d.]+)?|LICENSE.*)$/;
         // Copy the resolved files so the package works even when a packager does not preserve library symlinks.
         for (const file of await readdir(llamaSource)) {
-            if (llamaFiles.test(file)) await copyFile(path.join(llamaSource, file), path.join(llama, file));
+            if (llamaFiles.test(file)) {
+                await copyFile(path.join(llamaSource, file), path.join(llama, file));
+            }
         }
-        if (selected.llamaLicense) await download(selected.llamaLicense, path.join(llama, 'LICENSE'));
+        if (selected.llamaLicense) {
+            await download(selected.llamaLicense, path.join(llama, 'LICENSE'));
+        }
         run(path.join(llama, win ? 'llama-mtmd-cli.exe' : 'llama-mtmd-cli'), ['--version']);
 
         const python = path.join(staging, 'python', win ? 'python.exe' : 'bin/python3.12');
