@@ -9,3 +9,4 @@ export type ReceiptAiRequest = z.infer<typeof receiptAiRequestSchema>;
 export type ReceiptAiResult = { status: 'ready'; model: LocalOcrModel; analysis: SupportingDocument;
     changes: { label: string; before: string | null; after: string | null }[]; conflicts: string[] }
     | { status: 'cancelled' } | { status: 'failed'; error: string };
+export type ReceiptAiPreviewResult = (Extract<ReceiptAiResult, { status: 'ready' }> & { token: string; blockingConflict?: string }) | Exclude<ReceiptAiResult, { status: 'ready' }>;

@@ -174,7 +174,7 @@ test('packaged Electron workspace smoke test', async ({ smoke: { root, report, c
 		assert.deepEqual(preferences, { sandbox: true, contextIsolation: true, nodeIntegration: false });
 		assert.deepEqual(await page.evaluate((): string[] => Object.keys(window.receiptmatch)), [
 			'command', 'bankImports', 'documentImports', 'documentSnapshot', 'matchSummaries', 'matchDetails', 'openOriginal', 'relinkOriginal',
-			'analyzeOriginal', 'reanalyzeReceipt', 'acceptOriginalAnalysis', 'exportSettings', 'localOcr', 'exportDocuments', 'exportReconciliation', 'subscribe', 'appVersion',
+			'analyzeOriginal', 'reanalyzeReceipt', 'acceptReceiptAnalysis', 'acceptOriginalAnalysis', 'exportSettings', 'localOcr', 'exportDocuments', 'exportReconciliation', 'subscribe', 'appVersion',
 		]);
 		const version: string = await application.evaluate(({ app }: typeof Electron.CrossProcessExports): string => app.getVersion());
 		await page.getByRole('button', { name: 'Settings', exact: true }).click();

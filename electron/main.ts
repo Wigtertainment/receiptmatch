@@ -34,7 +34,7 @@ import { localOcrRequestSchema } from '../src/shared/local-ocr-settings.js';
 import type { ZodSafeParseResult } from 'zod';
 import type { ExtractionOptions, StatementProposalExtraction } from './extraction/host.js';
 import type { PaddleVlFiles } from './extraction/paddle-vl.js';
-import { receiptAiRequestSchema, type ReceiptAiRequest, type ReceiptAiResult } from '../src/shared/receipt-ai.js';
+import { receiptAiRequestSchema, type ReceiptAiPreviewResult, type ReceiptAiRequest } from '../src/shared/receipt-ai.js';
 
 // Load the same module instance as other main-process consumers of the extraction API.
 type ExtractionApi = Pick<typeof import('./extraction/host.js'), 'extractPdfBytes' | 'extractDocumentBytes' | 'extractStatementProposal' | 'extractDocumentWithModel'>;
@@ -323,12 +323,20 @@ async function launch(): Promise<void> {
     return workspace.analyzeOriginal(request.data);
   });
 
-  ipcMain.handle('workspace:reanalyze-receipt', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<ReceiptAiResult> => {
+  ipcMain.handle('workspace:reanalyze-receipt', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<ReceiptAiPreviewResult> => {
     if (!authorized(event) || closeRequested || payload.length !== 1) {
       return Promise.resolve({ status: 'failed', error: 'Receipt analysis request denied.' });
     }
     const request: ZodSafeParseResult<ReceiptAiRequest> = receiptAiRequestSchema.safeParse(payload[0]);
     return request.success ? workspace.reanalyzeReceipt(request.data) : Promise.resolve({ status: 'failed', error: 'Invalid receipt analysis request.' });
+  });
+
+  ipcMain.handle('workspace:accept-receipt-analysis', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<OriginalAdoptionResult> => {
+    if (!authorized(event) || closeRequested || payload.length !== 1) {
+      return Promise.resolve({ status: 'failed', error: 'Receipt analysis confirmation denied.' });
+    }
+    const request: ReturnType<typeof originalAdoptionRequestSchema.safeParse> = originalAdoptionRequestSchema.safeParse(payload[0]);
+    return request.success ? workspace.acceptReceiptAnalysis(request.data) : Promise.resolve({ status: 'failed', error: 'Invalid receipt analysis confirmation.' });
   });
 
   ipcMain.handle('workspace:accept-original-analysis', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<OriginalAdoptionResult> => {

@@ -332,7 +332,7 @@ test('opens version 3 without writing, suppresses coalesced legacy sections and 
 	await createWorkspace(file, newMetadata(), [bank], [oldRun]);
 	const db: Database.Database = new Database(file);
 	try {
-		db.exec(`DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections;
+		db.exec(`DROP TABLE receipt_analysis_versions; DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections;
 			DROP TABLE match_reviews; DROP TABLE match_results; PRAGMA user_version=3;`);
 	} finally {
 		db.close();
@@ -493,7 +493,7 @@ test('opens version 4 without writing and saves review decisions and migration a
 	await createWorkspace(file, newMetadata(), [bank], [documentRun(root, [document])]);
 	const db: Database.Database = new Database(file);
 	try {
-		db.exec('DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews; PRAGMA user_version=4;');
+		db.exec('DROP TABLE receipt_analysis_versions; DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews; PRAGMA user_version=4;');
 	} finally {
 		db.close();
 	}
@@ -539,7 +539,7 @@ test('corrects booking values with exact money, retains original evidence and pr
 	const created: SavedWorkspace = await createWorkspace(file, newMetadata(), [bank], [documents]);
 	const db: Database.Database = new Database(file);
 	try {
-		db.exec('DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; PRAGMA user_version=5;');
+		db.exec('DROP TABLE receipt_analysis_versions; DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; PRAGMA user_version=5;');
 	} finally {
 		db.close();
 	}
@@ -615,7 +615,7 @@ test('recalculates matches from corrected document fields and saves originals, r
 	await createWorkspace(file, newMetadata(), [bank], [source]);
 	const db: Database.Database = new Database(file);
 	try {
-		db.exec('DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; PRAGMA user_version=6;');
+		db.exec('DROP TABLE receipt_analysis_versions; DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; PRAGMA user_version=6;');
 	} finally {
 		db.close();
 	}
