@@ -19,6 +19,13 @@ const coordinate: RegExp = /<\|LOC_(\d{1,4})\|>/g;
 const coordinates: string = String.raw`((?:<\|LOC_\d{1,4}\|>){8})`;
 const framedSpotting: RegExp = new RegExp(String.raw`\s*<\|TEXT_START\|>([\s\S]*?)<\|TEXT_END\|>\s*<\|LOC_BEGIN\|>${coordinates}<\|LOC_END\|>`, 'y');
 const plainSpotting: RegExp = new RegExp(String.raw`((?:(?!<\|)[\s\S])+?)${coordinates}`, 'y');
+const tableToken: RegExp = /<(fcel|ecel|lcel|ucel|xcel|nl)>/g;
+const unknownMarkup: RegExp = /<[A-Za-z/!|][^<>]*>/;
+
+interface TableCell {
+    text: string;
+}
+type TableRow = (TableCell | null)[];
 
 export function parsePaddleVlSpotting(output: string, width: number, height: number): OcrRegion[] {
     const regions: OcrRegion[] = [];
@@ -53,10 +60,59 @@ export function parsePaddleVlSpotting(output: string, width: number, height: num
     return regions;
 }
 
-function runSpotting(files: PaddleVlFiles, image: string, template: string, signal: AbortSignal): Promise<string> {
+function readTableCell(token: string, text: string, row: TableRow, above: TableRow | undefined): TableCell | null {
+    if (token === 'fcel') {
+        if (!text || unknownMarkup.test(text)) {
+            throw new Error('PaddleOCR-VL returned invalid table cell text.');
+        }
+        return { text };
+    }
+    if (text) {
+        throw new Error('PaddleOCR-VL returned text in an empty table slot.');
+    }
+    if (token === 'ecel') {
+        return null;
+    }
+    const upper: TableCell | null | undefined = above?.[row.length];
+    const source: TableCell | null | undefined = token === 'ucel' ? upper : row.at(-1);
+    if (!source || (token === 'xcel' && source !== upper)) {
+        throw new Error('PaddleOCR-VL returned a table merge without a matching source cell.');
+    }
+    // A merged value cannot be attributed to one of the columns it spans.
+    source.text = '';
+    return source;
+}
+
+export function parsePaddleVlTable(output: string): string[][] {
+    if (Buffer.byteLength(output) > maxOutputBytes) {
+        throw new Error('PaddleOCR-VL exceeded the local output limit.');
+    }
+    const parts: string[] = output.trim().split(tableToken);
+    if (parts[0] || parts.at(-2) !== 'nl') {
+        throw new Error('PaddleOCR-VL returned an incomplete table.');
+    }
+    const rows: TableRow[] = [];
+    let row: TableRow = [];
+    for (let index: number = 1; index < parts.length; index += 2) {
+        const token: string = parts[index];
+        const text: string = parts[index + 1].trim();
+        if (token === 'nl') {
+            if (text || !row.length || (rows.length && row.length !== rows[0].length)) {
+                throw new Error('PaddleOCR-VL returned an invalid table row.');
+            }
+            rows.push(row);
+            row = [];
+        } else {
+            row.push(readTableCell(token, text, row, rows.at(-1)));
+        }
+    }
+    return rows.map((cells: TableRow): string[] => cells.map((cell: TableCell | null): string => cell?.text ?? ''));
+}
+
+function runModel(files: PaddleVlFiles, image: string, template: string, prompt: 'Spotting:' | 'Table Recognition:', signal: AbortSignal): Promise<string> {
     signal.throwIfAborted();
     // The CLI exits successfully at a token cap, even mid-page. Bound the context, output bytes and job time instead.
-    const args: string[] = ['-m', files.model, '--mmproj', files.projector, '--image', image, '-p', 'Spotting:', '-c', '4096', '-n', '-1', '-t', '4', '-ngl', '0',
+    const args: string[] = ['-m', files.model, '--mmproj', files.projector, '--image', image, '-p', prompt, '-c', '4096', '-n', '-1', '-t', '4', '-ngl', '0',
         '--no-mmproj-offload', '--flash-attn', 'off', '--no-warmup', '--temp', '0', '--jinja', '--chat-template', template];
     const env: Record<string, string | undefined> = Object.fromEntries(Object.entries(process.env).filter(([name]: [string, string | undefined]): boolean => /^(SystemRoot|windir)$/i.test(name)));
     return new Promise((resolve: (value: string | PromiseLike<string>) => void, reject: (reason?: unknown) => void): void => {
@@ -92,7 +148,7 @@ function runSpotting(files: PaddleVlFiles, image: string, template: string, sign
     });
 }
 
-export async function recognizePaddleVl(files: PaddleVlFiles, png: Uint8Array, width: number, height: number, signal: AbortSignal): Promise<OcrRegion[]> {
+async function recognize(files: PaddleVlFiles, png: Uint8Array, prompt: 'Spotting:' | 'Table Recognition:', signal: AbortSignal): Promise<string> {
     signal.throwIfAborted();
     const filePaths: string[] = [files.executable, files.model, files.projector, files.template];
     if (filePaths.some((value: string): boolean => !path.isAbsolute(value) || (process.platform === 'win32' && !/^[a-z]:[\\/]/i.test(value)))) {
@@ -115,12 +171,20 @@ export async function recognizePaddleVl(files: PaddleVlFiles, png: Uint8Array, w
     const image: string = path.join(directory, 'page.png');
     try {
         await writeFile(image, png, { mode: 0o600, flag: 'wx', signal });
-        const output: string = await runSpotting(files, image, template, signal);
+        const output: string = await runModel(files, image, template, prompt, signal);
         signal.throwIfAborted();
-        return parsePaddleVlSpotting(output, width, height);
+        return output;
     } finally {
         await rm(directory, { recursive: true, force: true, maxRetries: 3 }).catch((): never => {
             throw new PaddleVlCleanupError('The temporary local OCR image could not be removed.');
         });
     }
+}
+
+export async function recognizePaddleVl(files: PaddleVlFiles, png: Uint8Array, width: number, height: number, signal: AbortSignal): Promise<OcrRegion[]> {
+    return parsePaddleVlSpotting(await recognize(files, png, 'Spotting:', signal), width, height);
+}
+
+export async function recognizePaddleVlTable(files: PaddleVlFiles, png: Uint8Array, signal: AbortSignal): Promise<string[][]> {
+    return parsePaddleVlTable(await recognize(files, png, 'Table Recognition:', signal));
 }

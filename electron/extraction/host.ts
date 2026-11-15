@@ -1,10 +1,10 @@
-import type { BankImportInput, ImportIssue, ImportPage, PositionedSpan } from "../../src/shared/bank-import.js";
+import type { BankImportInput, BankImportResult, ImportIssue, ImportPage, PositionedSpan } from "../../src/shared/bank-import.js";
 import { app, BrowserWindow, ipcMain, session, type IpcMainEvent, type IpcMainInvokeEvent, type Session } from 'electron';
 import { createHash, randomUUID } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { bankImportInputSchema, importIssue } from '../../src/shared/bank-import.js';
+import { bankImportInputSchema, importIssue, sourceProvenance } from '../../src/shared/bank-import.js';
 import {
     EXTRACTION_CHANNELS,
     extractionEventSchema,
@@ -16,16 +16,30 @@ import {
     PDF_EXTRACTION_VERSION,
     type ExtractionJob,
     type ExtractionProgress,
-    type ExtractionResult
+    type ExtractionResult,
+    type OcrRaster,
+    type OcrRegion
 } from '../../src/shared/pdf-extraction.js';
 import { imageInputDimensions, ImageInputError } from './image-input.js';
 import { recognizePaddleMedium, type PaddleMediumFiles } from './paddle-medium.js';
-import { PaddleVlCleanupError, recognizePaddleVl, type PaddleVlFiles } from './paddle-vl.js';
+import { PaddleVlCleanupError, recognizePaddleVl, recognizePaddleVlTable, type PaddleVlFiles } from './paddle-vl.js';
+import { proposeStatementTransactions } from '../import/statement-table.js';
 
 export type LocalDocumentOcr = { model: 'pp-ocrv6-medium'; files: PaddleMediumFiles } | { model: 'paddleocr-vl-1.6'; files: PaddleVlFiles };
-interface ExtractionOptions {
+export interface ExtractionOptions {
     signal?: AbortSignal;
     onProgress?: (progress: ExtractionProgress) => void;
+}
+
+export type StatementTableExtraction =
+    | { status: 'complete' | 'partial'; tables: ReadonlyMap<number, string[][]>; issues: ImportIssue[] }
+    | { status: 'failed' | 'cancelled'; issues: ImportIssue[] };
+export type StatementProposalExtraction = { status: 'proposed'; result: BankImportResult } | { status: 'failed' | 'cancelled'; issues: ImportIssue[] };
+
+interface StatementTableJob {
+    files: PaddleVlFiles;
+    source: ReturnType<typeof sourceProvenance>;
+    tables: Map<number, string[][]>;
 }
 
 export const EXTRACTION_URL: "receiptmatch-extraction://engine/index.html" = 'receiptmatch-extraction://engine/index.html';
@@ -108,23 +122,84 @@ export async function extractDocumentBytes(
     format: 'pdf' | 'png' | 'jpeg',
     options: ExtractionOptions & { localOcr?: LocalDocumentOcr } = {}
 ): Promise<ExtractionResult> {
-    if (
-        !(bytes instanceof Uint8Array) ||
-        bytes.byteLength < 1 ||
-        bytes.byteLength > PDF_EXTRACTION_LIMITS.bytes ||
-        !z
-            .string()
-            .min(1)
-            .max(128)
-            .refine((value: string): boolean => value.trim().length > 0)
-            .safeParse(sourceId).success
-    ) {
+    return extract(bytes, sourceId, format, options);
+}
+
+export async function extractStatementTables(
+    bytes: Uint8Array, input: BankImportInput, files: PaddleVlFiles, options: ExtractionOptions = {}
+): Promise<StatementTableExtraction> {
+    const statementTables: StatementTableJob = { files, source: sourceProvenance(input), tables: new Map() };
+    const result: ExtractionResult = await extract(bytes, input.source.sourceId, 'pdf', { signal: options.signal, onProgress: options.onProgress, statementTables });
+    if (!('input' in result)) {
+        return result;
+    }
+    return { status: result.status, tables: statementTables.tables, issues: result.input.issues };
+}
+
+export async function extractStatementProposal(
+    bytes: Uint8Array, input: BankImportInput, files: PaddleVlFiles, options: ExtractionOptions = {}
+): Promise<StatementProposalExtraction> {
+    const source: z.ZodSafeParseResult<BankImportInput> = bankImportInputSchema.safeParse(input);
+    if (!source.success) {
+        return { status: 'failed', issues: [importIssue('invalid-input', 'The statement does not satisfy the positioned evidence contract.')] };
+    }
+    const tables: StatementTableExtraction = await extractStatementTables(bytes, source.data, files, options);
+    if (!('tables' in tables)) {
+        return tables;
+    }
+    if (options.signal?.aborted) {
+        return { status: 'cancelled', issues: [importIssue('cancelled', 'Statement recognition was cancelled.')] };
+    }
+    const result: BankImportResult = proposeStatementTransactions(source.data, tables.tables, tables.issues);
+    return result.status === 'complete' || result.status === 'partial' ? { status: 'proposed', result } : { status: 'failed', issues: result.issues };
+}
+
+function rasterMatchesTableSource(raster: OcrRaster, job: StatementTableJob): boolean {
+    const page: StatementTableJob['source']['pages'][number] | undefined = job.source.pages[raster.pageNumber - 1];
+    return !!page && page.pageNumber === raster.pageNumber && Math.ceil(page.width * 2) === raster.width && Math.ceil(page.height * 2) === raster.height;
+}
+
+function matchesTableSource(input: BankImportInput, job: StatementTableJob): boolean {
+    return input.pages.length === job.source.pages.length && input.pages.every((page: ImportPage, index: number): boolean => {
+        const original: StatementTableJob['source']['pages'][number] = job.source.pages[index];
+        return page.pageId === original.pageId && page.pageNumber === original.pageNumber && page.width === original.width && page.height === original.height &&
+            !page.spans.length && (page.status === 'complete') === job.tables.has(page.pageNumber);
+    });
+}
+
+async function recognizeTable(raster: OcrRaster, job: StatementTableJob, signal: AbortSignal): Promise<OcrRegion[]> {
+    const pageSignal: AbortSignal = AbortSignal.any([signal, AbortSignal.timeout(PDF_EXTRACTION_LIMITS.timeoutMs)]);
+    const rows: string[][] = await recognizePaddleVlTable(job.files, raster.png, pageSignal);
+    pageSignal.throwIfAborted();
+    job.tables.set(raster.pageNumber, rows);
+    // The extraction renderer needs only an acknowledgement. The host retains the model output.
+    return [];
+}
+
+async function recognizeDocumentRaster(model: LocalDocumentOcr, { png, width, height }: OcrRaster, signal: AbortSignal): Promise<OcrRegion[]> {
+    const pending: Promise<OcrRegion[]> = model.model === 'pp-ocrv6-medium'
+        ? recognizePaddleMedium(model.files, png, width, height, signal)
+        : recognizePaddleVl(model.files, png, width, height, signal);
+    const regions: OcrRegion[] = ocrRegionsSchema.parse(await pending);
+    if (regions.some((region: OcrRegion): boolean => region.x1 > width || region.y1 > height)) {
+        throw new Error('Invalid OCR coordinates.');
+    }
+    return regions;
+}
+
+function validExtractionSource(bytes: Uint8Array, sourceId: string): boolean {
+    return bytes instanceof Uint8Array && bytes.byteLength > 0 && bytes.byteLength <= PDF_EXTRACTION_LIMITS.bytes &&
+        z.string().min(1).max(128).refine((value: string): boolean => value.trim().length > 0).safeParse(sourceId).success;
+}
+
+function extractionStartFailure(bytes: Uint8Array, sourceId: string, format: 'pdf' | 'png' | 'jpeg', signal?: AbortSignal): ExtractionResult | null {
+    if (!validExtractionSource(bytes, sourceId)) {
         return failure('invalid-input', 'Choose a nonempty document within the local extraction byte limit and provide a valid source identity.');
     }
     if (!['pdf', 'png', 'jpeg'].includes(format)) {
         return failure('image-format', 'Choose an authorized PDF, PNG or JPEG format.');
     }
-    if (options.signal?.aborted) {
+    if (signal?.aborted) {
         return failure('cancelled', 'Document extraction was cancelled.', 'cancelled');
     }
     if (active) {
@@ -133,7 +208,23 @@ export async function extractDocumentBytes(
     if (cleanupFailed) {
         return failure('engine-cleanup', 'The extraction session could not be cleared safely. Restart ReceiptMatch before another extraction.');
     }
+    return null;
+}
+
+async function extract(
+    bytes: Uint8Array, sourceId: string, format: 'pdf' | 'png' | 'jpeg',
+    options: ExtractionOptions & { localOcr?: LocalDocumentOcr; statementTables?: StatementTableJob }
+): Promise<ExtractionResult> {
+    const denied: ExtractionResult | null = extractionStartFailure(bytes, sourceId, format, options.signal);
+    if (denied) {
+        return denied;
+    }
     const snapshot: Uint8Array<ArrayBuffer> = Uint8Array.from(bytes);
+    const sha256: string = createHash('sha256').update(snapshot).digest('hex');
+    const statementTables: StatementTableJob | undefined = options.statementTables;
+    if (statementTables && sha256 !== statementTables.source.sha256) {
+        return failure('source-changed', 'The PDF does not match the statement originally analyzed.');
+    }
     let imageDimensions: { width: number; height: number } | null = null;
     if (format !== 'pdf') {
         try {
@@ -148,7 +239,7 @@ export async function extractDocumentBytes(
     active = true;
     const jobId: `${string}-${string}-${string}-${string}-${string}` = randomUUID();
     const localOcr: LocalDocumentOcr | undefined = options.localOcr;
-    const job: ExtractionJob = { jobId, sourceId, format, sha256: createHash('sha256').update(snapshot).digest('hex'), bytes: snapshot, ocrModel: localOcr?.model };
+    const job: ExtractionJob = { jobId, sourceId, format, sha256, bytes: snapshot, ocrModel: localOcr?.model, statementTables: statementTables ? true : undefined };
     return new Promise<ExtractionResult>((resolve: (value: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; } | PromiseLike<{ status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }>) => void): void => {
         let window: BrowserWindow | undefined;
         let isolatedSession: Session | undefined;
@@ -169,7 +260,7 @@ export async function extractDocumentBytes(
             options.signal?.removeEventListener('abort', abort);
             ipcMain.removeListener(EXTRACTION_CHANNELS.ready, ready);
             ipcMain.removeListener(EXTRACTION_CHANNELS.event, event);
-            if (localOcr) {
+            if (localOcr || statementTables) {
                 ipcMain.removeHandler(EXTRACTION_CHANNELS.recognize);
             }
             modelAbort.abort();
@@ -188,7 +279,9 @@ export async function extractDocumentBytes(
         };
 
         const abort: () => void = (): void => finish(failure('cancelled', 'Document extraction was cancelled.', 'cancelled'));
-        const timeout: NodeJS.Timeout = setTimeout((): void => finish(failure('timeout', 'Document extraction exceeded its local execution time limit.')), PDF_EXTRACTION_LIMITS.timeoutMs);
+        // Allow a timed-out table page to report its failure before the extraction watchdog runs.
+        const watchdogMs: number = PDF_EXTRACTION_LIMITS.timeoutMs + (statementTables ? 10_000 : 0);
+        const timeout: NodeJS.Timeout = setTimeout((): void => finish(failure('timeout', 'Document extraction exceeded its local execution time limit.')), watchdogMs);
         const authorized: (event: IpcMainEvent | IpcMainInvokeEvent) => boolean | undefined = (event: IpcMainEvent | IpcMainInvokeEvent): boolean | undefined =>
             window &&
             !window.isDestroyed() &&
@@ -196,33 +289,35 @@ export async function extractDocumentBytes(
             event.senderFrame === window.webContents.mainFrame &&
             event.senderFrame?.url === EXTRACTION_URL;
 
-        const recognize: (event: IpcMainInvokeEvent, requestJobId: unknown, payload: unknown) => Promise<{ text: string; x0: number; y0: number; x1: number; y1: number; }[]> = async (event: IpcMainInvokeEvent, requestJobId: unknown, payload: unknown): Promise<{ text: string; x0: number; y0: number; x1: number; y1: number; }[]> => {
-            if (!localOcr || !authorized(event) || settled || !started || requestJobId !== jobId || recognition) {
+        const recognize: (event: IpcMainInvokeEvent, requestJobId: unknown, payload: unknown) => Promise<OcrRegion[]> = async (
+            event: IpcMainInvokeEvent, requestJobId: unknown, payload: unknown
+        ): Promise<OcrRegion[]> => {
+            if (!(localOcr || statementTables) || !authorized(event) || settled || !started || requestJobId !== jobId || recognition) {
                 throw new Error('OCR request denied.');
             }
-            const parsed: z.ZodSafeParseResult<{ pageNumber: number; width: number; height: number; png: Uint8Array<ArrayBuffer>; }> = ocrRasterSchema.safeParse(payload);
+            const parsed: z.ZodSafeParseResult<OcrRaster> = ocrRasterSchema.safeParse(payload);
             if (!parsed.success) {
                 throw new Error('Invalid OCR raster.');
             }
-            const { pageNumber, width, height, png }: { pageNumber: number; width: number; height: number; png: Uint8Array<ArrayBuffer>; } = parsed.data;
+            const { pageNumber, width, height, png }: OcrRaster = parsed.data;
             const dimensions: { width: number; height: number; } = imageInputDimensions(png, 'png', OCR_RASTER_BYTES);
             if (dimensions.width !== width || dimensions.height !== height || pageNumber <= lastOcrPage ||
+                (statementTables && !rasterMatchesTableSource(parsed.data, statementTables)) ||
                 (format !== 'pdf' && pageNumber !== 1) || ocrPixels + width * height > PDF_EXTRACTION_LIMITS.pixelsTotal) {
                     throw new Error('Invalid OCR raster.');
                 }
             lastOcrPage = pageNumber;
             ocrPixels += width * height;
             timeout.refresh();
-            const pending: Promise<{ text: string; x0: number; y0: number; x1: number; y1: number; }[]> = localOcr.model === 'pp-ocrv6-medium'
-                ? recognizePaddleMedium(localOcr.files, png, width, height, modelAbort.signal)
-                : recognizePaddleVl(localOcr.files, png, width, height, modelAbort.signal);
+            const pending: Promise<OcrRegion[]> = statementTables
+                ? recognizeTable(parsed.data, statementTables, modelAbort.signal)
+                : recognizeDocumentRaster(localOcr!, parsed.data, modelAbort.signal);
             recognition = pending;
             try {
-                const regions: { text: string; x0: number; y0: number; x1: number; y1: number; }[] = ocrRegionsSchema.parse(await pending);
-                if (regions.some((region: { text: string; x0: number; y0: number; x1: number; y1: number; }): boolean => region.x1 > width || region.y1 > height)) {
-                    throw new Error('Invalid OCR coordinates.');
+                const regions: OcrRegion[] = await pending;
+                if (localOcr) {
+                    extractionVersion = LOCAL_OCR_VERSIONS[localOcr.model];
                 }
-                extractionVersion = LOCAL_OCR_VERSIONS[localOcr.model];
                 return regions;
             } catch (error: unknown) {
                 if (error instanceof PaddleVlCleanupError) {
@@ -279,6 +374,7 @@ export async function extractDocumentBytes(
                     checked.data.extraction.version !== extractionVersion ||
                     recognition !== undefined ||
                     checked.data.pages.some((page: ImportPage, index: number): boolean => page.pageNumber !== index + 1) ||
+                    (statementTables && !matchesTableSource(checked.data, statementTables)) ||
                     (imageDimensions && (checked.data.pages.length !== 1 || checked.data.pages[0].status !== 'complete' ||
                         !((checked.data.pages[0].width === imageDimensions.width && checked.data.pages[0].height === imageDimensions.height) ||
                             (checked.data.pages[0].width === imageDimensions.height && checked.data.pages[0].height === imageDimensions.width)) ||
@@ -294,7 +390,7 @@ export async function extractDocumentBytes(
         };
         ipcMain.on(EXTRACTION_CHANNELS.ready, ready);
         ipcMain.on(EXTRACTION_CHANNELS.event, event);
-        if (localOcr) {
+        if (localOcr || statementTables) {
             ipcMain.handle(EXTRACTION_CHANNELS.recognize, recognize);
         }
         options.signal?.addEventListener('abort', abort, { once: true });

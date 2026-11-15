@@ -20,7 +20,8 @@ import {
     type ExtractionBridge,
     type ExtractionJob,
     type ExtractionProgress,
-    type ExtractionResult
+    type ExtractionResult,
+    type OcrRaster
 } from '../../src/shared/pdf-extraction.js';
 import { embeddedTextGeometry, ocrWordGeometry, type GeometryResult } from './geometry.js';
 import { assertImageDimensions, imageInputDimensions, IMAGE_MIME_TYPES, ImageInputError } from './image-input.js';
@@ -160,15 +161,19 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
             .filter((word: Tesseract.Word): string => word.text.trim()).map((word: Tesseract.Word): { x0: number; y0: number; x1: number; y1: number; text: string; } => ({ text: word.text, ...word.bbox }));
     };
 
-    const recognizeModel: (canvas: HTMLCanvasElement, page: ImportPage, pageCount: number, model: NonNullable<ExtractionJob["ocrModel"]>) => Promise<{ text: string; x0: number; y0: number; x1: number; y1: number; }[]> = async (canvas: HTMLCanvasElement, page: ImportPage, pageCount: number, model: NonNullable<ExtractionJob['ocrModel']>): Promise<{ text: string; x0: number; y0: number; x1: number; y1: number; }[]> => {
+    async function sendModelRaster(canvas: HTMLCanvasElement, page: ImportPage, pageCount: number): Promise<unknown> {
         progress('ocr', pageCount);
+        const blob: Blob | null = await new Promise<Blob | null>((resolve: (value: Blob | PromiseLike<Blob | null> | null) => void): void => canvas.toBlob(resolve, 'image/png'));
+        if (!blob) {
+            throw new Error('Raster serialization failed.');
+        }
+        const raster: OcrRaster = { pageNumber: page.pageNumber, width: canvas.width, height: canvas.height, png: new Uint8Array(await blob.arrayBuffer()) };
+        return window.receiptMatchExtraction.recognize(raster);
+    }
+
+    const recognizeModel: (canvas: HTMLCanvasElement, page: ImportPage, pageCount: number, model: NonNullable<ExtractionJob["ocrModel"]>) => Promise<{ text: string; x0: number; y0: number; x1: number; y1: number; }[]> = async (canvas: HTMLCanvasElement, page: ImportPage, pageCount: number, model: NonNullable<ExtractionJob['ocrModel']>): Promise<{ text: string; x0: number; y0: number; x1: number; y1: number; }[]> => {
         try {
-            const blob: Blob | null = await new Promise<Blob | null>((resolve: (value: Blob | PromiseLike<Blob | null> | null) => void): void => canvas.toBlob(resolve, 'image/png'));
-            if (!blob) {
-                throw new Error('Raster serialization failed.');
-            }
-            const raster: { pageNumber: number; width: number; height: number; png: Uint8Array<ArrayBuffer>; } = { pageNumber: page.pageNumber, width: canvas.width, height: canvas.height, png: new Uint8Array(await blob.arrayBuffer()) };
-            const regions: { text: string; x0: number; y0: number; x1: number; y1: number; }[] = ocrRegionsSchema.parse(await window.receiptMatchExtraction.recognize(raster));
+            const regions: { text: string; x0: number; y0: number; x1: number; y1: number; }[] = ocrRegionsSchema.parse(await sendModelRaster(canvas, page, pageCount));
             extractionVersion = LOCAL_OCR_VERSIONS[model];
             return regions;
         } catch {
@@ -278,6 +283,38 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
         return canvas;
     }
 
+    async function recognizePdfRaster(pdfPage: pdfjs.PDFPageProxy, page: ImportPage, pageCount: number): Promise<void> {
+        const raster: PageViewport = pdfPage.getViewport({ scale: 2 });
+        const canvas: HTMLCanvasElement = createPageCanvas(raster, pageCount);
+        try {
+            const context: CanvasRenderingContext2D | null = canvas.getContext('2d');
+            if (!context) {
+                throw new ExtractionFault('page-failed', 'The local page rasterizer is unavailable.');
+            }
+            await pdfPage.render({ canvas, canvasContext: context, viewport: raster }).promise;
+            if (job.statementTables) {
+                try {
+                    await sendModelRaster(canvas, page, pageCount);
+                } catch {
+                    throw new ExtractionFault('table-recognition', 'The local model could not read this page as a statement table.');
+                }
+            } else {
+                await recognize(canvas, page, pageCount);
+            }
+        } finally {
+            canvas.width = 1;
+            canvas.height = 1;
+        }
+    }
+
+    async function inspectEmbeddedPdfText(pdfPage: pdfjs.PDFPageProxy, page: ImportPage, viewport: pdfjs.PageViewport, pageCount: number): Promise<void> {
+        await appendEmbeddedText(pdfPage, page, viewport, pageCount);
+        const operations: PDFOperatorList = await pdfPage.getOperatorList();
+        if (page.spans.length && operations.fnArray.some((operation: number): boolean => imageOperations.has(operation))) {
+            issue('mixed-content', 'This page contains embedded text and image content. Image regions were not separately OCR-interpreted.', page.pageId);
+        }
+    }
+
     async function extractPdfPage(pdf: pdfjs.PDFDocumentProxy, number: number, pageCount: number): Promise<void> {
         pageNumber = number;
         const pageId: string = `page-${number}`;
@@ -286,24 +323,12 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
         const viewport: pdfjs.PageViewport = pdfPage.getViewport({ scale: 1 });
         assertPageGeometry(viewport);
         const page: ImportPage = { pageId, pageNumber: number, width: viewport.width, height: viewport.height, status: 'complete', spans: [] };
-        let canvas: HTMLCanvasElement | undefined;
         try {
-            await appendEmbeddedText(pdfPage, page, viewport, pageCount);
-            const operations: PDFOperatorList = await pdfPage.getOperatorList();
-            const hasImages: boolean = operations.fnArray.some((operation: number): boolean => imageOperations.has(operation));
-            if (page.spans.length) {
-                if (hasImages) {
-                    issue('mixed-content', 'This page contains embedded text and image content. Image regions were not separately OCR-interpreted.', pageId);
-                }
-            } else {
-                const raster: PageViewport = pdfPage.getViewport({ scale: 2 });
-                canvas = createPageCanvas(raster, pageCount);
-                const context: CanvasRenderingContext2D | null = canvas.getContext('2d');
-                if (!context) {
-                    throw new ExtractionFault('page-failed', 'The local page rasterizer is unavailable.');
-                }
-                await pdfPage.render({ canvas, canvasContext: context, viewport: raster }).promise;
-                await recognize(canvas, page, pageCount);
+            if (!job.statementTables) {
+                await inspectEmbeddedPdfText(pdfPage, page, viewport, pageCount);
+            }
+            if (!page.spans.length) {
+                await recognizePdfRaster(pdfPage, page, pageCount);
             }
         } catch (error: unknown) {
             if (error instanceof ExtractionFault && error.fatal) {
@@ -318,10 +343,6 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
                 'error'
             );
         } finally {
-            if (canvas) {
-                canvas.width = 1;
-                canvas.height = 1;
-            }
             pdfPage.cleanup();
         }
         pages.push(page);

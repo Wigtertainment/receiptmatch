@@ -1,4 +1,3 @@
-import type { MatchApprovalSelection } from "../../src/shared/match-approvals.js";
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
 import type { ImportIssue, ImportPage, PositionedSpan, SourceEvidence } from "../../src/shared/bank-import.js";
 import type { SupportingDocument } from "../../src/shared/supporting-document.js";
@@ -177,7 +176,7 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 	await writeFile(files[4], "Synthetic unreadable PDF");
 	await writeFile(files[5], "Unsupported synthetic note");
 	const originalHashes: string[] = await Promise.all(files.map(async (file: string): Promise<string> => sha(await readFile(file))));
-	const command: (value: WorkspaceCommand) => Promise<WorkspaceState> = (value: WorkspaceCommand): Promise<WorkspaceState> => page.evaluate((value: { type: "get-state"; } | { type: "new"; } | { type: "open"; } | { type: "save"; } | { type: "import-statement"; } | { type: "import-documents"; } | { type: "cancel-import"; } | { type: "rename"; name: string; } | { type: "set-transaction-ignored"; revision: number; transactionId: string; ignored: boolean; remember?: true | undefined; } | { type: "review-match"; revision: number; transactionId: string; review: { status: "open"; } | { status: "assigned"; documentId: string; } | { status: "completed-without-document"; }; } | { type: "set-duplicate-decision"; revision: number; transactionId: string; otherTransactionId: string; decision: "separate" | "keep-first" | "keep-second" | "clear"; } | { type: "correct-bank-row"; revision: number; rowId: string; changes: { bookingDate?: string | undefined; accountAmount?: { coefficient: string; currency: string; scale: number; } | undefined; }; } | { change: { kind: "amount"; value: { coefficient: string; currency: string; scale: number; }; } | { kind: "date"; value: string; }; documentId: string; sectionId: string; fieldId: string | null; type: "correct-document-field"; revision: number; } | { type: "approve-matches"; loadRevision: number; selections: MatchApprovalSelection[]; }): Promise<WorkspaceState> => window.receiptmatch.command(value), value);
+	const command: (value: WorkspaceCommand) => Promise<WorkspaceState> = (value: WorkspaceCommand): Promise<WorkspaceState> => page.evaluate((value: WorkspaceCommand): Promise<WorkspaceState> => window.receiptmatch.command(value), value);
 
 	const records: () => Promise<StoredDocumentImport[]> = (): Promise<StoredDocumentImport[]> => page.evaluate((): Promise<StoredDocumentImport[]> => window.receiptmatch.documentImports());
 

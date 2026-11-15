@@ -5,7 +5,7 @@
 			@let count = state().workspace?.imports?.length ?? 0;
 			<p class="source-panel-count">{{ count }} {{ count === 1 ? 'statement' : 'statements' }}</p>
 		</div>
-		<wig-button label="Import statement" (click)="workspaceCommand.emit({ type: 'import-statement' })" [disabled]="state().busy" />
+		<wig-button #importAction label="Import statement" (click)="workspaceCommand.emit({ type: 'import-statement' })" [disabled]="state().busy" />
 	</div>
 	@if (state().statementImport; as active) {
 		<div class="import-progress" data-testid="import-progress" role="status" aria-live="polite">
@@ -15,7 +15,7 @@
 					<p class="muted">{{ active.progress!.completedPages }} of {{ active.progress!.pageCount }} pages completed</p>
 				}
 			</div>
-			<wig-button label="Cancel import" severity="secondary" (click)="workspaceCommand.emit({type:'cancel-import'})" [disabled]="active.cancelling" />
+			<wig-button #cancelImportAction label="Cancel import" severity="secondary" (click)="workspaceCommand.emit({type:'cancel-import'})" [disabled]="active.cancelling" />
 		</div>
 	}
 	@if (state().importOutcome; as outcome) {
@@ -40,18 +40,118 @@
 					<p>The statement could not be imported.</p>
 				}
 				@case ('unsupported') {
-					<p>This statement is not supported.</p>
+					<p>{{ state().statementFallback?.stage === 'offer' ? 'The built-in import could not read this statement layout.' : 'This statement is not supported.' }}</p>
 				}
 			}
 			@if (outcome.status === 'failed' || outcome.status === 'unsupported') {
 				<ul>
 					@for (issue of outcome.issues; track $index) {
-						<li>{{ issue.message }}</li>
+						@if (state().statementFallback?.stage !== 'offer' || issue.code !== 'unsupported-bank') {
+							<li>{{ issue.message }}</li>
+						}
 					}
 				</ul>
 			}
 		</div>
 	}
+	@if (state().statementFallback; as fallback) {
+		@if (fallback.stage === 'offer' && !state().statementImport) {
+			<section class="statement-ai-panel" aria-labelledby="statement-ai-offer-heading" data-testid="statement-ai-offer">
+				<h3 id="statement-ai-offer-heading">Read this statement with local AI</h3>
+				<p class="file-location">{{ fallback.fileName }}</p>
+				<p>PaddleOCR-VL 1.6 runs on your device. You can review its suggestions before importing.</p>
+				<div class="statement-ai-actions">
+					<wig-button #aiOfferAction label="Try with local AI" (click)="workspaceCommand.emit({ type: 'try-statement-ai', token: fallback.token })" [disabled]="state().busy" />
+					<wig-button
+						label="Discard statement"
+						severity="secondary"
+						(click)="workspaceCommand.emit({ type: 'discard-statement-ai', token: fallback.token })"
+						[disabled]="state().busy"
+					/>
+				</div>
+			</section>
+		} @else if (fallback.stage === 'review') {
+			@let review = { filePath: fallback.fileName, result: fallback.result };
+			@let transactions = fallback.result.transactions;
+			@let drafts = fallback.result.unresolvedDrafts;
+			<section class="statement-ai-panel" aria-labelledby="statement-ai-review-heading" data-testid="statement-ai-review">
+				<h3 #aiReviewHeading id="statement-ai-review-heading" tabindex="-1">Review proposed transactions</h3>
+				<p class="file-location">{{ fallback.fileName }}</p>
+				<p>
+					Expand a row to check the original text and page.
+					@if (drafts.length) {
+						Unresolved drafts stay open for review after import.
+					}
+				</p>
+				@if (fallback.result.issues.length) {
+					<aside class="statement-warnings" aria-labelledby="statement-ai-issues-heading">
+						<h4 id="statement-ai-issues-heading">Review needed</h4>
+						<ul>
+							@for (issue of fallback.result.issues; track $index) {
+								<li>
+									@if (issueContext(review, issue); as context) {
+										<strong>{{ context }} · </strong>
+									}
+									{{ issue.message }}
+								</li>
+							}
+						</ul>
+					</aside>
+				}
+				<section aria-labelledby="statement-ai-transactions-heading">
+					<h4 id="statement-ai-transactions-heading">Verified transactions ({{ transactions.length }})</h4>
+					@for (row of transactions; track row.rowId) {
+						<ng-container [ngTemplateOutlet]="aiRow" [ngTemplateOutletContext]="{ $implicit: row, record: review, issues: [] }" />
+					} @empty {
+						<p>No transactions could be verified.</p>
+					}
+				</section>
+				@if (drafts.length) {
+					<section aria-labelledby="statement-ai-drafts-heading">
+						<h4 id="statement-ai-drafts-heading">Unresolved drafts ({{ drafts.length }})</h4>
+						@for (row of drafts; track row.rowId) {
+							<ng-container [ngTemplateOutlet]="aiRow" [ngTemplateOutletContext]="{ $implicit: row, record: review, issues: row.issues }" />
+						}
+					</section>
+				}
+				<div class="statement-ai-actions">
+					<wig-button label="Confirm import" (click)="workspaceCommand.emit({ type: 'confirm-statement-ai', token: fallback.token })" [disabled]="state().busy" />
+					<wig-button
+						label="Discard proposal"
+						severity="secondary"
+						(click)="workspaceCommand.emit({ type: 'discard-statement-ai', token: fallback.token })"
+						[disabled]="state().busy"
+					/>
+				</div>
+			</section>
+		}
+	}
+	<ng-template #aiRow let-row let-record="record" let-issues="issues">
+		<details class="statement-ai-row" data-testid="statement-ai-row">
+			<summary #rowSummary>
+				<span class="statement-ai-row-summary">
+					<strong>{{ row.description?.value || 'Unknown description' }}</strong>
+					<span class="muted">
+						{{ date(row.bookingDate?.value ?? null) }}
+						@if (pageNumber(record, row.evidence[0]?.pageId ?? null); as page) {
+							· Page {{ page }}
+						}
+					</span>
+					<span>{{ money(row.accountAmount?.value ?? null) }} · {{ direction(row.direction) }}</span>
+				</span>
+			</summary>
+			@defer (on interaction(rowSummary)) {
+				@if (issues.length) {
+					<ul class="row-issues">
+						@for (issue of issues; track $index) {
+							<li>{{ issue.message }}</li>
+						}
+					</ul>
+				}
+				<app-row-source [row]="row" [record]="record" />
+			}
+		</details>
+	</ng-template>
 	@if (!state().workspace?.imports?.length) {
 		<div class="import-empty">
 			<p>Import a PDF bank statement to read its transactions here.</p>
@@ -98,6 +198,8 @@
 					<ng-template wigTemplate="statement">
 						@if (record.result.adapter; as adapter) {
 							<p>Bank · {{ adapter.bankId === 'revolut' ? 'Revolut' : adapter.bankId === 'airwallex' ? 'Airwallex' : adapter.bankId }}</p>
+						} @else if (record.result.localRecognition) {
+							<p>Recognition · PaddleOCR-VL 1.6 (local AI)</p>
 						}
 						<p class="file-location">{{ record.filePath }}</p>
 						<dl class="account-list">

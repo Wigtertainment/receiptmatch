@@ -5,6 +5,7 @@ import path from 'node:path';
 import { localOcrModelSchema, type LocalOcrModel } from '../src/shared/pdf-extraction.js';
 import { localOcrSelectionSchema, type LocalOcrSelection, type LocalOcrStatus } from '../src/shared/local-ocr-settings.js';
 import type { LocalDocumentOcr } from './extraction/host.js';
+import type { PaddleVlFiles } from './extraction/paddle-vl.js';
 import { LOCAL_OCR_ASSETS, type ModelAsset } from './local-ocr-assets.js';
 import { downloadModelAssets } from './local-ocr-transfer.js';
 import type { ZodSafeParseResult } from 'zod';
@@ -111,10 +112,16 @@ export class LocalOcrSettings {
     }
 
     async selected(): Promise<LocalDocumentOcr | undefined> {
-        const model: "pp-ocrv6-medium" | "paddleocr-vl-1.6" | "standard" = await this.read();
-        if (model === 'standard') {
-            return undefined;
-        }
+        const model: LocalOcrSelection = await this.read();
+        return model === 'standard' ? undefined : this.available(model);
+    }
+
+    async statementModel(): Promise<PaddleVlFiles | undefined> {
+        const available: LocalDocumentOcr | undefined = await this.available('paddleocr-vl-1.6');
+        return available?.model === 'paddleocr-vl-1.6' ? available.files : undefined;
+    }
+
+    private async available(model: LocalOcrModel): Promise<LocalDocumentOcr | undefined> {
         const directory: string | undefined = await this.installed(model);
         const executable: string = this.runtimes[model];
         if (!directory || await runtimeIssue(model, executable)) {

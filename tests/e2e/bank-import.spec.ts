@@ -1,5 +1,5 @@
 import type { BankImportInput, ImportIssue, TransactionCandidate } from "../../src/shared/bank-import.js";
-import type { MatchApproval, MatchApprovalSelection } from "../../src/shared/match-approvals.js";
+import type { MatchApproval } from "../../src/shared/match-approvals.js";
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
 import type { MatchSummary } from "../../src/shared/workspace-matching.js";
 import assert from 'node:assert/strict';
@@ -153,7 +153,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 	}
 
 	async function command(value: WorkspaceCommand): Promise<WorkspaceState> {
-		return page.evaluate((payload: { type: "get-state"; } | { type: "new"; } | { type: "open"; } | { type: "save"; } | { type: "import-statement"; } | { type: "import-documents"; } | { type: "cancel-import"; } | { type: "rename"; name: string; } | { type: "set-transaction-ignored"; revision: number; transactionId: string; ignored: boolean; remember?: true | undefined; } | { type: "review-match"; revision: number; transactionId: string; review: { status: "open"; } | { status: "assigned"; documentId: string; } | { status: "completed-without-document"; }; } | { type: "set-duplicate-decision"; revision: number; transactionId: string; otherTransactionId: string; decision: "separate" | "keep-first" | "keep-second" | "clear"; } | { type: "correct-bank-row"; revision: number; rowId: string; changes: { bookingDate?: string | undefined; accountAmount?: { coefficient: string; currency: string; scale: number; } | undefined; }; } | { change: { kind: "amount"; value: { coefficient: string; currency: string; scale: number; }; } | { kind: "date"; value: string; }; documentId: string; sectionId: string; fieldId: string | null; type: "correct-document-field"; revision: number; } | { type: "approve-matches"; loadRevision: number; selections: MatchApprovalSelection[]; }): Promise<WorkspaceState> => window.receiptmatch.command(payload), value);
+		return page.evaluate((payload: WorkspaceCommand): Promise<WorkspaceState> => window.receiptmatch.command(payload), value);
 	}
 
 	async function records(): Promise<StoredBankImport[]> {

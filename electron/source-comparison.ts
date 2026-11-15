@@ -140,14 +140,17 @@ function compareStatementAccounts(old: StoredBankImport, next: StoredBankImport,
 		identity: statementAccountKey(section.accountReference?.value), currency: section.currency.value,
 	}));
 	const oldAccounts: StatementAccount[] = accounts(old), newAccounts: StatementAccount[] = accounts(next);
-	const sameBank: boolean = old.result.adapter?.bankId === next.result.adapter?.bankId;
+	const oldBank: string | undefined = old.result.adapter?.bankId, newBank: string | undefined = next.result.adapter?.bankId;
+	const sameBank: boolean = Boolean(oldBank && oldBank === newBank);
 	const accountKeys: (values: StatementAccount[]) => string[] = (values: StatementAccount[]): string[] => values.map((value: StatementAccount): string => JSON.stringify([value.currency, value.identity])).sort();
 	const knownAccounts: boolean = oldAccounts.every((value: StatementAccount): string | null => value.identity) && newAccounts.every((value: StatementAccount): string | null => value.identity);
 	const sameAccounts: boolean = JSON.stringify(accountKeys(oldAccounts)) === JSON.stringify(accountKeys(newAccounts));
 	const sameCurrencies: boolean = oldAccounts.map((value: StatementAccount): string => value.currency).sort().join(',') === newAccounts.map((value: StatementAccount): string => value.currency).sort().join(',');
 	const compatible: boolean = sameBank && (knownAccounts || oldAccounts.length > 1 || newAccounts.length > 1 ? sameAccounts : sameCurrencies &&
 		(!oldAccounts[0]?.identity || !newAccounts[0]?.identity));
-	if (!sameBank) {
+	if (!oldBank || !newBank) {
+		conflicts.push('The bank identity could not be confirmed for both statements.');
+	} else if (!sameBank) {
 		conflicts.push('The selected statement is from a different bank.');
 	} else if (!compatible) {
 		conflicts.push('The selected statement belongs to a different known account.');

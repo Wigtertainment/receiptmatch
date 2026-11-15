@@ -1,4 +1,4 @@
-import type { MatchApprovalSelection } from "../src/shared/match-approvals.js";
+import { importIssue, type BankImportInput, type ImportIssue } from '../src/shared/bank-import.js';
 import type { StoredBankImport } from "../src/shared/workspace-import.js";
 import type { StoredDocumentImport } from "../src/shared/workspace-documents.js";
 import type { ReconciliationExportReport } from "../src/shared/document-export.js";
@@ -16,7 +16,8 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { randomBytes } from 'node:crypto';
-import { commandSchema, documentExportRequestSchema, documentSnapshotRequestSchema, exportSettingsRequestSchema, matchRequestSchema, type WorkspaceState } from '../src/shared/protocol.js';
+import { commandSchema, documentExportRequestSchema, documentSnapshotRequestSchema, exportSettingsRequestSchema, matchRequestSchema,
+  type WorkspaceCommand, type WorkspaceState } from '../src/shared/protocol.js';
 import type { DocumentExportResponse } from '../src/shared/document-export.js';
 import { originalAdoptionRequestSchema, originalPreviewRequestSchema, originalSourceExtensions } from '../src/shared/original-preview.js';
 import { WorkspaceSession } from './workspace-session.js';
@@ -31,10 +32,12 @@ import { ExportDestinationError } from './document-export.js';
 import { LocalOcrSettings } from './local-ocr-settings.js';
 import { localOcrRequestSchema } from '../src/shared/local-ocr-settings.js';
 import type { ZodSafeParseResult } from 'zod';
-import type { LocalDocumentOcr } from './extraction/host.js';
+import type { ExtractionOptions, LocalDocumentOcr, StatementProposalExtraction } from './extraction/host.js';
+import type { PaddleVlFiles } from './extraction/paddle-vl.js';
 
 // Load the same module instance as other main-process consumers of the extraction API.
-const { extractPdfBytes, extractDocumentBytes }: Pick<typeof import("./extraction/host.js"), "extractPdfBytes" | "extractDocumentBytes"> = createRequire(__filename)('./extraction-host.cjs') as Pick<typeof import('./extraction/host.js'), 'extractPdfBytes' | 'extractDocumentBytes'>;
+type ExtractionApi = Pick<typeof import('./extraction/host.js'), 'extractPdfBytes' | 'extractDocumentBytes' | 'extractStatementProposal'>;
+const { extractPdfBytes, extractDocumentBytes, extractStatementProposal }: ExtractionApi = createRequire(__filename)('./extraction-host.cjs') as ExtractionApi;
 
 app.setName('ReceiptMatch');
 if (process.platform === 'win32') {
@@ -136,7 +139,13 @@ async function launch(): Promise<void> {
       const selected: Electron.OpenDialogReturnValue = await dialog.showOpenDialog(window, { title: 'Import bank statement', properties: ['openFile'], filters: [{ name: 'PDF bank statement', extensions: ['pdf'] }] });
       return selected.canceled ? null : selected.filePaths[0] ?? null;
     },
-    extract: extractPdfBytes
+    extract: extractPdfBytes,
+    propose: async (bytes: Uint8Array, input: BankImportInput, options: ExtractionOptions): Promise<StatementProposalExtraction | { status: 'unavailable'; issues: ImportIssue[] }> => {
+      const model: PaddleVlFiles | undefined = await localOcr.statementModel();
+      return model ? extractStatementProposal(bytes, input, model, options) : {
+        status: 'unavailable', issues: [importIssue('local-model-unavailable', 'Make PaddleOCR-VL 1.6 available in Settings under Document recognition, then try again.')]
+      };
+    }
   }), new FolderDocumentImportService({
     choose: async (): Promise<string | null> => {
       const selected: Electron.OpenDialogReturnValue = await dialog.showOpenDialog(window, { title: 'Analyze supporting document folder', properties: ['openDirectory'] });
@@ -239,7 +248,7 @@ async function launch(): Promise<void> {
     if (closeRequested) {
       return workspace.state();
     }
-    const command: ZodSafeParseResult<{ type: "get-state"; } | { type: "new"; } | { type: "open"; } | { type: "save"; } | { type: "import-statement"; } | { type: "import-documents"; } | { type: "cancel-import"; } | { type: "rename"; name: string; } | { type: "set-transaction-ignored"; revision: number; transactionId: string; ignored: boolean; remember?: true | undefined; } | { type: "review-match"; revision: number; transactionId: string; review: { status: "open"; } | { status: "assigned"; documentId: string; } | { status: "completed-without-document"; }; } | { type: "set-duplicate-decision"; revision: number; transactionId: string; otherTransactionId: string; decision: "separate" | "keep-first" | "keep-second" | "clear"; } | { type: "correct-bank-row"; revision: number; rowId: string; changes: { bookingDate?: string | undefined; accountAmount?: { coefficient: string; currency: string; scale: number; } | undefined; }; } | { change: { kind: "amount"; value: { coefficient: string; currency: string; scale: number; }; } | { kind: "date"; value: string; }; documentId: string; sectionId: string; fieldId: string | null; type: "correct-document-field"; revision: number; } | { type: "approve-matches"; loadRevision: number; selections: MatchApprovalSelection[]; }> = commandSchema.safeParse(payload);
+    const command: ZodSafeParseResult<WorkspaceCommand> = commandSchema.safeParse(payload);
     return command.success ? workspace.dispatch(command.data) : workspace.rejectRequest();
   });
 

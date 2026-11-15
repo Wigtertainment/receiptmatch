@@ -51,10 +51,10 @@ Download and select an AI model in Settings. Recognition then runs on your compu
 
 | Source | Supported inputs |
 | --- | --- |
-| Bank statements | English **Revolut Business EUR** statement PDFs and **Airwallex EUR Account Activity** PDFs |
+| Bank statements | English **Revolut Business EUR** and **Airwallex EUR Account Activity** PDFs. For other PDF layouts, try the optional local AI import. |
 | Receipts and invoices | **PDF**, **PNG**, and **JPEG** files in a folder and its subfolders |
 
-You can use both banks in one workspace and pick up later from the same saved review.
+To try the local AI import, install **PaddleOCR-VL 1.6** under **Settings → Document recognition**. If the built-in import cannot read the layout, choose **Try with local AI**. Review the proposed transactions and their source text before confirming the import. Layouts with unrecognized columns or an unclear account currency may need review or may be unreadable.
 
 ## Download
 

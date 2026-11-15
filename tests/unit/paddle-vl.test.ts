@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
-import { parsePaddleVlSpotting } from '../../electron/extraction/paddle-vl.js';
+import { parsePaddleVlSpotting, parsePaddleVlTable } from '../../electron/extraction/paddle-vl.js';
 
 const spottingRecord: (text: string, coordinates: number[]) => string = (text: string, coordinates: number[]): string => `${text}${coordinates.map((value: number): string => `<|LOC_${value}|>`).join('')}`;
 
@@ -24,5 +24,32 @@ test('rejects PaddleOCR-VL output without complete valid geometry', (): void => 
     for (const invalid of ['Unpositioned text', spottingRecord('Incomplete', [0, 0, 800, 0]),
         spottingRecord('Outside page', [0, 0, 1001, 0, 800, 500, 0, 500]), spottingRecord('Empty box', [0, 0, 100, 0, 800, 0, 0, 0])]) {
         assert.throws((): { text: string; x0: number; y0: number; x1: number; y1: number; }[] => parsePaddleVlSpotting(`${good}\n${invalid}`, 800, 1000), /PaddleOCR-VL returned/);
+    }
+});
+
+test('preserves empty table columns and leaves merged values unassigned', (): void => {
+    const output: string = '<fcel>Statement<lcel><lcel><nl>\r\n' +
+        '<fcel>Booking date<fcel>Debit<fcel>Credit<nl>\r\n' +
+        '<fcel>2026-02-01<fcel>12.00<ecel><nl>' +
+        '<fcel>2026-02-02<ecel><fcel>4.00<nl>' +
+        '<fcel>2026-02-03<fcel>75.00<lcel><nl>' +
+        '<fcel>2026-02-04<ucel><xcel><nl>';
+    assert.deepEqual(parsePaddleVlTable(output), [
+        ['', '', ''],
+        ['Booking date', 'Debit', 'Credit'],
+        ['2026-02-01', '12.00', ''],
+        ['2026-02-02', '', '4.00'],
+        ['2026-02-03', '', ''],
+        ['2026-02-04', '', '']
+    ]);
+    assert.deepEqual(parsePaddleVlTable('<fcel>Amount < EUR 5<nl>'), [['Amount < EUR 5']]);
+});
+
+test('rejects truncated or structurally invalid table output', (): void => {
+    const invalidOutputs: string[] = ['', '<fcel>Debit', 'Table:<fcel>Debit<nl>', '<fcel>Debit<nl>extra', '<fcel>Debit<b>1</b><nl>',
+        '<fcel><nl>', '<nl>', '<ecel>5.00<nl>', '<lcel><nl>', '<ucel><nl>', '<fcel>A<fcel>B<nl><fcel>C<xcel><nl>',
+        '<fcel>Debit<fcel>Credit<nl><fcel>5.00<nl>'];
+    for (const output of invalidOutputs) {
+        assert.throws((): string[][] => parsePaddleVlTable(output), /PaddleOCR-VL returned/);
     }
 });

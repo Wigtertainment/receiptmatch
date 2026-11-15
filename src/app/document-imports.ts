@@ -1,4 +1,3 @@
-import type { MatchApprovalSelection } from "../shared/match-approvals.js";
 import type { StoredSupportingDocument } from "../shared/workspace-documents.js";
 import type { ExtractionProgress } from "../shared/pdf-extraction.js";
 import { NgTemplateOutlet } from '@angular/common';
@@ -356,7 +355,7 @@ interface ReportCache { workspaceKey: string; requestKey: string; records: Map<s
 })
 export class DocumentImports {
     readonly state: InputSignal<WorkspaceState> = input.required<WorkspaceState>();
-    readonly workspaceCommand: OutputEmitterRef<{ type: "get-state"; } | { type: "new"; } | { type: "open"; } | { type: "save"; } | { type: "import-statement"; } | { type: "import-documents"; } | { type: "cancel-import"; } | { type: "rename"; name: string; } | { type: "set-transaction-ignored"; revision: number; transactionId: string; ignored: boolean; remember?: true | undefined; } | { type: "review-match"; revision: number; transactionId: string; review: { status: "open"; } | { status: "assigned"; documentId: string; } | { status: "completed-without-document"; }; } | { type: "set-duplicate-decision"; revision: number; transactionId: string; otherTransactionId: string; decision: "separate" | "keep-first" | "keep-second" | "clear"; } | { type: "correct-bank-row"; revision: number; rowId: string; changes: { bookingDate?: string | undefined; accountAmount?: { coefficient: string; currency: string; scale: number; } | undefined; }; } | { change: { kind: "amount"; value: { coefficient: string; currency: string; scale: number; }; } | { kind: "date"; value: string; }; documentId: string; sectionId: string; fieldId: string | null; type: "correct-document-field"; revision: number; } | { type: "approve-matches"; loadRevision: number; selections: MatchApprovalSelection[]; }> = output<WorkspaceCommand>();
+    readonly workspaceCommand: OutputEmitterRef<WorkspaceCommand> = output<WorkspaceCommand>();
     readonly workspaceKey: Signal<string> = computed((): string => {
         const workspace: WorkspaceView | null = this.state().workspace;
         return workspace ? JSON.stringify([workspace.id, workspace.loadRevision]) : '';

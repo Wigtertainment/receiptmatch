@@ -333,7 +333,8 @@ function writeArchivedSourceReviews(db: Database.Database, previous: ArchivedSou
 }
 
 function accountName(record: StoredBankImport, sectionId: string): string {
-  return record.result.accountSections.find((section: { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; }): boolean => section.sectionId === sectionId)!.accountReference?.value ?? record.result.adapter!.bankId;
+  const section: StoredBankImport['result']['accountSections'][number] | undefined = record.result.accountSections.find((item: StoredBankImport['result']['accountSections'][number]): boolean => item.sectionId === sectionId);
+  return section?.accountReference?.value ?? record.result.adapter?.bankId ?? 'Unknown account';
 }
 
 function claimStoredImportIdentities(entries: [string, string | null][], identities: Map<string, string[]>, owned: Set<string>, problem: string): void {
