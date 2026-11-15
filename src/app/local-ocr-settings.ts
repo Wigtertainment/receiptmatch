@@ -80,7 +80,7 @@ export class LocalOcrSettings {
 			}
 		} catch {
 			if (!this.disposed && !this.cancellationRequested) {
-				this.error.set(request.type === 'install' ? 'The model could not be downloaded or installed. Try again.' : 'The OCR selection could not be saved. Try again.');
+				this.error.set(request.type === 'install' ? 'The model could not be downloaded or installed. Try again.' : 'The AI model preference could not be saved. Try again.');
 			}
 		} finally {
 			this.revision++;

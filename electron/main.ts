@@ -32,7 +32,7 @@ import { ExportDestinationError } from './document-export.js';
 import { LocalOcrSettings } from './local-ocr-settings.js';
 import { localOcrRequestSchema } from '../src/shared/local-ocr-settings.js';
 import type { ZodSafeParseResult } from 'zod';
-import type { ExtractionOptions, LocalDocumentOcr, StatementProposalExtraction } from './extraction/host.js';
+import type { ExtractionOptions, StatementProposalExtraction } from './extraction/host.js';
 import type { PaddleVlFiles } from './extraction/paddle-vl.js';
 
 // Load the same module instance as other main-process consumers of the extraction API.
@@ -151,8 +151,7 @@ async function launch(): Promise<void> {
       const selected: Electron.OpenDialogReturnValue = await dialog.showOpenDialog(window, { title: 'Analyze supporting document folder', properties: ['openDirectory'] });
       return selected.canceled ? null : selected.filePaths[0] ?? null;
     },
-    extract: extractDocumentBytes,
-    localOcr: (): Promise<LocalDocumentOcr | undefined> => localOcr.selected()
+    extract: extractDocumentBytes
   }), extractDocumentBytes, path.join(userData, 'transaction-ignore-rules'));
   const authorized: (event: Electron.IpcMainInvokeEvent) => boolean = (event: Electron.IpcMainInvokeEvent): boolean => event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && event.senderFrame.url === appUrl;
   const exportSettingsFile: string = path.join(app.getPath('userData'), 'export-settings.json');

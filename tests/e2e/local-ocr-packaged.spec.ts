@@ -2,14 +2,14 @@ import type { StoredDocumentImport, StoredSupportingDocument } from "../../src/s
 import type { ImportIssue, SourceEvidence } from "../../src/shared/bank-import.js";
 import type { DocumentSection, SupportingDocument } from "../../src/shared/supporting-document.js";
 import type { WorkspaceState } from "../../src/shared/protocol.js";
-import type { LocalOcrModel } from "../../src/shared/pdf-extraction.js";
+import { PDF_EXTRACTION_VERSION, type LocalOcrModel } from "../../src/shared/pdf-extraction.js";
 import type { LocalOcrStatus } from "../../src/shared/local-ocr-settings.js";
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { test, type Page, type ElectronApplication, type PlaywrightWorkerOptions, type PlaywrightWorkerArgs, type PlaywrightTestOptions, type PlaywrightTestArgs } from '@playwright/test';
 
-test('packaged OCR runs with installed local models and switches to standard recognition', async ({ playwright }: PlaywrightTestArgs & PlaywrightTestOptions & PlaywrightWorkerArgs & PlaywrightWorkerOptions): Promise<void> => {
+test('packaged receipt import uses standard OCR with or without a preferred local model', async ({ playwright }: PlaywrightTestArgs & PlaywrightTestOptions & PlaywrightWorkerArgs & PlaywrightWorkerOptions): Promise<void> => {
 	const profile: string | undefined = process.env.RECEIPTMATCH_OCR_TEST_PROFILE;
 	test.skip(!profile, 'Requires a dedicated profile for model installation and offline verification.');
 	assert.ok(profile && path.isAbsolute(profile));
@@ -33,7 +33,7 @@ test('packaged OCR runs with installed local models and switches to standard rec
 			['INVOICE', 'Cedar Workshop', 'Invoice Date: 2026-10-12', 'Subtotal EUR 40.75', 'Tax EUR 8.00', 'Grand Total EUR 48.75'].forEach((line: string, index: number): void => {
 				context.fillText(line, 54, 62 + 62 * index);
 			});
-			// Give each engine a distinct source for the importer's duplicate detection.
+			// Give each settings choice a distinct source for the importer's duplicate detection.
 			return [0, 1, 2].map((offset: number): string => {
 				context.fillRect(offset, canvas.height - 1, 1, 1);
 				return canvas.toDataURL('image/png').split(',')[1];
@@ -84,7 +84,7 @@ test('packaged OCR runs with installed local models and switches to standard rec
 			const imports: StoredDocumentImport[] = await page.evaluate((): Promise<StoredDocumentImport[]> => window.receiptmatch.documentImports());
 			const record: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; } | undefined = imports.flatMap((run: StoredDocumentImport): ({ status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; })[] => run.files).find((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): boolean => file.status === 'imported' && file.record.filePath === sample);
 			assert.ok(record?.status === 'imported', JSON.stringify(imports.at(-1)?.files));
-			assert.ok(record.record.result.input?.extraction.version.includes(model === 'standard' ? 'tesseract' : model));
+			assert.equal(record.record.result.input?.extraction.version, PDF_EXTRACTION_VERSION);
 			assert.ok(record.record.result.sections.some((section: DocumentSection): boolean => section.amounts.some((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean | 0 => field.role === 'billed-total' &&
 				field.evidence.length && field.candidates.some((amount: { coefficient: string; scale: number; currency: string | null; }): boolean => amount.currency === 'EUR' && amount.coefficient === '4875' && amount.scale === 2))));
 		}

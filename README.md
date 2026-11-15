@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/Wigtertainment/receiptmatch/releases"><strong>Download the latest release</strong></a>
   · <a href="#what-receiptmatch-can-do">Features</a>
-  · <a href="#read-scans-and-photos-with-local-ai">Local AI</a>
+  · <a href="#document-recognition">Document recognition</a>
 </p>
 
 Closing the books is easier when every payment has a document. Give ReceiptMatch a bank statement and the folder where you keep your receipts and invoices. It suggests which documents belong to which payments and shows you where a receipt is still missing.
@@ -22,16 +22,16 @@ ReceiptMatch is a free, open-source desktop app for freelancers and small busine
 
 ## What ReceiptMatch can do
 
-- **Read receipts, invoices, and scans.** Pull details such as merchant names, dates, totals, and invoice numbers from your documents. Use optional local AI to read scans and photos.
+- **Read receipts, invoices, and scans.** Pull details such as merchant names, dates, totals, and invoice numbers from your documents.
 - **See why a match was suggested.** Compare amounts, dates, and references side by side, and open the original document from the review.
 - **Keep track of missing receipts.** See which payments still need a document. Approve a suggestion, choose a different document, or leave a payment open for follow-up.
 - **Hand over reviewed records.** Export copies of approved documents with an optional CSV report for your bookkeeper.
 
-## Read scans and photos with local AI
+## Document recognition
 
 A phone photo of a receipt or a scanned invoice often has no text you can search or copy. ReceiptMatch can read the image on your computer and use the recognized text to find details such as the total or invoice number. Those details can help ReceiptMatch suggest a matching bank transaction for you to review.
 
-Open **Settings → Document recognition** to choose how ReceiptMatch reads scans and photos.
+On first import, ReceiptMatch reads embedded PDF text directly and uses Standard OCR for scans and photos. Open **Settings → Document recognition** to download optional local AI models and set your preferred model.
 
 | Option | When to use it |
 | --- | --- |
@@ -39,7 +39,7 @@ Open **Settings → Document recognition** to choose how ReceiptMatch reads scan
 | **PP-OCRv6 Medium** | A smaller AI model for everyday scans and receipt photos. |
 | **PaddleOCR-VL 1.6** | A larger, slower AI model you can try on difficult scans, photos, and complex layouts. |
 
-Download and select an AI model in Settings. Recognition then runs on your computer without uploading your documents. ReceiptMatch reads embedded text directly when it’s available in a PDF.
+Document recognition runs on your computer without uploading your documents.
 
 ## How it works
 

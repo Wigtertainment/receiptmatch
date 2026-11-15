@@ -3,8 +3,8 @@
 	<div class="source-panel ocr-settings">
 		<header>
 			<h2>Document recognition</h2>
-			<p>Choose how ReceiptMatch reads images and scanned PDFs. Text embedded in PDFs is read directly.</p>
-			<p>Optional AI models are downloaded after you confirm. Document processing runs on this device.</p>
+			<p>New receipts use Standard OCR for scans and photos. ReceiptMatch reads embedded PDF text directly.</p>
+			<p>Download optional models and set your preferred model for on-demand AI recognition. Document processing runs on this device.</p>
 		</header>
 		@if (status(); as current) {
 			<div class="ocr-option">
@@ -12,16 +12,14 @@
 					<h3 id="ocr-option-standard" tabindex="-1">Standard OCR</h3>
 					<p>Built-in Tesseract recognition. Ready to use.</p>
 				</div>
-				@if (current.selection === 'standard') {
-					<strong role="status">In use</strong>
-				} @else {
+				@if (current.selection !== 'standard') {
 					<button
 						type="button"
 						class="button-secondary"
 						[disabled]="changing() || !!current.download"
 						(click)="change({ type: 'select', selection: 'standard' }, $event)"
 					>
-						Use Standard OCR
+						Clear AI preference
 					</button>
 				}
 			</div>
@@ -36,7 +34,7 @@
 						}
 					</div>
 					@if (current.selection === model.model) {
-						<strong role="status">In use</strong>
+						<strong role="status">Preferred AI model</strong>
 					} @else if (model.installed) {
 						<button
 							type="button"
@@ -44,7 +42,7 @@
 							[disabled]="changing() || !!current.download || !model.runtimeAvailable"
 							(click)="change({ type: 'select', selection: model.model }, $event)"
 						>
-							Use {{ model.name }}
+							Prefer {{ model.name }}
 						</button>
 					} @else {
 						<button
