@@ -125,6 +125,12 @@ export async function extractDocumentBytes(
     return extract(bytes, sourceId, format, options);
 }
 
+export async function extractDocumentWithModel(
+    bytes: Uint8Array, sourceId: string, format: 'pdf' | 'png' | 'jpeg', model: LocalDocumentOcr, options: ExtractionOptions = {}
+): Promise<ExtractionResult> {
+    return extract(bytes, sourceId, format, { ...options, localOcr: model, modelOnly: true });
+}
+
 export async function extractStatementTables(
     bytes: Uint8Array, input: BankImportInput, files: PaddleVlFiles, options: ExtractionOptions = {}
 ): Promise<StatementTableExtraction> {
@@ -165,6 +171,11 @@ function matchesTableSource(input: BankImportInput, job: StatementTableJob): boo
         return page.pageId === original.pageId && page.pageNumber === original.pageNumber && page.width === original.width && page.height === original.height &&
             !page.spans.length && (page.status === 'complete') === job.tables.has(page.pageNumber);
     });
+}
+
+function matchesModelPages(input: BankImportInput, recognizedPages: ReadonlySet<number>): boolean {
+    return input.pages.every((page: ImportPage): boolean => page.status === 'failed' ||
+        (recognizedPages.has(page.pageNumber) && page.spans.every((span: PositionedSpan): boolean => span.method === 'local-ocr')));
 }
 
 async function recognizeTable(raster: OcrRaster, job: StatementTableJob, signal: AbortSignal): Promise<OcrRegion[]> {
@@ -213,7 +224,7 @@ function extractionStartFailure(bytes: Uint8Array, sourceId: string, format: 'pd
 
 async function extract(
     bytes: Uint8Array, sourceId: string, format: 'pdf' | 'png' | 'jpeg',
-    options: ExtractionOptions & { localOcr?: LocalDocumentOcr; statementTables?: StatementTableJob }
+    options: ExtractionOptions & { localOcr?: LocalDocumentOcr; modelOnly?: true; statementTables?: StatementTableJob }
 ): Promise<ExtractionResult> {
     const denied: ExtractionResult | null = extractionStartFailure(bytes, sourceId, format, options.signal);
     if (denied) {
@@ -239,7 +250,8 @@ async function extract(
     active = true;
     const jobId: `${string}-${string}-${string}-${string}-${string}` = randomUUID();
     const localOcr: LocalDocumentOcr | undefined = options.localOcr;
-    const job: ExtractionJob = { jobId, sourceId, format, sha256, bytes: snapshot, ocrModel: localOcr?.model, statementTables: statementTables ? true : undefined };
+    const job: ExtractionJob = { jobId, sourceId, format, sha256, bytes: snapshot, ocrModel: localOcr?.model, modelOnly: options.modelOnly,
+        statementTables: statementTables ? true : undefined };
     return new Promise<ExtractionResult>((resolve: (value: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; } | PromiseLike<{ status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }>) => void): void => {
         let window: BrowserWindow | undefined;
         let isolatedSession: Session | undefined;
@@ -251,6 +263,7 @@ async function extract(
         let ocrPixels: number = 0;
         let extractionVersion: string = PDF_EXTRACTION_VERSION;
         const modelAbort: AbortController = new AbortController();
+        const recognizedPages: Set<number> = new Set();
         const finish: (result: ExtractionResult) => void = (result: ExtractionResult): void => {
             if (settled) {
                 return;
@@ -279,8 +292,9 @@ async function extract(
         };
 
         const abort: () => void = (): void => finish(failure('cancelled', 'Document extraction was cancelled.', 'cancelled'));
-        // Allow a timed-out table page to report its failure before the extraction watchdog runs.
-        const watchdogMs: number = PDF_EXTRACTION_LIMITS.timeoutMs + (statementTables ? 10_000 : 0);
+        const modelPageMs: number = job.modelOnly ? 240_000 : PDF_EXTRACTION_LIMITS.timeoutMs;
+        // Allow a timed-out model page to report its failure before the extraction watchdog runs.
+        const watchdogMs: number = modelPageMs + (statementTables || job.modelOnly ? 10_000 : 0);
         const timeout: NodeJS.Timeout = setTimeout((): void => finish(failure('timeout', 'Document extraction exceeded its local execution time limit.')), watchdogMs);
         const authorized: (event: IpcMainEvent | IpcMainInvokeEvent) => boolean | undefined = (event: IpcMainEvent | IpcMainInvokeEvent): boolean | undefined =>
             window &&
@@ -309,14 +323,17 @@ async function extract(
             lastOcrPage = pageNumber;
             ocrPixels += width * height;
             timeout.refresh();
+            const modelSignal: AbortSignal = job.modelOnly ? AbortSignal.any([modelAbort.signal, AbortSignal.timeout(modelPageMs)]) : modelAbort.signal;
             const pending: Promise<OcrRegion[]> = statementTables
                 ? recognizeTable(parsed.data, statementTables, modelAbort.signal)
-                : recognizeDocumentRaster(localOcr!, parsed.data, modelAbort.signal);
+                : recognizeDocumentRaster(localOcr!, parsed.data, modelSignal);
             recognition = pending;
             try {
                 const regions: OcrRegion[] = await pending;
+                modelSignal.throwIfAborted();
                 if (localOcr) {
                     extractionVersion = LOCAL_OCR_VERSIONS[localOcr.model];
+                    recognizedPages.add(pageNumber);
                 }
                 return regions;
             } catch (error: unknown) {
@@ -375,6 +392,7 @@ async function extract(
                     recognition !== undefined ||
                     checked.data.pages.some((page: ImportPage, index: number): boolean => page.pageNumber !== index + 1) ||
                     (statementTables && !matchesTableSource(checked.data, statementTables)) ||
+                    (job.modelOnly && !matchesModelPages(checked.data, recognizedPages)) ||
                     (imageDimensions && (checked.data.pages.length !== 1 || checked.data.pages[0].status !== 'complete' ||
                         !((checked.data.pages[0].width === imageDimensions.width && checked.data.pages[0].height === imageDimensions.height) ||
                             (checked.data.pages[0].width === imageDimensions.height && checked.data.pages[0].height === imageDimensions.width)) ||

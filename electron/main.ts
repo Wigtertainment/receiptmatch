@@ -34,10 +34,11 @@ import { localOcrRequestSchema } from '../src/shared/local-ocr-settings.js';
 import type { ZodSafeParseResult } from 'zod';
 import type { ExtractionOptions, StatementProposalExtraction } from './extraction/host.js';
 import type { PaddleVlFiles } from './extraction/paddle-vl.js';
+import { receiptAiRequestSchema, type ReceiptAiRequest, type ReceiptAiResult } from '../src/shared/receipt-ai.js';
 
 // Load the same module instance as other main-process consumers of the extraction API.
-type ExtractionApi = Pick<typeof import('./extraction/host.js'), 'extractPdfBytes' | 'extractDocumentBytes' | 'extractStatementProposal'>;
-const { extractPdfBytes, extractDocumentBytes, extractStatementProposal }: ExtractionApi = createRequire(__filename)('./extraction-host.cjs') as ExtractionApi;
+type ExtractionApi = Pick<typeof import('./extraction/host.js'), 'extractPdfBytes' | 'extractDocumentBytes' | 'extractStatementProposal' | 'extractDocumentWithModel'>;
+const { extractPdfBytes, extractDocumentBytes, extractStatementProposal, extractDocumentWithModel }: ExtractionApi = createRequire(__filename)('./extraction-host.cjs') as ExtractionApi;
 
 app.setName('ReceiptMatch');
 if (process.platform === 'win32') {
@@ -152,7 +153,7 @@ async function launch(): Promise<void> {
       return selected.canceled ? null : selected.filePaths[0] ?? null;
     },
     extract: extractDocumentBytes
-  }), extractDocumentBytes, path.join(userData, 'transaction-ignore-rules'));
+  }), extractDocumentBytes, path.join(userData, 'transaction-ignore-rules'), { selectedModel: (): ReturnType<LocalOcrSettings['selected']> => localOcr.selected(), extract: extractDocumentWithModel });
   const authorized: (event: Electron.IpcMainInvokeEvent) => boolean = (event: Electron.IpcMainInvokeEvent): boolean => event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && event.senderFrame.url === appUrl;
   const exportSettingsFile: string = path.join(app.getPath('userData'), 'export-settings.json');
   let confirmingOcrDownload: boolean = false;
@@ -320,6 +321,14 @@ async function launch(): Promise<void> {
       throw new Error('Workspace request denied.');
     }
     return workspace.analyzeOriginal(request.data);
+  });
+
+  ipcMain.handle('workspace:reanalyze-receipt', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<ReceiptAiResult> => {
+    if (!authorized(event) || closeRequested || payload.length !== 1) {
+      return Promise.resolve({ status: 'failed', error: 'Receipt analysis request denied.' });
+    }
+    const request: ZodSafeParseResult<ReceiptAiRequest> = receiptAiRequestSchema.safeParse(payload[0]);
+    return request.success ? workspace.reanalyzeReceipt(request.data) : Promise.resolve({ status: 'failed', error: 'Invalid receipt analysis request.' });
   });
 
   ipcMain.handle('workspace:accept-original-analysis', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<OriginalAdoptionResult> => {

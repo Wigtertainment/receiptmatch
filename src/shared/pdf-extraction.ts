@@ -251,6 +251,7 @@ type ExtractionJobSchemaType = z.ZodObject<{
 	sha256: z.ZodString;
 	bytes: z.ZodInstanceOf<Uint8Array<ArrayBuffer>>;
 	ocrModel: z.ZodOptional<typeof localOcrModelSchema>;
+	modelOnly: z.ZodOptional<z.ZodLiteral<true>>;
 	statementTables: z.ZodOptional<z.ZodLiteral<true>>;
 }, z.core.$strict>;
 export const extractionJobSchema: ExtractionJobSchemaType = z.strictObject({
@@ -260,8 +261,9 @@ export const extractionJobSchema: ExtractionJobSchemaType = z.strictObject({
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
     bytes: z.instanceof(Uint8Array).refine((value: Uint8Array<ArrayBuffer>): boolean => value.byteLength > 0 && value.byteLength <= PDF_EXTRACTION_LIMITS.bytes),
     ocrModel: localOcrModelSchema.optional(),
+    modelOnly: z.literal(true).optional(),
     statementTables: z.literal(true).optional()
-}).refine((job: z.output<ExtractionJobSchemaType>): boolean =>
+}).refine((job: z.output<ExtractionJobSchemaType>): boolean => !job.modelOnly || !!job.ocrModel, 'A model-only job requires a local OCR model.').refine((job: z.output<ExtractionJobSchemaType>): boolean =>
     !job.statementTables || (job.format === 'pdf' && !job.ocrModel), 'Statement table jobs require a PDF and their dedicated local model.');
 type ExtractionEventSchemaType = z.ZodObject<{
 	jobId: z.ZodUUID;

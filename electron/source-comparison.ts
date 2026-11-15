@@ -360,11 +360,16 @@ function compareSectionFields(previous: DocumentSection, candidate: DocumentSect
 	return ambiguousFields;
 }
 
-export function compareDocuments(old: StoredSupportingDocument, next: StoredSupportingDocument): { sections: Map<string, string>; fields: Map<string, string>; changes: { label: string; before: string | null; after: string | null; }[]; conflicts: string[]; } {
-	const before: DocumentSection[] = old.result.sections, after: DocumentSection[] = next.result.sections;
+type DocumentAnalysis = Pick<StoredSupportingDocument, 'result'>;
+
+export function compareDocuments(old: DocumentAnalysis | null, next: DocumentAnalysis): {
+	sections: Map<string, string>; fields: Map<string, string>; changes: Change[]; conflicts: string[];
+} {
+	const before: DocumentSection[] = old?.result.sections ?? [], after: DocumentSection[] = next.result.sections;
 	const sections: Map<string, string> = new Map<string, string>(), matchedFields: Map<string, string> = new Map<string, string>();
 	const used: Set<string> = new Set<string>(), conflicts: string[] = [], diff: Differences = differences();
-	const documentIssues: (record: StoredSupportingDocument) => string = (record: StoredSupportingDocument): string => record.result.issues.map((issue: DocumentIssue): string => issue.code).sort().join(', ');
+	const documentIssues: (record: DocumentAnalysis | null) => string = (record: DocumentAnalysis | null): string =>
+		(record?.result.issues ?? []).map((issue: DocumentIssue): string => issue.code).sort().join(', ');
 	const beforeIssues: string = documentIssues(old), afterIssues: string = documentIssues(next);
 	if (beforeIssues !== afterIssues) {
 		diff.add('Document analysis warnings', beforeIssues || null, afterIssues || null);

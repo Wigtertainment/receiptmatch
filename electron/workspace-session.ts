@@ -6,12 +6,13 @@ import type { MatchApproval } from "../src/shared/match-approvals.js";
 import type { ExtractionProgress } from "../src/shared/pdf-extraction.js";
 import type { StatementOverlap } from "../src/shared/statement-overlaps.js";
 import type { StoredSupportingDocument } from "../src/shared/workspace-documents.js";
-import type { DocumentImportProgress } from "../src/shared/workspace-documents.js";
+import type { DocumentFileResult, DocumentImportProgress } from "../src/shared/workspace-documents.js";
 import { isDeepStrictEqual } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { ZodError, type ZodSafeParseResult } from 'zod';
 import type { DocumentSnapshot, DocumentSnapshotRequest, StatementFallbackState, WorkspaceCommand, WorkspaceState } from '../src/shared/protocol.js';
+import type { ReceiptAiRequest, ReceiptAiResult } from '../src/shared/receipt-ai.js';
 import { importIssue, type TransactionCandidate, type UnresolvedDraft } from '../src/shared/bank-import.js';
 import { applyBankCorrections, bankCorrectionSchema, type BankCorrection } from '../src/shared/bank-corrections.js';
 import { documentCorrectionKey, documentCorrectionSchema, type DocumentCorrection, type DocumentCorrectionValue } from '../src/shared/document-corrections.js';
@@ -26,6 +27,7 @@ import { createWorkspace, isSourceRelocationPath, loadWorkspace, newMetadata, sa
 import type { BankImportAttempt, BankImportOptions, BankImportService, StatementFallback, StatementFallbackResult } from './import/service.js';
 import { readSourceSnapshot } from './import/source.js';
 import type { DocumentImportService } from './documents/service.js';
+import { reanalyzeReceipt, type ReceiptAiDependencies, type ReceiptAiSource } from './documents/reanalysis.js';
 import { storedDocumentImportSchema, type StoredDocumentImport, type WorkspaceSource } from '../src/shared/workspace-documents.js';
 import type { MatchDetails, MatchReviewCounts, MatchSummary, ReviewMatch, TransactionMatch } from '../src/shared/workspace-matching.js';
 import { suggestWorkspaceMatches } from './matching.js';
@@ -124,7 +126,7 @@ export class WorkspaceSession {
   private matchRevision: number = 0;
   constructor(private readonly dialogs: WorkspaceDialogs, private readonly changed?: (state: WorkspaceState) => void, private readonly importService?: BankImportService,
     private readonly documentService?: DocumentImportService, private readonly extractReplacement?: ReplacementExtraction,
-    private readonly ignoreRulesDirectory?: string) {}
+    private readonly ignoreRulesDirectory?: string, private readonly receiptAi?: ReceiptAiDependencies) {}
 
   state(): WorkspaceState {
     const imports: BankImportSummary[] = this.effectiveImports.map((record: StoredBankImport): BankImportSummary => ({
@@ -329,6 +331,56 @@ export class WorkspaceSession {
     } catch (error: unknown) {
       return { status: 'failed', error: message(error) };
     } finally {
+      this.busy = false;
+      this.publish();
+    }
+  }
+
+  private receiptAiSource(request: ReceiptAiRequest): ReceiptAiSource | null {
+    if (!this.metadata || request.loadRevision !== this.loadRevision) {
+      return null;
+    }
+    const run: StoredDocumentImport | undefined = this.documents().effective.find((record: StoredDocumentImport): boolean => record.id === request.reportId);
+    const file: DocumentFileResult | undefined = run?.files[request.fileIndex];
+    if (file?.status === 'imported') {
+      const { filePath, format, result }: StoredSupportingDocument = file.record;
+      const source: NonNullable<SupportingDocument['input']>['source'] | undefined = result.input?.source;
+      return source && !this.sourceReplacements.has(source.sourceId)
+        ? { ...source, filePath: this.sourceRelocations.get(source.sourceId) ?? filePath, format, previous: result }
+        : null;
+    }
+    if (file?.status === 'failed' && file.format && file.sha256 && !this.sources().some((source: WorkspaceSource): boolean => source.sha256 === file.sha256)) {
+      return { filePath: file.filePath, format: file.format, sha256: file.sha256, previous: file.analysis };
+    }
+    return null;
+  }
+
+  async reanalyzeReceipt(request: ReceiptAiRequest): Promise<ReceiptAiResult> {
+    if (this.busy) {
+      return { status: 'failed', error: 'Finish the current workspace action before analyzing a receipt.' };
+    }
+    const source: ReceiptAiSource | null = this.receiptAiSource(request);
+    if (!source || !this.receiptAi) {
+      return { status: 'failed', error: 'Choose an active receipt with a verifiable original.' };
+    }
+    const controller: AbortController = new AbortController();
+    this.importController = controller;
+    this.busy = true;
+    const progress: DocumentImportProgress = { phase: 'extracting', filePath: source.filePath, completedFiles: 0, extraction: null };
+    this.documentImport = { cancelling: false, progress };
+    try {
+      this.publish();
+      return await reanalyzeReceipt(source, this.receiptAi, { signal: controller.signal, onProgress: (extraction: ExtractionProgress): void => {
+        if (this.importController === controller && !controller.signal.aborted) {
+          this.documentImport = { cancelling: false, progress: { ...progress, extraction } };
+          this.publish();
+        }
+      } });
+    } catch {
+      return controller.signal.aborted ? { status: 'cancelled' } : { status: 'failed', error: 'The local receipt analysis could not be completed.' };
+    } finally {
+      this.importController = null;
+      this.documentImport = null;
       this.busy = false;
       this.publish();
     }

@@ -324,7 +324,7 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
         assertPageGeometry(viewport);
         const page: ImportPage = { pageId, pageNumber: number, width: viewport.width, height: viewport.height, status: 'complete', spans: [] };
         try {
-            if (!job.statementTables) {
+            if (!job.statementTables && !job.modelOnly) {
                 await inspectEmbeddedPdfText(pdfPage, page, viewport, pageCount);
             }
             if (!page.spans.length) {

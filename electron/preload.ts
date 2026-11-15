@@ -6,6 +6,7 @@ import type { StoredDocumentImport } from '../src/shared/workspace-documents.js'
 import type { MatchDetails, MatchSummary } from '../src/shared/workspace-matching.js';
 import type { OriginalAdoptionRequest, OriginalAdoptionResult, OriginalAnalysisResult, OriginalPreviewRequest, OriginalPreviewResult, OriginalRelinkResult } from '../src/shared/original-preview.js';
 import type { LocalOcrRequest, LocalOcrStatus } from '../src/shared/local-ocr-settings.js';
+import type { ReceiptAiRequest, ReceiptAiResult } from '../src/shared/receipt-ai.js';
 
 const bridge: WorkspaceBridge = Object.freeze({
   command: (command: WorkspaceCommand): Promise<WorkspaceState> => ipcRenderer.invoke('workspace:command', command) as Promise<WorkspaceState>,
@@ -17,6 +18,7 @@ const bridge: WorkspaceBridge = Object.freeze({
   openOriginal: (request: OriginalPreviewRequest): Promise<OriginalPreviewResult> => ipcRenderer.invoke('workspace:open-original', request) as Promise<OriginalPreviewResult>,
   relinkOriginal: (request: OriginalPreviewRequest): Promise<OriginalRelinkResult> => ipcRenderer.invoke('workspace:relink-original', request) as Promise<OriginalRelinkResult>,
   analyzeOriginal: (request: OriginalPreviewRequest): Promise<OriginalAnalysisResult> => ipcRenderer.invoke('workspace:analyze-original', request) as Promise<OriginalAnalysisResult>,
+  reanalyzeReceipt: (request: ReceiptAiRequest): Promise<ReceiptAiResult> => ipcRenderer.invoke('workspace:reanalyze-receipt', request) as Promise<ReceiptAiResult>,
   acceptOriginalAnalysis: (request: OriginalAdoptionRequest): Promise<OriginalAdoptionResult> => ipcRenderer.invoke('workspace:accept-original-analysis', request) as Promise<OriginalAdoptionResult>,
   exportSettings: (request: ExportSettingsRequest): Promise<string> => ipcRenderer.invoke('app:export-settings', request) as Promise<string>,
   localOcr: (request: LocalOcrRequest): Promise<LocalOcrStatus> => ipcRenderer.invoke('app:local-ocr', request) as Promise<LocalOcrStatus>,
