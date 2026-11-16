@@ -1,97 +1,143 @@
-import type { StoredDocumentImport, StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
-import type { ImportIssue, SourceEvidence } from "../../src/shared/bank-import.js";
-import type { DocumentSection, SupportingDocument } from "../../src/shared/supporting-document.js";
-import type { WorkspaceState } from "../../src/shared/protocol.js";
-import type { LocalOcrModel } from "../../src/shared/pdf-extraction.js";
-import type { LocalOcrStatus } from "../../src/shared/local-ocr-settings.js";
 import assert from 'node:assert/strict';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { test, type Page, type ElectronApplication, type PlaywrightWorkerOptions, type PlaywrightWorkerArgs, type PlaywrightTestOptions, type PlaywrightTestArgs } from '@playwright/test';
+import Database from 'better-sqlite3';
+import { PDFDocument, type PDFPage } from 'pdf-lib';
+import { expect, test, type ElectronApplication, type Page, type PlaywrightWorkerArgs } from '@playwright/test';
+import type { LocalOcrStatus } from '../../src/shared/local-ocr-settings.js';
+import type { WorkspaceState } from '../../src/shared/protocol.js';
+import type { DocumentFileResult, StoredDocumentImport, StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
 
-test('packaged OCR runs with installed local models and switches to standard recognition', async ({ playwright }: PlaywrightTestArgs & PlaywrightTestOptions & PlaywrightWorkerArgs & PlaywrightWorkerOptions): Promise<void> => {
-	const profile: string | undefined = process.env.RECEIPTMATCH_OCR_TEST_PROFILE;
-	test.skip(!profile, 'Requires a dedicated profile for model installation and offline verification.');
-	assert.ok(profile && path.isAbsolute(profile));
-	test.setTimeout(600_000);
-	const executablePath: string = path.resolve(process.platform === 'win32' ? 'release/win-unpacked/ReceiptMatch.exe' : 'release/linux-unpacked/receiptmatch');
-	const application: ElectronApplication = await playwright._electron.launch({
-		executablePath, args: ['--hidden', '--disable-gpu', `--user-data-dir=${profile}`], timeout: 30_000
-	});
-	try {
-		const page: Page = await application.firstWindow();
-		await page.getByRole('heading', { name: 'ReceiptMatch', exact: true }).waitFor();
-		const images: string[] = await page.evaluate((): string[] => {
-			const canvas: HTMLCanvasElement = document.createElement('canvas');
-			canvas.width = 690;
-			canvas.height = 560;
-			const context: CanvasRenderingContext2D = canvas.getContext('2d')!;
-			context.fillStyle = 'white';
-			context.fillRect(0, 0, canvas.width, canvas.height);
-			context.fillStyle = 'black';
-			context.font = '30px monospace';
-			['INVOICE', 'Cedar Workshop', 'Invoice Date: 2026-10-12', 'Subtotal EUR 40.75', 'Tax EUR 8.00', 'Grand Total EUR 48.75'].forEach((line: string, index: number): void => {
-				context.fillText(line, 54, 62 + 62 * index);
-			});
-			// Give each engine a distinct source for the importer's duplicate detection.
-			return [0, 1, 2].map((offset: number): string => {
-				context.fillRect(offset, canvas.height - 1, 1, 1);
-				return canvas.toDataURL('image/png').split(',')[1];
-			});
-		});
-		const models: readonly ["pp-ocrv6-medium", "paddleocr-vl-1.6"] = ['pp-ocrv6-medium', 'paddleocr-vl-1.6'] as const;
-		await page.getByRole('button', { name: 'Settings', exact: true }).click();
-		const initial: LocalOcrStatus = await page.evaluate((): Promise<LocalOcrStatus> => window.receiptmatch.localOcr({ type: 'status' }));
-		assert.ok(initial.models.every((model: { model: LocalOcrModel; name: string; downloadBytes: number; installed: boolean; runtimeAvailable: boolean; runtimeIssue?: string; }): boolean => model.runtimeAvailable), 'Both runtimes must be shipped in the package.');
-		if (process.env.RECEIPTMATCH_OCR_TEST_INSTALL === '1') {
-			assert.equal(initial.selection, 'standard');
-			assert.ok(initial.models.every((model: { model: LocalOcrModel; name: string; downloadBytes: number; installed: boolean; runtimeAvailable: boolean; runtimeIssue?: string; }): boolean => !model.installed), 'Install mode requires a fresh test profile.');
-			await application.evaluate(({ dialog }: typeof Electron.CrossProcessExports): void => {
-				dialog.showMessageBox = async (windowOrOptions: Electron.BaseWindow | Electron.MessageBoxOptions, options?: Electron.MessageBoxOptions): Promise<{ response: number; checkboxChecked: false; }> => {
-					if ((options ?? (windowOrOptions as Electron.MessageBoxOptions)).title !== 'Download OCR model') {
-						throw new Error('Unexpected model installation prompt.');
-					}
-					return Promise.resolve({ response: 0, checkboxChecked: false });
-				};
-			});
-			for (const model of models) {
-				const result: LocalOcrStatus = await page.evaluate((model: "pp-ocrv6-medium" | "paddleocr-vl-1.6"): Promise<LocalOcrStatus> => window.receiptmatch.localOcr({ type: 'install', model }), model);
-				assert.equal(result.selection, model);
-				assert.equal(result.models.find((entry: { model: LocalOcrModel; name: string; downloadBytes: number; installed: boolean; runtimeAvailable: boolean; runtimeIssue?: string; }): boolean => entry.model === model)?.installed, true);
-			}
-			return;
-		}
-		assert.ok(initial.models.every((model: { model: LocalOcrModel; name: string; downloadBytes: number; installed: boolean; runtimeAvailable: boolean; runtimeIssue?: string; }): boolean => model.installed), 'Install models with RECEIPTMATCH_OCR_TEST_INSTALL=1 first.');
-		await application.evaluate((): void => {
-			globalThis.fetch = async (): Promise<never> => {
-				return Promise.reject(new Error('Network fetch is disabled in this offline test.'));
-			};
-		});
-		await page.getByRole('button', { name: 'Back', exact: true }).click();
-		await page.getByRole('button', { name: 'Create workspace' }).click();
-		for (const [index, model] of ([...models, 'standard'] as const).entries()) {
-			const selection: LocalOcrStatus = await page.evaluate((selection: "pp-ocrv6-medium" | "paddleocr-vl-1.6" | "standard"): Promise<LocalOcrStatus> => window.receiptmatch.localOcr({ type: 'select', selection }), model);
-			assert.equal(selection.selection, model);
-			const folder: string = path.join(profile, 'fixtures', model);
-			await mkdir(folder, { recursive: true });
-			const sample: string = path.join(folder, 'receipt.png');
-			await writeFile(sample, Buffer.from(images[index], 'base64'));
-			await application.evaluate(({ dialog }: typeof Electron.CrossProcessExports, folder: string): void => {
-				dialog.showOpenDialog = async (): Promise<{ canceled: false; filePaths: string[]; }> => Promise.resolve(({ canceled: false, filePaths: [folder] }));
-			}, folder);
-			await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'import-documents' }));
-			await page.waitForFunction(async (): Promise<boolean> => !(await window.receiptmatch.command({ type: 'get-state' })).busy, undefined, { timeout: 150_000 });
-			const imports: StoredDocumentImport[] = await page.evaluate((): Promise<StoredDocumentImport[]> => window.receiptmatch.documentImports());
-			const record: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; } | undefined = imports.flatMap((run: StoredDocumentImport): ({ status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; })[] => run.files).find((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): boolean => file.status === 'imported' && file.record.filePath === sample);
-			assert.ok(record?.status === 'imported', JSON.stringify(imports.at(-1)?.files));
-			assert.ok(record.record.result.input?.extraction.version.includes(model === 'standard' ? 'tesseract' : model));
-			assert.ok(record.record.result.sections.some((section: DocumentSection): boolean => section.amounts.some((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean | 0 => field.role === 'billed-total' &&
-				field.evidence.length && field.candidates.some((amount: { coefficient: string; scale: number; currency: string | null; }): boolean => amount.currency === 'EUR' && amount.coefficient === '4875' && amount.scale === 2))));
-		}
-	} finally {
-		await application.evaluate(({ dialog }: typeof Electron.CrossProcessExports): void => {
-			dialog.showMessageBox = async (): Promise<{ response: number; checkboxChecked: false; }> => Promise.resolve(({ response: 1, checkboxChecked: false }));
-		});
-		await application.close();
-	}
+const legacyVersion: string = 'pdfjs-6.5.438+paddleocr-vl-1.6-gguf-spotting+document-2';
+
+async function createReceipt(directory: string): Promise<void> {
+    const document: PDFDocument = await PDFDocument.create();
+    const page: PDFPage = document.addPage([500, 500]);
+    const lines: string[] = ['INVOICE', 'Cedar Workshop', 'Invoice number: LEGACY-2047', 'Invoice Date: 2026-10-12', 'Invoice Total: EUR 48.75'];
+    for (const [index, line] of lines.entries()) {
+        page.drawText(line, { x: 40, y: 450 - index * 30, size: 16 });
+    }
+    await writeFile(path.join(directory, 'prior-receipt.pdf'), await document.save());
+}
+
+function addLegacyAnalysis(workspace: string, record: StoredSupportingDocument): string {
+    const analysis: StoredSupportingDocument['result'] = structuredClone(record.result);
+    assert.ok(analysis.input);
+    const runId: string = randomUUID();
+    analysis.input.extraction = { runId, version: legacyVersion };
+    for (const page of analysis.input.pages) {
+        for (const span of page.spans) {
+            span.method = 'local-ocr';
+        }
+    }
+    const database: Database.Database = new Database(workspace, { fileMustExist: true });
+    try {
+        database.prepare('INSERT INTO receipt_analysis_versions(run_id,document_id,record_json) VALUES(?,?,?)')
+            .run(runId, record.id, JSON.stringify({ documentId: record.id, acceptedAt: '2026-10-13T08:00:00.000Z', analysis }));
+    } finally {
+        database.close();
+    }
+    return runId;
+}
+
+async function importedReceipt(page: Page): Promise<StoredSupportingDocument> {
+    const reports: StoredDocumentImport[] = await page.evaluate((): Promise<StoredDocumentImport[]> => window.receiptmatch.documentImports());
+    const file: DocumentFileResult | undefined = reports[0]?.files[0];
+    assert.ok(file?.status === 'imported');
+    return file.record;
+}
+
+async function verifyRecognitionSettings(page: Page): Promise<void> {
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Standard OCR', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'NuExtract3', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Download NuExtract3', exact: true })).toBeEnabled();
+    await expect(page.getByText(/PP-OCRv6|PaddleOCR/i)).toHaveCount(0);
+    const status: LocalOcrStatus = await page.evaluate((): Promise<LocalOcrStatus> => window.receiptmatch.localOcr({ type: 'status' }));
+    assert.equal(status.device, 'cpu');
+    assert.equal(status.installed, false);
+    assert.equal(status.cpuAvailable, true);
+}
+
+async function verifyResources(application: ElectronApplication): Promise<void> {
+    const resources: { server: boolean; python: boolean; oldCli: boolean; oldScript: boolean } = await application.evaluate((): { server: boolean; python: boolean; oldCli: boolean; oldScript: boolean } => {
+        const fs: typeof import('node:fs') = process.getBuiltinModule('node:fs');
+        const paths: typeof import('node:path') = process.getBuiltinModule('node:path');
+        const installed: string = paths.join(process.resourcesPath, 'local-ocr-runtimes');
+        const exe: string = process.platform === 'win32' ? '.exe' : '';
+        return {
+            server: fs.existsSync(paths.join(installed, 'llama', 'llama-server' + exe)),
+            python: fs.existsSync(paths.join(installed, 'python')),
+            oldCli: fs.existsSync(paths.join(installed, 'llama', 'llama-mtmd-cli' + exe)),
+            oldScript: fs.existsSync(paths.join(process.resourcesPath, 'app.asar', '.build', 'extraction', 'paddle-medium.py'))
+        };
+    });
+    assert.deepEqual(resources, { server: true, python: false, oldCli: false, oldScript: false });
+}
+
+async function dialogs(application: ElectronApplication, folder: string, workspace: string): Promise<void> {
+    await application.evaluate(({ BrowserWindow, dialog }: typeof Electron.CrossProcessExports, config: { folder: string; workspace: string }): void => {
+        BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
+        dialog.showOpenDialog = (_window: Electron.BaseWindow | Electron.OpenDialogOptions, options?: Electron.OpenDialogOptions): Promise<Electron.OpenDialogReturnValue> => {
+            return Promise.resolve({ canceled: false, filePaths: [options?.properties?.includes('openDirectory') ? config.folder : config.workspace] });
+        };
+        dialog.showSaveDialog = (): Promise<Electron.SaveDialogReturnValue> => Promise.resolve({ canceled: false, filePath: config.workspace });
+        dialog.showMessageBox = (): Promise<Electron.MessageBoxReturnValue> => Promise.resolve({ response: 1, checkboxChecked: false });
+    }, { folder, workspace });
+}
+
+test('packaged recognition opens fresh and legacy profiles with Standard and optional NuExtract3', async ({ playwright }: PlaywrightWorkerArgs): Promise<void> => {
+    test.skip(process.env.RECEIPTMATCH_NUEXTRACT_PACKAGE_TEST !== '1', 'Requires an unpacked desktop package.');
+    test.setTimeout(150_000);
+    await mkdir('artifacts', { recursive: true });
+    const root: string = await mkdtemp(path.resolve('artifacts/nuextract-package-'));
+    const freshProfile: string = path.join(root, 'fresh');
+    const legacyProfile: string = path.join(root, 'legacy');
+    const workspace: string = path.join(root, 'prior.receiptmatch');
+    const folder: string = path.join(root, 'receipts');
+    const executablePath: string = path.resolve(process.platform === 'win32' ? 'release/win-unpacked/ReceiptMatch.exe' : 'release/linux-unpacked/receiptmatch');
+    try {
+        await mkdir(folder);
+        await createReceipt(folder);
+        const fresh: ElectronApplication = await playwright._electron.launch({ executablePath, args: ['--hidden', '--disable-gpu', '--user-data-dir=' + freshProfile], timeout: 30_000 });
+        let oldReceipt: StoredSupportingDocument;
+        try {
+            const page: Page = await fresh.firstWindow({ timeout: 30_000 });
+            await page.getByRole('heading', { name: 'ReceiptMatch', exact: true }).waitFor();
+            await verifyResources(fresh);
+            await dialogs(fresh, folder, workspace);
+            await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'new' }));
+            await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'import-documents' }));
+            oldReceipt = await importedReceipt(page);
+            assert.match(oldReceipt.result.input!.extraction.version, /tesseract/);
+            const saved: WorkspaceState = await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'save' }));
+            assert.equal(saved.workspace?.filePath, workspace);
+            await verifyRecognitionSettings(page);
+        } finally {
+            await fresh.close();
+        }
+
+        const runId: string = addLegacyAnalysis(workspace, oldReceipt);
+        const legacySettings: string = path.join(legacyProfile, 'local-ocr');
+        await mkdir(legacySettings, { recursive: true });
+        const selection: string = path.join(legacySettings, 'selection.json');
+        await writeFile(selection, '"paddleocr-vl-1.6"');
+        const legacy: ElectronApplication = await playwright._electron.launch({ executablePath, args: ['--hidden', '--disable-gpu', '--user-data-dir=' + legacyProfile], timeout: 30_000 });
+        try {
+            const page: Page = await legacy.firstWindow({ timeout: 30_000 });
+            await page.getByRole('heading', { name: 'ReceiptMatch', exact: true }).waitFor();
+            assert.equal(await readFile(selection, 'utf8'), '"standard"');
+            await dialogs(legacy, folder, workspace);
+            await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'open' }));
+            const saved: StoredSupportingDocument = await importedReceipt(page);
+            assert.equal(saved.id, oldReceipt.id);
+            assert.deepEqual(saved.result.input?.extraction, { runId, version: legacyVersion });
+            await verifyRecognitionSettings(page);
+        } finally {
+            await legacy.close();
+        }
+    } finally {
+        await rm(root, { recursive: true, force: true, maxRetries: 4 });
+    }
 });

@@ -1,23 +1,29 @@
+<ng-template #receiptAiIcon>
+	<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round">
+		<path d="M10 2.5 12.2 8.8 18.5 11l-6.3 2.2-2.2 6.3-2.2-6.3L1.5 11l6.3-2.2L10 2.5ZM19 14.5l1 2.5 2.5 1-2.5 1-1 2.5-1-2.5-2.5-1 2.5-1 1-2.5Z" />
+	</svg>
+</ng-template>
 <section class="document-imports source-panel" aria-labelledby="documents-heading">
 	<div class="section-heading source-panel-heading">
 		<div>
-			<h2 id="documents-heading">Supporting documents</h2>
+			<h2 #documentsHeading id="documents-heading" tabindex="-1">Supporting documents</h2>
 			<p class="source-panel-count">{{ summaries().length }} {{ summaries().length === 1 ? 'folder analysis' : 'folder analyses' }}</p>
 		</div>
 		<wig-button label="Choose folder" (click)="workspaceCommand.emit({ type: 'import-documents' })" [disabled]="state().busy" />
 	</div>
-	@if (state().documentImport; as active) {
+	@let documentImport = state().documentImport;
+	@if (documentImport && !documentImport.localAi) {
 		<div class="import-progress">
 			<div role="status" aria-live="polite">
 				<p class="file-location">{{ progressText() }}</p>
-				@if (active.progress; as progress) {
+				@if (documentImport.progress; as progress) {
 					<p class="muted">{{ progress.completedFiles }} {{ progress.completedFiles === 1 ? 'file' : 'files' }} processed</p>
 				}
 			</div>
-			<wig-button label="Cancel analysis" severity="secondary" (click)="workspaceCommand.emit({ type: 'cancel-import' })" [disabled]="active.cancelling" />
+			<wig-button label="Cancel analysis" severity="secondary" (click)="workspaceCommand.emit({ type: 'cancel-import' })" [disabled]="documentImport.cancelling" />
 		</div>
 	}
-	@if (state().documentOutcome; as outcome) {
+	@if (!aiPending() && state().documentOutcome; as outcome) {
 		<div class="import-feedback" [class.import-feedback-error]="outcome.status === 'failed'" role="status" aria-live="polite">
 			@switch (outcome.status) {
 				@case ('finished') {
@@ -88,20 +94,40 @@
 											@let file = row.file;
 											@let archived = file.status === 'imported' && state().workspace?.supersededDocuments?.includes(file.record.id);
 											@let reviewNeeded = file.status === 'imported' && !!file.record.result.issues.length;
-											<span
-												class="source-status"
-												[class.source-status-warning]="archived || file.status === 'failed' || file.status === 'unsupported' || reviewNeeded"
-											>
-												{{ archived ? 'Archived analysis' : fileStatus(file, reviewNeeded) }}
-											</span>
-											@if (file.status === 'imported' && correctionsByDocument().has(file.record.id)) {
-												<span class="source-status">Corrected</span>
+											@let analyzing = isAiPendingRow(report.id, item.index);
+											<div role="status">
+												@if (analyzing) {
+													<span class="source-status source-status-analyzing">{{ aiProgressText() }}</span>
+												}
+											</div>
+											@if (!analyzing) {
+												<span
+													class="source-status"
+													[class.source-status-warning]="archived || file.status === 'failed' || file.status === 'unsupported' || reviewNeeded"
+												>
+													{{ archived ? 'Archived analysis' : fileStatus(file, reviewNeeded) }}
+												</span>
+												@if (file.status === 'imported' && correctionsByDocument().has(file.record.id)) {
+													<span class="source-status">Corrected</span>
+												}
+											}
+											@if (aiFeedback(); as feedback) {
+												@if (feedback.context.request.reportId === report.id && feedback.context.request.fileIndex === item.index) {
+													<p
+														class="document-ai-feedback"
+														[class.original-preview-error]="feedback.error"
+														[attr.role]="feedback.error ? 'alert' : 'status'"
+													>
+														{{ feedback.message }}
+													</p>
+												}
 											}
 										</ng-template>
 										<ng-template wigTemplate="actions" let-item="item">
 											@let row = fileRows().get(report.id)![item.index];
 											@let file = row.file;
 											@let name = basename(filePath(file));
+											@let analyzing = isAiPendingRow(report.id, item.index);
 											<div class="document-actions">
 												<wig-button
 													iconName="search"
@@ -119,6 +145,19 @@
 													[loadRevision]="state().workspace?.loadRevision"
 													[iconOnly]="true"
 												/>
+												@if (analyzing || reanalysisFormat(file)) {
+													<wig-icon-button
+														class="document-ai-action"
+														[iconTemplate]="analyzing ? undefined : receiptAiIcon"
+														[iconName]="analyzing ? 'square' : undefined"
+														[ariaLabel]="(analyzing ? 'Cancel AI analysis for ' : 'Analyze with NuExtract3 for ') + name"
+														[tooltip]="analyzing ? 'Cancel AI analysis' : 'Analyze with NuExtract3'"
+														tooltipPosition="top"
+														[text]="true"
+														[disabled]="analyzing ? !aiImport() || !!aiImport()?.cancelling : state().busy || !!aiPending() || !!aiReview() || !detailsCurrent()"
+														(click)="activateAiRow(report.id, item.index, $event)"
+													/>
+												}
 											</div>
 											@if (preview.hasFeedback()) {
 												<div class="document-preview-feedback">
@@ -145,6 +184,147 @@
 		<div class="import-empty">
 			<p>Choose a folder to analyze PDF, PNG and JPEG files, including files in subfolders.</p>
 		</div>
+	}
+	@if (aiReview(); as review) {
+		@let summary = aiChanges();
+		<dialog #aiDialog class="receipt-ai-dialog" aria-labelledby="receipt-ai-heading" (cancel)="discardAiReview($event)">
+			<header class="receipt-ai-header">
+				<h3 id="receipt-ai-heading" tabindex="-1" autofocus>Review AI receipt analysis</h3>
+				<p class="receipt-ai-file">{{ review.context.name }}</p>
+				<p class="muted">Analyzed with NuExtract3</p>
+			</header>
+			<div class="receipt-ai-content" role="region" aria-label="Analysis comparison" tabindex="0">
+				@for (group of summary.groups; track group.label) {
+					<section class="receipt-ai-group" [attr.aria-label]="group.label" [attr.data-change]="group.label">
+						<h4>
+							{{ group.label }} <span>{{ group.changes.length }}</span>
+						</h4>
+						<ul class="receipt-ai-changes">
+							@for (change of group.changes; track $index) {
+								<li>
+									<strong>{{ change.label }}</strong>
+									@if (group.label === 'Changed') {
+										<dl class="receipt-ai-values">
+											<div>
+												<dt>Current</dt>
+												<dd>{{ change.before }}</dd>
+											</div>
+											<div>
+												<dt>AI proposal</dt>
+												<dd>{{ change.after }}</dd>
+											</div>
+										</dl>
+									} @else {
+										<p>{{ change.after ?? change.before }}</p>
+									}
+								</li>
+							}
+						</ul>
+					</section>
+				}
+				@if (summary.sections.length; as sides) {
+					<section class="receipt-ai-group" aria-labelledby="receipt-ai-sections">
+						<h4 id="receipt-ai-sections">
+							{{ sides === 2 ? 'Sections to compare' : summary.sections[0].label === 'AI proposal' ? 'Added sections' : 'Removed sections' }}
+						</h4>
+						@if (sides === 2) {
+							<p class="muted">These sections could not be paired reliably. Compare the current and proposed values below.</p>
+						}
+						<div class="receipt-ai-sections" [class.receipt-ai-section-pair]="sides === 2">
+							@for (side of summary.sections; track side.label) {
+								<div>
+									<p class="receipt-ai-side">{{ side.label }}</p>
+									@for (section of side.entries; track section.heading) {
+										<details class="receipt-ai-section" [open]="side.entries.length === 1">
+											<summary>{{ section.heading }}</summary>
+											<dl>
+												@for (field of section.fields; track $index) {
+													<div>
+														<dt>{{ field.label }}</dt>
+														<dd>{{ field.after ?? field.before }}</dd>
+													</div>
+												} @empty {
+													<div>
+														<dt>Extracted fields</dt>
+														<dd>None listed</dd>
+													</div>
+												}
+											</dl>
+										</details>
+									}
+								</div>
+							}
+						</div>
+					</section>
+				} @else if (!summary.groups.length && !summary.omitted && !summary.unverified.length) {
+					<p class="receipt-ai-empty">No changes to extracted details were found.</p>
+				}
+				@if (summary.unverified.length) {
+					<section class="receipt-ai-group" aria-labelledby="receipt-ai-unverified">
+						<h4 id="receipt-ai-unverified">Unverified suggestions</h4>
+						<p class="muted">Check these values against the original document. Applying the analysis keeps the current values for these fields.</p>
+						<ul class="receipt-ai-changes">
+							@for (change of summary.unverified; track $index) {
+								<li>
+									<strong>{{ change.label }}</strong>
+									<p>{{ change.after ?? change.before }}</p>
+								</li>
+							}
+						</ul>
+					</section>
+				}
+				@if (summary.omitted; as omitted) {
+					<p class="muted">{{ omitted }} additional differences are outside this preview. Open the AI analysis evidence to inspect the proposal.</p>
+				}
+				@if (summary.matching || review.result.conflicts.length || review.result.blockingConflict) {
+					<section class="receipt-ai-conflicts" aria-labelledby="receipt-ai-impact">
+						<h4 id="receipt-ai-impact">{{ review.result.blockingConflict ? 'Changes cannot be applied' : 'Review before applying' }}</h4>
+						@if (review.result.blockingConflict; as conflict) {
+							<p>{{ conflict }}</p>
+						}
+						@if (summary.matching) {
+							<p>{{ summary.matching }}</p>
+						}
+						@for (conflict of review.result.conflicts; track $index) {
+							@if (conflict !== review.result.blockingConflict) {
+								<p>{{ conflict }}</p>
+							}
+						}
+						@if (!review.result.blockingConflict && review.result.conflicts.length) {
+							<wig-checkbox
+								label="I acknowledge the effects listed above."
+								[checked]="acknowledgeAiConflicts()"
+								[disabled]="aiApplying()"
+								(checkedChange)="acknowledgeAiConflicts.set($event)"
+							/>
+						}
+					</section>
+				}
+				<details #aiEvidence class="receipt-ai-evidence" (toggle)="aiEvidenceOpen.set(aiEvidence.open)">
+					<summary>AI analysis evidence</summary>
+					@if (aiEvidenceOpen()) {
+						@if (summary.warnings; as warnings) {
+							<p class="muted">Recognition warnings · {{ warnings.before }} in the current analysis, {{ warnings.after }} in the proposal</p>
+						}
+						<app-document-analysis [analysis]="review.result.analysis" [format]="review.context.format" />
+					}
+				</details>
+			</div>
+			<footer class="receipt-ai-footer">
+				@if (aiApplyError(); as error) {
+					<p class="original-preview-error" role="alert">{{ error }}</p>
+				}
+				<div class="receipt-ai-actions">
+					<wig-button label="Discard AI analysis" severity="secondary" [disabled]="aiApplying()" (click)="discardAiReview()" />
+					<wig-button
+						[label]="aiApplying() ? 'Applying…' : 'Apply AI analysis'"
+						[loading]="aiApplying()"
+						[disabled]="aiApplying() || state().busy || !!review.result.blockingConflict || (review.result.conflicts.length > 0 && !acknowledgeAiConflicts())"
+						(click)="applyAiReview()"
+					/>
+				</div>
+			</footer>
+		</dialog>
 	}
 	@let selected = selectedFileRow();
 	<wig-drawer

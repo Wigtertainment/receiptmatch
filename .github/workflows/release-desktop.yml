@@ -107,6 +107,7 @@ jobs:
       - name: Verify Windows setup and packaged app
         shell: pwsh
         env:
+          RECEIPTMATCH_NUEXTRACT_PACKAGE_TEST: '1'
           REQUIRE_SIGNATURE: ${{ github.ref_type == 'tag' || inputs.sign_windows }}
         run: |
           $installer = "release/ReceiptMatch-Setup-$env:VERSION-windows-x64.exe"
@@ -174,14 +175,17 @@ jobs:
         run: npm run dist:linux
 
       - name: Verify Linux packages and bundled runtimes
+        env:
+          RECEIPTMATCH_NUEXTRACT_PACKAGE_TEST: '1'
         run: |
           image="release/ReceiptMatch-$VERSION-linux-x64.AppImage"
           deb="release/ReceiptMatch-$VERSION-linux-x64.deb"
           test -x "$image"
           "$image" --appimage-extract >/dev/null
           test -x squashfs-root/AppRun
-          test -x squashfs-root/resources/local-ocr-runtimes/python/bin/python3.12
-          test -x squashfs-root/resources/local-ocr-runtimes/llama/llama-mtmd-cli
+          test -x squashfs-root/resources/local-ocr-runtimes/llama/llama-server
+          test ! -e squashfs-root/resources/local-ocr-runtimes/python
+          test ! -e squashfs-root/resources/local-ocr-runtimes/llama/llama-mtmd-cli
           test -s squashfs-root/resources/app-update.yml
           test ! -f squashfs-root/resources/package-type
           test "$(dpkg-deb --field "$deb" Architecture)" = amd64

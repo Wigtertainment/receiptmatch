@@ -23,7 +23,7 @@ module.exports = [
 		entry: { main: './electron/main.ts', 'extraction-host': './electron/extraction/host.ts' },
 		output: {
 			path: path.resolve(__dirname, '.build'), filename: '[name].cjs', library: { type: 'commonjs2' },
-			copy: [{ from: 'electron/extraction/paddle-medium.py', filename: 'extraction/paddle-medium.py' }]
+			copy: [{ from: 'electron/extraction/nuextract-probe.png', filename: 'extraction/nuextract-probe.png' }]
 		},
 		// Load the separately emitted extraction host through Node's shared CommonJS cache.
 		module: { rules: [typescript], parser: { javascript: { createRequire: false } } },

@@ -4,11 +4,12 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test, vi, type Mock } from 'vitest';
+import { NUEXTRACT_ASSETS, type ModelAsset } from '../../electron/local-ocr-assets.js';
 import { downloadModelAssets } from '../../electron/local-ocr-transfer.js';
 
-const url: "https://huggingface.co/PaddlePaddle/model/resolve/revision/model.onnx" = 'https://huggingface.co/PaddlePaddle/model/resolve/revision/model.onnx';
 const data: Buffer<ArrayBuffer> = Buffer.from('model bytes');
-const asset: { file: string; url: string; bytes: number; sha256: string; } = { file: 'medium-det/model.onnx', url, bytes: data.length, sha256: createHash('sha256').update(data).digest('hex') };
+const hash: string = createHash('sha256').update(data).digest('hex');
+const asset: ModelAsset = { ...NUEXTRACT_ASSETS[0], bytes: data.length, sha256: hash };
 
 async function withStaging(run: (staging: string) => Promise<void>): Promise<void> {
     const staging: string = await mkdtemp(path.join(tmpdir(), 'receiptmatch-transfer-test-'));
@@ -28,12 +29,12 @@ test('streams a verified model file through an approved redirect and reports cum
         .mockResolvedValueOnce(new Response(new Uint8Array(data)));
     vi.stubGlobal('fetch', fetchModel);
     const progress: number[] = [];
-    const second: { file: string; url: string; bytes: number; sha256: string; } = { ...asset, file: 'medium-rec/model.onnx' };
+    const second: ModelAsset = { ...NUEXTRACT_ASSETS[1], bytes: data.length, sha256: hash };
     await downloadModelAssets([asset, second], staging, new AbortController().signal, (bytes: number): number => progress.push(bytes));
     assert.deepEqual(await readFile(path.join(staging, asset.file)), data);
     assert.deepEqual(await readFile(path.join(staging, second.file)), data);
     assert.deepEqual(progress, [data.length, data.length * 2]);
-    assert.deepEqual(fetchModel.mock.calls.map(([source]: [input: string | URL | Request, init?: RequestInit | undefined]): string => typeof source === "string" ? source : source instanceof URL ? source.href : source.url), [url, cdn, url]);
+    assert.deepEqual(fetchModel.mock.calls.map(([source]: [input: string | URL | Request, init?: RequestInit | undefined]): string => typeof source === "string" ? source : source instanceof URL ? source.href : source.url), [asset.url, cdn, second.url]);
     assert.ok(fetchModel.mock.calls.every(([, options]: [input: string | URL | Request, init?: RequestInit | undefined]): boolean => options?.redirect === 'manual' && options.credentials === 'omit' && options.referrerPolicy === 'no-referrer'));
 }));
 
@@ -46,6 +47,20 @@ test('rejects an unapproved redirect and a corrupt payload', (): Promise<void> =
     await assert.rejects(downloadModelAssets([asset], staging, signal, (): undefined => undefined), /untrusted source/);
     assert.equal(fetchModel.mock.calls.length, 1);
     await assert.rejects(downloadModelAssets([asset], staging, signal, (): undefined => undefined), /integrity check failed/);
+}));
+
+test('rejects retired OCR sources and unpinned revisions before fetching', (): Promise<void> => withStaging(async (staging: string): Promise<void> => {
+    const fetchModel: Mock<typeof fetch> = vi.fn<typeof fetch>();
+    vi.stubGlobal('fetch', fetchModel);
+    const signal: AbortSignal = new AbortController().signal;
+    const urls: string[] = [
+        'https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_det_onnx/resolve/main/inference.onnx',
+        'https://huggingface.co/numind/NuExtract3-GGUF/resolve/main/NuExtract3-Q4_K_M.gguf',
+    ];
+    for (const url of urls) {
+        await assert.rejects(downloadModelAssets([{ ...asset, url }], staging, signal, (): undefined => undefined), /Invalid model source/);
+    }
+    assert.equal(fetchModel.mock.calls.length, 0);
 }));
 
 test('aborts a stalled response body when the caller cancels', (): Promise<void> => withStaging(async (staging: string): Promise<void> => {

@@ -19,11 +19,12 @@ import { storedDocumentImportSchema, type DocumentFormat, type StoredDocumentImp
 import { transactionMatchSchema, type TransactionMatch } from '../src/shared/workspace-matching.js';
 import type { TransactionCandidate } from '../src/shared/bank-import.js';
 import { suggestWorkspaceMatches } from './matching.js';
+import { projectReceiptAnalyses, receiptAnalysisVersionSchema, type ReceiptAnalysisVersion } from './documents/analysis-history.js';
 
 export { moneySchema } from '../src/shared/money.js';
 
 export const APPLICATION_ID: 1380142420 = 0x52434d54;
-export const SCHEMA_VERSION: number = 12;
+export const SCHEMA_VERSION: number = 13;
 const metadataSchema: z.ZodObject<{ id: z.ZodUUID; name: z.ZodString; createdAt: z.ZodISODateTime; savedAt: z.ZodNullable<z.ZodISODateTime>; }, z.core.$strict> = z.strictObject({ id: z.uuid(), name: workspaceName.refine((value: string): boolean => value.trim().length > 0), createdAt: z.iso.datetime(), savedAt: z.iso.datetime().nullable() });
 export type WorkspaceMetadata = z.infer<typeof metadataSchema>;
 export interface SavedWorkspace {
@@ -32,6 +33,7 @@ export interface SavedWorkspace {
   matchDecisions: Map<string, string | null>;
   bankCorrections: Map<string, BankCorrection>;
   documentCorrections: Map<string, DocumentCorrection>;
+  receiptAnalysisVersions: ReceiptAnalysisVersion[];
   reviewApprovals: Map<string, ReviewApprovalState>;
   duplicateDecisions: Map<string, DuplicateDecision>;
   sourceRelocations: Map<string, string>;
@@ -91,6 +93,11 @@ CREATE INDEX associations_document ON associations(document_id);`;
 const expectedTables: string[] = ['accounts', 'associations', 'documents', 'sources', 'statements', 'transactions', 'workspace'];
 const importSchema: "CREATE TABLE bank_imports(id TEXT PRIMARY KEY, source_id TEXT NOT NULL UNIQUE REFERENCES sources(id), record_json TEXT NOT NULL);" = 'CREATE TABLE bank_imports(id TEXT PRIMARY KEY, source_id TEXT NOT NULL UNIQUE REFERENCES sources(id), record_json TEXT NOT NULL);';
 const documentImportSchema: "CREATE TABLE document_imports(id TEXT PRIMARY KEY, record_json TEXT NOT NULL);" = 'CREATE TABLE document_imports(id TEXT PRIMARY KEY, record_json TEXT NOT NULL);';
+const receiptAnalysisSchema: string = `CREATE TABLE receipt_analysis_versions(
+  run_id TEXT PRIMARY KEY NOT NULL,
+  document_id TEXT NOT NULL REFERENCES documents(id),
+  record_json TEXT NOT NULL
+);`;
 const matchSchema: "CREATE TABLE match_results(transaction_id TEXT PRIMARY KEY REFERENCES transactions(id), record_json TEXT NOT NULL);" = 'CREATE TABLE match_results(transaction_id TEXT PRIMARY KEY REFERENCES transactions(id), record_json TEXT NOT NULL);';
 const ignoredTransactionsSchema: "CREATE TABLE ignored_transactions(transaction_id TEXT PRIMARY KEY NOT NULL REFERENCES transactions(id));" = 'CREATE TABLE ignored_transactions(transaction_id TEXT PRIMARY KEY NOT NULL REFERENCES transactions(id));';
 // No row means open. A row without a document records an explicit completion.
@@ -811,6 +818,36 @@ function writeDocumentCorrections(db: Database.Database, previous: ReadonlyMap<s
   return true;
 }
 
+function readReceiptAnalysisVersions(db: Database.Database, version: bigint): ReceiptAnalysisVersion[] {
+  if (version < 13n) {
+    return [];
+  }
+  interface AnalysisRow { run_id: string; document_id: string; record_json: string }
+  const rows: AnalysisRow[] = db.prepare('SELECT run_id,document_id,record_json FROM receipt_analysis_versions ORDER BY rowid').all() as AnalysisRow[];
+  return rows.map((row: AnalysisRow): ReceiptAnalysisVersion => {
+    const analysis: ReceiptAnalysisVersion = receiptAnalysisVersionSchema.parse(JSON.parse(row.record_json) as unknown);
+    if (analysis.documentId !== row.document_id || analysis.analysis.input?.extraction.runId !== row.run_id) {
+      throw new Error('Stored receipt analysis versions do not agree with their original documents.');
+    }
+    return analysis;
+  });
+}
+
+function appendReceiptAnalysisVersions(db: Database.Database, previous: ReceiptAnalysisVersion[], requested: ReceiptAnalysisVersion[]): boolean {
+  if (requested.length < previous.length || previous.some((version: ReceiptAnalysisVersion, index: number): boolean => JSON.stringify(version) !== JSON.stringify(requested[index]))) {
+    throw new Error('Saved receipt analysis versions cannot be removed, reordered or rewritten.');
+  }
+  const added: ReceiptAnalysisVersion[] = requested.slice(previous.length);
+  if (!added.length) {
+    return false;
+  }
+  const insert: Database.Statement<unknown[], unknown> = db.prepare('INSERT INTO receipt_analysis_versions(run_id,document_id,record_json) VALUES(?,?,?)');
+  for (const version of added) {
+    insert.run(version.analysis.input!.extraction.runId, version.documentId, JSON.stringify(version));
+  }
+  return true;
+}
+
 function invalidStoredMatches(): Error {
   return new Error('The saved match suggestions do not agree with the workspace imports.');
 }
@@ -922,6 +959,9 @@ function databaseTables(version: bigint): string[] {
   if (version >= 12n) {
     expected.push('ignored_transactions');
   }
+  if (version >= 13n) {
+    expected.push('receipt_analysis_versions');
+  }
   expected.sort();
   return expected;
 }
@@ -1031,7 +1071,8 @@ function validateDatabase(db: Database.Database): Omit<SavedWorkspace, 'filePath
     throw new Error('Stored document corrections do not agree with their documents.');
   }
   const effective: StoredBankImport[] = applyBankCorrections(imports, bankCorrections);
-  const effectiveDocuments: StoredDocumentImport[] = applyDocumentCorrections(documentImports, documentCorrections);
+  const receiptAnalysisVersions: ReceiptAnalysisVersion[] = readReceiptAnalysisVersions(db, version);
+  const effectiveDocuments: StoredDocumentImport[] = applyDocumentCorrections(projectReceiptAnalyses(documentImports, receiptAnalysisVersions), documentCorrections);
   const documentRevisions: Map<string, number> = documentRevisionIndex(documentCorrections.values());
   validateImports(db, effective, owned, bankCorrections); validateDocumentImports(db, documentImports, owned, documentRevisions);
   const matches: TransactionMatch[] = version >= 4n ? readMatches(db, effective, effectiveDocuments) : suggestWorkspaceMatches(effective, effectiveDocuments);
@@ -1051,7 +1092,7 @@ function validateDatabase(db: Database.Database): Omit<SavedWorkspace, 'filePath
   const ignoredRows: { transaction_id: string; }[] = version < 12n ? [] : db.prepare('SELECT transaction_id FROM ignored_transactions').all() as { transaction_id: string }[];
   const ignoredTransactions: Set<string> = validateIgnoredTransactions(ignoredRows.map((row: { transaction_id: string; }): string => row.transaction_id), effective);
   return { metadata: metadataSchema.parse(rows[0]), schemaVersion: Number(version), imports, documentImports, sources: sourceCatalog(db), matches, matchDecisions,
-    bankCorrections, documentCorrections, reviewApprovals, duplicateDecisions, sourceRelocations, sourceReplacements, archivedSourceReviews, ignoredTransactions };
+    bankCorrections, documentCorrections, receiptAnalysisVersions, reviewApprovals, duplicateDecisions, sourceRelocations, sourceReplacements, archivedSourceReviews, ignoredTransactions };
 }
 
 function checkHeader(filePath: string): void {
@@ -1106,7 +1147,7 @@ export async function createWorkspace(
   documentEdits: ReadonlyMap<string, DocumentCorrection> = new Map(), approvalEdits: ReadonlyMap<string, ReviewApprovalState> = new Map(),
   duplicateEdits: ReadonlyMap<string, DuplicateDecision> = new Map(), relocationEdits: ReadonlyMap<string, string> = new Map(),
   replacementEdits: ReadonlyMap<string, string> = new Map(), archivedSourceReviewEdits: ArchivedSourceReviews = new Map(),
-  ignoredEdits: ReadonlySet<string> = new Set()
+  ignoredEdits: ReadonlySet<string> = new Set(), receiptAnalysisEdits: readonly ReceiptAnalysisVersion[] = []
 ): Promise<SavedWorkspace> {
   if (path.extname(filePath).toLowerCase() !== '.receiptmatch') {
     throw new Error('Use the .receiptmatch filename extension for a workspace.');
@@ -1123,7 +1164,8 @@ export async function createWorkspace(
   const effective: StoredBankImport[] = applyBankCorrections(retained, bankCorrections);
   const archivedSourceReviews: Map<string, Map<string, string | null>> = validateArchivedSourceReviews(archivedSourceReviewEdits, sourceReplacements, effective, retainedDocuments);
   const ignoredTransactions: Set<string> = validateIgnoredTransactions(ignoredEdits, effective);
-  const effectiveDocuments: StoredDocumentImport[] = applyDocumentCorrections(retainedDocuments, documentCorrections);
+  const receiptAnalysisVersions: ReceiptAnalysisVersion[] = z.array(receiptAnalysisVersionSchema).parse(receiptAnalysisEdits);
+  const effectiveDocuments: StoredDocumentImport[] = applyDocumentCorrections(projectReceiptAnalyses(retainedDocuments, receiptAnalysisVersions), documentCorrections);
   validateMatchDecisions(matchDecisions, effective, retainedDocuments, sourceReplacements);
   const duplicateDecisions: Map<string, DuplicateDecision> = validateDuplicateDecisions(duplicateEdits.values(), effective);
   validateDuplicateReviews(duplicateDecisions, matchDecisions, retainedDocuments);
@@ -1154,9 +1196,11 @@ export async function createWorkspace(
       db!.exec(sourceRelocationSchema);
       db!.exec(sourceReplacementSchema);
       db!.exec(ignoredTransactionsSchema);
+      db!.exec(receiptAnalysisSchema);
       db!.pragma(`application_id = ${APPLICATION_ID}`); db!.pragma(`user_version = ${SCHEMA_VERSION}`);
       db!.prepare('INSERT INTO workspace VALUES(?,?,?,?)').run(saved.id, saved.name, saved.createdAt, saved.savedAt);
       validateAppend(db!, [], retained, [], retainedDocuments); appendImports(db!, retained); appendDocumentImports(db!, retainedDocuments);
+      appendReceiptAnalysisVersions(db!, [], receiptAnalysisVersions);
       writeBankCorrections(db!, new Map(), bankCorrections, effective);
       writeDocumentCorrections(db!, new Map(), documentCorrections);
       writeMatches(db!, matches);
@@ -1172,7 +1216,7 @@ export async function createWorkspace(
     const committedFingerprint: string = fingerprintDescriptor(descriptor, filePath);
     completed = true;
     return Promise.resolve({ metadata: saved, filePath, fingerprint: committedFingerprint, schemaVersion: SCHEMA_VERSION, imports: retained,
-      documentImports: retainedDocuments, sources: sourceCatalog(db), matches, matchDecisions, bankCorrections, documentCorrections, reviewApprovals,
+      documentImports: retainedDocuments, sources: sourceCatalog(db), matches, matchDecisions, bankCorrections, documentCorrections, receiptAnalysisVersions, reviewApprovals,
       duplicateDecisions, sourceRelocations, sourceReplacements, archivedSourceReviews, ignoredTransactions });
   } finally {
     try {
@@ -1188,13 +1232,55 @@ export async function createWorkspace(
   }
 }
 
+function upgradeWorkspaceSchema(db: Database.Database, version: number): void {
+  if (version === 1) {
+    db.exec(importSchema);
+  }
+  if (version < 3) {
+    db.exec(documentImportSchema);
+  }
+  if (version < 4) {
+    db.exec(matchSchema);
+  }
+  if (version < 5) {
+    db.exec(matchReviewSchema);
+  }
+  if (version < 6) {
+    db.exec(bankCorrectionsSchema);
+  }
+  if (version < 7) {
+    db.exec(documentCorrectionsSchema);
+  }
+  if (version < 8) {
+    db.exec(matchApprovalSchema);
+  }
+  if (version < 9) {
+    db.exec(duplicateDecisionSchema);
+  }
+  if (version < 10) {
+    db.exec(sourceRelocationSchema);
+  }
+  if (version < 11) {
+    db.exec(sourceReplacementSchema);
+  }
+  if (version < 12) {
+    db.exec(ignoredTransactionsSchema);
+  }
+  if (version < 13) {
+    db.exec(receiptAnalysisSchema);
+  }
+  if (version < SCHEMA_VERSION) {
+    db.pragma(`user_version = ${SCHEMA_VERSION}`);
+  }
+}
+
 export async function saveWorkspace(
   current: SavedWorkspace, metadata: WorkspaceMetadata, imports: StoredBankImport[] = current.imports, documentImports: StoredDocumentImport[] = current.documentImports,
   decisions: ReadonlyMap<string, string | null> = current.matchDecisions, corrections: ReadonlyMap<string, BankCorrection> = current.bankCorrections,
   documentEdits: ReadonlyMap<string, DocumentCorrection> = current.documentCorrections, approvalEdits?: ReadonlyMap<string, ReviewApprovalState>,
   duplicateEdits: ReadonlyMap<string, DuplicateDecision> = current.duplicateDecisions, relocationEdits: ReadonlyMap<string, string> = current.sourceRelocations,
   replacementEdits: ReadonlyMap<string, string> = current.sourceReplacements, archivedSourceReviewEdits: ArchivedSourceReviews = current.archivedSourceReviews,
-  ignoredEdits: ReadonlySet<string> = current.ignoredTransactions
+  ignoredEdits: ReadonlySet<string> = current.ignoredTransactions, receiptAnalysisEdits: readonly ReceiptAnalysisVersion[] = current.receiptAnalysisVersions
 ): Promise<SavedWorkspace> {
   const matchDecisions: Map<string, string | null> = new Map(decisions);
   const bankCorrections: Map<string, BankCorrection> = parseBankCorrections(corrections);
@@ -1218,7 +1304,8 @@ export async function saveWorkspace(
   const effective: StoredBankImport[] = applyBankCorrections(retained, bankCorrections);
   const archivedSourceReviews: Map<string, Map<string, string | null>> = validateArchivedSourceReviews(archivedSourceReviewEdits, sourceReplacements, effective, retainedDocuments);
   const ignoredTransactions: Set<string> = validateIgnoredTransactions(ignoredEdits, effective);
-  const effectiveDocuments: StoredDocumentImport[] = applyDocumentCorrections(retainedDocuments, documentCorrections);
+  const receiptAnalysisVersions: ReceiptAnalysisVersion[] = z.array(receiptAnalysisVersionSchema).parse(receiptAnalysisEdits);
+  const effectiveDocuments: StoredDocumentImport[] = applyDocumentCorrections(projectReceiptAnalyses(retainedDocuments, receiptAnalysisVersions), documentCorrections);
   validateMatchDecisions(matchDecisions, effective, retainedDocuments, sourceReplacements);
   const duplicateDecisions: Map<string, DuplicateDecision> = validateDuplicateDecisions(duplicateEdits.values(), effective);
   validateDuplicateReviews(duplicateDecisions, matchDecisions, retainedDocuments);
@@ -1239,49 +1326,15 @@ export async function saveWorkspace(
         throw new Error('The workspace file changed outside ReceiptMatch. Reopen it before saving.');
       }
       validateAppend(db!, existing.imports, retained, existing.documentImports, retainedDocuments);
-      if (existing.schemaVersion === 1) {
-        db!.exec(importSchema);
-      }
-      if (existing.schemaVersion < 3) {
-        db!.exec(documentImportSchema);
-      }
-      if (existing.schemaVersion < 4) {
-        db!.exec(matchSchema);
-      }
-      if (existing.schemaVersion < 5) {
-        db!.exec(matchReviewSchema);
-      }
-      if (existing.schemaVersion < 6) {
-        db!.exec(bankCorrectionsSchema);
-      }
-      if (existing.schemaVersion < 7) {
-        db!.exec(documentCorrectionsSchema);
-      }
-      if (existing.schemaVersion < 8) {
-        db!.exec(matchApprovalSchema);
-      }
-      if (existing.schemaVersion < 9) {
-        db!.exec(duplicateDecisionSchema);
-      }
-      if (existing.schemaVersion < 10) {
-        db!.exec(sourceRelocationSchema);
-      }
-      if (existing.schemaVersion < 11) {
-        db!.exec(sourceReplacementSchema);
-      }
-      if (existing.schemaVersion < 12) {
-        db!.exec(ignoredTransactionsSchema);
-      }
-      if (existing.schemaVersion < SCHEMA_VERSION) {
-        db!.pragma(`user_version = ${SCHEMA_VERSION}`);
-      }
+      upgradeWorkspaceSchema(db!, existing.schemaVersion);
       const newImports: StoredBankImport[] = retained.slice(existing.imports.length);
       const newDocumentImports: StoredDocumentImport[] = retainedDocuments.slice(existing.documentImports.length);
       appendImports(db!, newImports);
       appendDocumentImports(db!, newDocumentImports);
+      const analysisAdded: boolean = appendReceiptAnalysisVersions(db!, existing.receiptAnalysisVersions, receiptAnalysisVersions);
       const bankCorrected: boolean = writeBankCorrections(db!, existing.bankCorrections, bankCorrections, effective);
       const documentCorrected: boolean = writeDocumentCorrections(db!, existing.documentCorrections, documentCorrections);
-      const evidenceChanged: number | boolean = bankCorrected || documentCorrected || newImports.length || newDocumentImports.some((record: StoredDocumentImport): boolean => record.files.some((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): file is { status: "imported"; record: StoredSupportingDocument; } => file.status === 'imported'));
+      const evidenceChanged: number | boolean = analysisAdded || bankCorrected || documentCorrected || newImports.length || newDocumentImports.some((record: StoredDocumentImport): boolean => record.files.some((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): file is { status: "imported"; record: StoredSupportingDocument; } => file.status === 'imported'));
       const updated: TransactionMatch[] = evidenceChanged ? suggestWorkspaceMatches(effective, effectiveDocuments) : existing.matches;
       if (existing.schemaVersion < 4 || updated !== existing.matches) {
         writeMatches(db!, updated);
@@ -1298,7 +1351,7 @@ export async function saveWorkspace(
     }).exclusive();
     const committedFingerprint: string = fingerprintDescriptor(descriptor, current.filePath);
     return { metadata: saved, filePath: current.filePath, fingerprint: committedFingerprint, schemaVersion: SCHEMA_VERSION, imports: retained,
-      documentImports: retainedDocuments, sources: sourceCatalog(db), matches, matchDecisions, bankCorrections, documentCorrections, reviewApprovals,
+      documentImports: retainedDocuments, sources: sourceCatalog(db), matches, matchDecisions, bankCorrections, documentCorrections, receiptAnalysisVersions, reviewApprovals,
       duplicateDecisions, sourceRelocations, sourceReplacements, archivedSourceReviews, ignoredTransactions };
   } finally {
     try {

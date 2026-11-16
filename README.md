@@ -31,15 +31,9 @@ ReceiptMatch is a free, open-source desktop app for freelancers and small busine
 
 A phone photo of a receipt or a scanned invoice often has no text you can search or copy. ReceiptMatch can read the image on your computer and use the recognized text to find details such as the total or invoice number. Those details can help ReceiptMatch suggest a matching bank transaction for you to review.
 
-Open **Settings → Document recognition** to choose how ReceiptMatch reads scans and photos.
+ReceiptMatch reads embedded PDF text directly and uses built-in Standard OCR for scans and photos.
 
-| Option | When to use it |
-| --- | --- |
-| **Standard OCR** | Built-in text recognition you can use right away. |
-| **PP-OCRv6 Medium** | A smaller AI model for everyday scans and receipt photos. |
-| **PaddleOCR-VL 1.6** | A larger, slower AI model you can try on difficult scans, photos, and complex layouts. |
-
-Download and select an AI model in Settings. Recognition then runs on your computer without uploading your documents. ReceiptMatch reads embedded text directly when it’s available in a PDF.
+To compare a receipt with an AI analysis, open **Settings → Document recognition** and download **NuExtract3**. After importing a receipt, use **Analyze with NuExtract3** to review the proposal before applying it. ReceiptMatch applies only changes it can verify against the original. Analysis runs locally on your CPU. On Windows, you can also use a compatible Vulkan GPU. CPU processing can take several minutes per document.
 
 ## How it works
 

@@ -8,25 +8,22 @@ import { bankImportInputSchema, importIssue } from '../../src/shared/bank-import
 import {
     EXTRACTION_CHANNELS,
     extractionEventSchema,
-    LOCAL_OCR_VERSIONS,
     OCR_RASTER_BYTES,
     ocrRasterSchema,
-    ocrRegionsSchema,
     PDF_EXTRACTION_LIMITS,
     PDF_EXTRACTION_VERSION,
+    RECEIPT_RASTER_LIMITS,
     type ExtractionJob,
     type ExtractionProgress,
     type ExtractionResult
 } from '../../src/shared/pdf-extraction.js';
 import { imageInputDimensions, ImageInputError } from './image-input.js';
-import { recognizePaddleMedium, type PaddleMediumFiles } from './paddle-medium.js';
-import { PaddleVlCleanupError, recognizePaddleVl, type PaddleVlFiles } from './paddle-vl.js';
 
-export type LocalDocumentOcr = { model: 'pp-ocrv6-medium'; files: PaddleMediumFiles } | { model: 'paddleocr-vl-1.6'; files: PaddleVlFiles };
-interface ExtractionOptions {
+export interface ExtractionOptions {
     signal?: AbortSignal;
     onProgress?: (progress: ExtractionProgress) => void;
 }
+export type DocumentImagesResult = { status: 'complete'; images: Uint8Array[] } | { status: 'failed' | 'cancelled'; issues: ImportIssue[] };
 
 export const EXTRACTION_URL: "receiptmatch-extraction://engine/index.html" = 'receiptmatch-extraction://engine/index.html';
 export const EXTRACTION_SCHEME_DESCRIPTOR: { scheme: string; privileges: { standard: boolean; secure: boolean; supportFetchAPI: boolean; corsEnabled: boolean; stream: boolean; }; } = {
@@ -106,19 +103,36 @@ export async function extractDocumentBytes(
     bytes: Uint8Array,
     sourceId: string,
     format: 'pdf' | 'png' | 'jpeg',
-    options: ExtractionOptions & { localOcr?: LocalDocumentOcr } = {}
+    options: ExtractionOptions = {}
 ): Promise<ExtractionResult> {
-    if (
-        !(bytes instanceof Uint8Array) ||
-        bytes.byteLength < 1 ||
-        bytes.byteLength > PDF_EXTRACTION_LIMITS.bytes ||
-        !z
-            .string()
-            .min(1)
-            .max(128)
-            .refine((value: string): boolean => value.trim().length > 0)
-            .safeParse(sourceId).success
-    ) {
+    return extractDocument(bytes, sourceId, format, options);
+}
+
+export async function renderDocumentImages(bytes: Uint8Array, sourceId: string, format: ExtractionJob['format'], options: ExtractionOptions = {}): Promise<DocumentImagesResult> {
+    const images: Uint8Array[] = [];
+    const result: ExtractionResult = await extractDocument(bytes, sourceId, format, { signal: options.signal, onProgress: options.onProgress }, images);
+    if (result.status === 'complete') {
+        return { status: 'complete', images };
+    }
+    if (result.status === 'partial') {
+        return { status: 'failed', issues: result.input.issues };
+    }
+    return { status: result.status, issues: result.issues };
+}
+
+function validDocumentInput(bytes: Uint8Array, sourceId: string): boolean {
+    return bytes instanceof Uint8Array && bytes.byteLength >= 1 && bytes.byteLength <= PDF_EXTRACTION_LIMITS.bytes &&
+        z.string().min(1).max(128).refine((value: string): boolean => value.trim().length > 0).safeParse(sourceId).success;
+}
+
+async function extractDocument(
+    bytes: Uint8Array,
+    sourceId: string,
+    format: 'pdf' | 'png' | 'jpeg',
+    options: ExtractionOptions,
+    rasters?: Uint8Array[]
+): Promise<ExtractionResult> {
+    if (!validDocumentInput(bytes, sourceId)) {
         return failure('invalid-input', 'Choose a nonempty document within the local extraction byte limit and provide a valid source identity.');
     }
     if (!['pdf', 'png', 'jpeg'].includes(format)) {
@@ -134,32 +148,27 @@ export async function extractDocumentBytes(
         return failure('engine-cleanup', 'The extraction session could not be cleared safely. Restart ReceiptMatch before another extraction.');
     }
     const snapshot: Uint8Array<ArrayBuffer> = Uint8Array.from(bytes);
-    let imageDimensions: { width: number; height: number } | null = null;
-    if (format !== 'pdf') {
-        try {
-            imageDimensions = imageInputDimensions(snapshot, format);
-        } catch (error: unknown) {
-            return failure(error instanceof ImageInputError ? error.code : 'image-invalid', error instanceof ImageInputError ? error.message : 'The image header could not be read safely.');
-        }
+    let imageDimensions: { width: number; height: number } | null;
+    try {
+        imageDimensions = format === 'pdf' ? null : imageInputDimensions(snapshot, format);
+    } catch (error: unknown) {
+        return failure(error instanceof ImageInputError ? error.code : 'image-invalid', error instanceof ImageInputError ? error.message : 'The image header could not be read safely.');
     }
     if (!app.isReady()) {
         return failure('engine-not-ready', 'The desktop extraction runtime is not ready.');
     }
     active = true;
     const jobId: `${string}-${string}-${string}-${string}-${string}` = randomUUID();
-    const localOcr: LocalDocumentOcr | undefined = options.localOcr;
-    const job: ExtractionJob = { jobId, sourceId, format, sha256: createHash('sha256').update(snapshot).digest('hex'), bytes: snapshot, ocrModel: localOcr?.model };
+    const job: ExtractionJob = { jobId, sourceId, format, sha256: createHash('sha256').update(snapshot).digest('hex'), bytes: snapshot,
+        rasterOnly: rasters ? true : undefined };
     return new Promise<ExtractionResult>((resolve: (value: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; } | PromiseLike<{ status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }>) => void): void => {
         let window: BrowserWindow | undefined;
         let isolatedSession: Session | undefined;
         let settled: boolean = false;
         let started: boolean = false;
         let handled: boolean = false;
-        let recognition: Promise<unknown> | undefined;
-        let lastOcrPage: number = 0;
-        let ocrPixels: number = 0;
-        let extractionVersion: string = PDF_EXTRACTION_VERSION;
-        const modelAbort: AbortController = new AbortController();
+        let rasterPixels: number = 0;
+        let rasterBytes: number = 0;
         const finish: (result: ExtractionResult) => void = (result: ExtractionResult): void => {
             if (settled) {
                 return;
@@ -169,10 +178,9 @@ export async function extractDocumentBytes(
             options.signal?.removeEventListener('abort', abort);
             ipcMain.removeListener(EXTRACTION_CHANNELS.ready, ready);
             ipcMain.removeListener(EXTRACTION_CHANNELS.event, event);
-            if (localOcr) {
-                ipcMain.removeHandler(EXTRACTION_CHANNELS.recognize);
+            if (rasters) {
+                ipcMain.removeHandler(EXTRACTION_CHANNELS.raster);
             }
-            modelAbort.abort();
             try {
                 if (window && !window.isDestroyed()) {
                     window.destroy();
@@ -180,7 +188,7 @@ export async function extractDocumentBytes(
             } catch {
                 cleanupFailed = true;
             }
-            void Promise.all([isolatedSession ? cleanupSession(isolatedSession, handled) : Promise.resolve(true), recognition?.catch((): undefined => undefined)]).then(([clean]: [boolean, unknown]): void => {
+            void (isolatedSession ? cleanupSession(isolatedSession, handled) : Promise.resolve(true)).then((clean: boolean): void => {
                 cleanupFailed ||= !clean;
                 active = false;
                 resolve(cleanupFailed ? failure('engine-cleanup', 'The extraction session could not be cleared safely. Restart ReceiptMatch before another extraction.') : result);
@@ -196,9 +204,9 @@ export async function extractDocumentBytes(
             event.senderFrame === window.webContents.mainFrame &&
             event.senderFrame?.url === EXTRACTION_URL;
 
-        const recognize: (event: IpcMainInvokeEvent, requestJobId: unknown, payload: unknown) => Promise<{ text: string; x0: number; y0: number; x1: number; y1: number; }[]> = async (event: IpcMainInvokeEvent, requestJobId: unknown, payload: unknown): Promise<{ text: string; x0: number; y0: number; x1: number; y1: number; }[]> => {
-            if (!localOcr || !authorized(event) || settled || !started || requestJobId !== jobId || recognition) {
-                throw new Error('OCR request denied.');
+        const receiveRaster: (event: IpcMainInvokeEvent, requestJobId: unknown, payload: unknown) => void = (event: IpcMainInvokeEvent, requestJobId: unknown, payload: unknown): void => {
+            if (!rasters || !authorized(event) || settled || !started || requestJobId !== jobId) {
+                throw new Error('OCR raster request denied.');
             }
             const parsed: z.ZodSafeParseResult<{ pageNumber: number; width: number; height: number; png: Uint8Array<ArrayBuffer>; }> = ocrRasterSchema.safeParse(payload);
             if (!parsed.success) {
@@ -206,36 +214,17 @@ export async function extractDocumentBytes(
             }
             const { pageNumber, width, height, png }: { pageNumber: number; width: number; height: number; png: Uint8Array<ArrayBuffer>; } = parsed.data;
             const dimensions: { width: number; height: number; } = imageInputDimensions(png, 'png', OCR_RASTER_BYTES);
-            if (dimensions.width !== width || dimensions.height !== height || pageNumber <= lastOcrPage ||
-                (format !== 'pdf' && pageNumber !== 1) || ocrPixels + width * height > PDF_EXTRACTION_LIMITS.pixelsTotal) {
-                    throw new Error('Invalid OCR raster.');
-                }
-            lastOcrPage = pageNumber;
-            ocrPixels += width * height;
-            timeout.refresh();
-            const pending: Promise<{ text: string; x0: number; y0: number; x1: number; y1: number; }[]> = localOcr.model === 'pp-ocrv6-medium'
-                ? recognizePaddleMedium(localOcr.files, png, width, height, modelAbort.signal)
-                : recognizePaddleVl(localOcr.files, png, width, height, modelAbort.signal);
-            recognition = pending;
-            try {
-                const regions: { text: string; x0: number; y0: number; x1: number; y1: number; }[] = ocrRegionsSchema.parse(await pending);
-                if (regions.some((region: { text: string; x0: number; y0: number; x1: number; y1: number; }): boolean => region.x1 > width || region.y1 > height)) {
-                    throw new Error('Invalid OCR coordinates.');
-                }
-                extractionVersion = LOCAL_OCR_VERSIONS[localOcr.model];
-                return regions;
-            } catch (error: unknown) {
-                if (error instanceof PaddleVlCleanupError) {
-                    cleanupFailed = true;
-                    finish(failure('engine-cleanup', 'The temporary local OCR image could not be removed.'));
-                }
-                throw new Error('The selected local OCR model could not read this page.', { cause: error });
-            } finally {
-                recognition = undefined;
-                if (!settled) {
-                    timeout.refresh();
-                }
+            if (dimensions.width !== width || dimensions.height !== height || (format !== 'pdf' && pageNumber !== 1) ||
+                rasterPixels + width * height > PDF_EXTRACTION_LIMITS.pixelsTotal) {
+                throw new Error('Invalid OCR raster.');
             }
+            if (pageNumber !== rasters.length + 1 || pageNumber > RECEIPT_RASTER_LIMITS.pages || rasterBytes + png.byteLength > RECEIPT_RASTER_LIMITS.bytes) {
+                throw new Error('The receipt images exceed their local bounds.');
+            }
+            rasters.push(Uint8Array.from(png));
+            rasterBytes += png.byteLength;
+            rasterPixels += width * height;
+            timeout.refresh();
         };
 
         const ready: (event: IpcMainEvent, payload: unknown) => void = (event: IpcMainEvent, payload: unknown): void => {
@@ -276,9 +265,9 @@ export async function extractDocumentBytes(
                     checked.data.source.sourceId !== sourceId ||
                     checked.data.source.sha256 !== job.sha256 ||
                     checked.data.extraction.runId !== jobId ||
-                    checked.data.extraction.version !== extractionVersion ||
-                    recognition !== undefined ||
+                    checked.data.extraction.version !== PDF_EXTRACTION_VERSION ||
                     checked.data.pages.some((page: ImportPage, index: number): boolean => page.pageNumber !== index + 1) ||
+                    (rasters && result.status === 'complete' && rasters.length !== checked.data.pages.length) ||
                     (imageDimensions && (checked.data.pages.length !== 1 || checked.data.pages[0].status !== 'complete' ||
                         !((checked.data.pages[0].width === imageDimensions.width && checked.data.pages[0].height === imageDimensions.height) ||
                             (checked.data.pages[0].width === imageDimensions.height && checked.data.pages[0].height === imageDimensions.width)) ||
@@ -294,8 +283,8 @@ export async function extractDocumentBytes(
         };
         ipcMain.on(EXTRACTION_CHANNELS.ready, ready);
         ipcMain.on(EXTRACTION_CHANNELS.event, event);
-        if (localOcr) {
-            ipcMain.handle(EXTRACTION_CHANNELS.recognize, recognize);
+        if (rasters) {
+            ipcMain.handle(EXTRACTION_CHANNELS.raster, receiveRaster);
         }
         options.signal?.addEventListener('abort', abort, { once: true });
         if (options.signal?.aborted) {

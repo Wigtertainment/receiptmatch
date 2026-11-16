@@ -3,73 +3,100 @@
 	<div class="source-panel ocr-settings">
 		<header>
 			<h2>Document recognition</h2>
-			<p>Choose how ReceiptMatch reads images and scanned PDFs. Text embedded in PDFs is read directly.</p>
-			<p>Optional AI models are downloaded after you confirm. Document processing runs on this device.</p>
+			<p>New receipts use Standard OCR for scans and photos. ReceiptMatch reads embedded PDF text directly.</p>
+			<p>Download NuExtract3 to analyze individual receipts. Document processing runs on this device.</p>
 		</header>
-		@if (status(); as current) {
+		@if (status(); as model) {
 			<div class="ocr-option">
 				<div>
 					<h3 id="ocr-option-standard" tabindex="-1">Standard OCR</h3>
 					<p>Built-in Tesseract recognition. Ready to use.</p>
 				</div>
-				@if (current.selection === 'standard') {
-					<strong role="status">In use</strong>
-				} @else {
-					<button
-						type="button"
-						class="button-secondary"
-						[disabled]="changing() || !!current.download"
-						(click)="change({ type: 'select', selection: 'standard' }, $event)"
-					>
-						Use Standard OCR
-					</button>
-				}
+				<strong role="status">Default for new receipts</strong>
 			</div>
-			@for (model of current.models; track model.model) {
+			<div id="nuextract-settings">
 				<div class="ocr-option">
 					<div>
-						<h3 [id]="'ocr-option-' + model.model" tabindex="-1">{{ model.name }}</h3>
-						<p>{{ descriptions[model.model] }}</p>
-						<p>{{ size(model.downloadBytes) }} download · {{ model.installed ? 'Installed' : 'Not installed' }}</p>
-						@if (model.runtimeIssue) {
-							<p>{{ model.runtimeIssue }}</p>
+						<h3 id="ocr-option-nuextract" tabindex="-1">NuExtract3</h3>
+						<p>{{ size(model.modelDownloadBytes) }} download · {{ model.installed ? 'Installed' : 'Not installed' }}</p>
+						<p>Use Analyze with NuExtract3 next to an imported receipt to compare the proposal before applying it.</p>
+						@if (model.cpuIssue) {
+							<p>{{ model.cpuIssue }}</p>
 						}
 					</div>
-					@if (current.selection === model.model) {
-						<strong role="status">In use</strong>
-					} @else if (model.installed) {
-						<button
-							type="button"
-							class="button-secondary"
-							[disabled]="changing() || !!current.download || !model.runtimeAvailable"
-							(click)="change({ type: 'select', selection: model.model }, $event)"
-						>
-							Use {{ model.name }}
-						</button>
-					} @else {
-						<button
-							type="button"
-							class="button-secondary"
-							[disabled]="changing() || !!current.download || !model.runtimeAvailable"
-							(click)="change({ type: 'install', model: model.model }, $event)"
-						>
-							Download {{ model.name }}
+					@if (!model.installed) {
+						<button type="button" class="button-secondary" [disabled]="busy() || !model.cpuAvailable" (click)="change({ type: 'install-nuextract' }, $event)">
+							Download NuExtract3
 						</button>
 					}
 				</div>
-				@if (current.download; as download) {
-					@if (download.model === model.model) {
-						<div class="ocr-download">
-							<label for="ocr-download-progress">Downloading {{ model.name }}</label>
-							<progress id="ocr-download-progress" [value]="download.receivedBytes" [max]="download.totalBytes"></progress>
-							<span>{{ size(download.receivedBytes) }} of {{ size(download.totalBytes) }}</span>
-							<button type="button" class="button-secondary compact" (click)="cancel($event)" [disabled]="cancelling()">
-								{{ cancelling() ? 'Cancelling…' : 'Cancel download' }}
+				@if (model.installed) {
+					<div class="ocr-download">
+						<p id="nuextract-device-hint">
+							CPU processing usually takes much longer than on a compatible GPU. Depending on the document, analysis can take several minutes.
+						</p>
+						<div role="group" aria-label="NuExtract3 processing device" aria-describedby="nuextract-device-hint">
+							<button
+								type="button"
+								class="button-secondary compact"
+								[disabled]="busy() || !model.cpuAvailable"
+								[attr.aria-pressed]="model.device === 'cpu'"
+								(click)="change({ type: 'select-nuextract-device', device: 'cpu' }, $event)"
+							>
+								CPU
+							</button>
+							<button
+								type="button"
+								class="button-secondary compact"
+								[disabled]="busy() || model.gpu !== 'available'"
+								[attr.aria-pressed]="model.device === 'gpu'"
+								(click)="change({ type: 'select-nuextract-device', device: 'gpu' }, $event)"
+							>
+								GPU
 							</button>
 						</div>
-					}
+						@if (!model.download) {
+							<p id="nuextract-gpu-status" role="status">{{ gpuMessage(model) }}</p>
+							@if (model.gpu === 'download-required') {
+								<button
+									type="button"
+									class="button-secondary compact"
+									[disabled]="busy()"
+									aria-describedby="nuextract-gpu-status"
+									(click)="change({ type: 'install-nuextract-vulkan' }, $event)"
+								>
+									Download Vulkan runtime ({{ size(model.vulkanDownloadBytes) }})
+								</button>
+							} @else if (model.gpu === 'unchecked' || model.gpu === 'unavailable') {
+								<button
+									type="button"
+									class="button-secondary compact"
+									[disabled]="busy()"
+									aria-describedby="nuextract-gpu-status"
+									(click)="change({ type: 'check-nuextract-gpu' }, $event)"
+								>
+									{{ model.gpu === 'unavailable' ? 'Retry GPU check' : 'Check GPU' }}
+								</button>
+							} @else if (model.gpu === 'checking') {
+								<progress aria-labelledby="nuextract-gpu-status"></progress>
+								<button type="button" class="button-secondary compact" (click)="cancel($event)" [disabled]="cancelling()">
+									{{ cancelling() ? 'Cancelling…' : 'Cancel GPU check' }}
+								</button>
+							}
+						}
+					</div>
 				}
-			}
+				@if (model.download; as download) {
+					<div class="ocr-download">
+						<label for="nuextract-download-progress">Downloading {{ download.kind === 'model' ? 'NuExtract3' : 'Vulkan runtime' }}</label>
+						<progress id="nuextract-download-progress" [value]="download.receivedBytes" [max]="download.totalBytes"></progress>
+						<span>{{ size(download.receivedBytes) }} of {{ size(download.totalBytes) }}</span>
+						<button type="button" class="button-secondary compact" (click)="cancel($event)" [disabled]="cancelling()">
+							{{ cancelling() ? 'Cancelling…' : 'Cancel download' }}
+						</button>
+					</div>
+				}
+			</div>
 		} @else if (!error()) {
 			<p class="ocr-feedback" role="status">Loading OCR settings…</p>
 		}
@@ -78,8 +105,12 @@
 			@if (!status()) {
 				<button class="button-secondary ocr-feedback" type="button" (click)="refresh()">Retry</button>
 			}
-		} @else if (status()?.failedDownload && !changing()) {
-			<p class="ocr-feedback error" role="alert">The model could not be downloaded or installed. Try again.</p>
+		} @else if (status()?.failedDownload; as failedDownload) {
+			@if (!busy()) {
+				<p class="ocr-feedback error" role="alert">
+					{{ failedDownload === 'model' ? 'NuExtract3' : 'The Vulkan runtime' }} could not be downloaded or installed. Try again.
+				</p>
+			}
 		}
 	</div>
 </section>

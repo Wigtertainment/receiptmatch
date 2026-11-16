@@ -1,7 +1,7 @@
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
 import type { BankImportInput, ImportIssue } from "../../src/shared/bank-import.js";
 import type { SupportingDocument } from "../../src/shared/supporting-document.js";
-import type { ExtractionProgress } from "../../src/shared/pdf-extraction.js";
+import type { ExtractionProgress, ExtractionResult } from "../../src/shared/pdf-extraction.js";
 import { test, vi, type Mock } from "vitest";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
@@ -12,8 +12,7 @@ import path from "node:path";
 import { FolderDocumentImportService } from "../../electron/documents/service.js";
 import { StatementImportService } from "../../electron/import/service.js";
 import { importIssue } from "../../src/shared/bank-import.js";
-import { LOCAL_OCR_VERSIONS } from "../../src/shared/pdf-extraction.js";
-import { storedDocumentImportSchema, type DocumentImportProgress, type StoredDocumentImport } from "../../src/shared/workspace-documents.js";
+import { storedDocumentImportSchema, type DocumentFormat, type DocumentImportProgress, type StoredDocumentImport } from "../../src/shared/workspace-documents.js";
 import { extractedDocument } from "./document-fixtures.js";
 import type { Mode } from 'node:fs';
 import type { BigIntStats } from 'node:fs';
@@ -22,7 +21,6 @@ import type { StatOptions } from 'node:fs';
 import type { Dir } from 'node:fs';
 import type { OpenDirOptions } from 'node:fs';
 import type { PathLike } from 'node:fs';
-import type { LocalDocumentOcr } from '../../electron/extraction/host.js';
 
 async function directory(): Promise<string> {
 	await mkdir("artifacts", { recursive: true });
@@ -106,7 +104,7 @@ test("cancellation keeps completed files, discards the pending file and ignores 
 	});
 	const service: FolderDocumentImportService = new FolderDocumentImportService({
 		choose: async (): Promise<string> => Promise.resolve(root),
-		extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, format: "png" | "pdf" | "jpeg", options: { signal?: AbortSignal; onProgress?: (progress: ExtractionProgress) => void; localOcr?: LocalDocumentOcr; }): Promise<{ status: "complete"; input: BankImportInput; } & { status: "complete"; }> => {
+		extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, format: "png" | "pdf" | "jpeg", options: { signal?: AbortSignal; onProgress?: (progress: ExtractionProgress) => void }): Promise<{ status: "complete"; input: BankImportInput; } & { status: "complete"; }> => {
 			if (Buffer.from(bytes).toString() === "second") {
 				secondStarted();
 				await pending;
@@ -171,7 +169,7 @@ test("invalid provenance and malformed progress are isolated as per-file failure
 	for (const defect of ["hash", "source", "version", "progress"] as const) {
 		const service: FolderDocumentImportService = new FolderDocumentImportService({
 			choose: async (): Promise<string> => Promise.resolve(root),
-			extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, format: "png" | "pdf" | "jpeg", options: { signal?: AbortSignal; onProgress?: (progress: ExtractionProgress) => void; localOcr?: LocalDocumentOcr; }): Promise<{ status: "complete"; input: BankImportInput; } & { status: "complete"; }> => {
+			extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, format: "png" | "pdf" | "jpeg", options: { signal?: AbortSignal; onProgress?: (progress: ExtractionProgress) => void }): Promise<{ status: "complete"; input: BankImportInput; } & { status: "complete"; }> => {
 				const result: { status: "complete"; input: BankImportInput; } & { status: "complete"; } = extractedDocument(bytes, id, format);
 				if (Buffer.from(bytes).toString() === "first") {
 					if (defect === "hash") {
@@ -197,24 +195,22 @@ test("invalid provenance and malformed progress are isolated as per-file failure
 	}
 });
 
-test("the selected OCR model is used for the folder and embedded PDF text retains standard provenance", async (): Promise<void> => {
+test("folder import uses standard provenance for embedded PDF text, scanned PDFs and images", async (): Promise<void> => {
 	const root: string = await directory();
-	for (const name of ["a.png", "b.pdf", "c.jpg", "d.pdf", "e.jpeg"]) {
+	for (const name of ["a.png", "b.pdf", "c.jpg", "d.pdf", "e.jpeg", "f.pdf"]) {
 		await writeFile(path.join(root, name), name);
 	}
-	const localOcr: { readonly model: "pp-ocrv6-medium"; readonly files: { readonly executable: "python"; readonly detection: "det"; readonly recognition: "rec"; }; } = { model: "pp-ocrv6-medium", files: { executable: "python", detection: "det", recognition: "rec" } } as const;
 	const service: FolderDocumentImportService = new FolderDocumentImportService({
 		choose: async (): Promise<string> => Promise.resolve(root),
-		localOcr: async (): Promise<{ readonly model: "pp-ocrv6-medium"; readonly files: { readonly executable: "python"; readonly detection: "det"; readonly recognition: "rec"; }; }> => Promise.resolve(localOcr),
-		extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, format: "png" | "pdf" | "jpeg", options: { signal?: AbortSignal; onProgress?: (progress: ExtractionProgress) => void; localOcr?: LocalDocumentOcr; }): Promise<{ status: "complete"; input: BankImportInput; } & { status: "complete"; }> => {
-			assert.equal(options.localOcr, localOcr);
-			const result: { status: "complete"; input: BankImportInput; } & { status: "complete"; } = extractedDocument(bytes, id, format);
+		extract: (bytes: Uint8Array, id: string, format: DocumentFormat, options: { signal?: AbortSignal; onProgress?: (progress: ExtractionProgress) => void }): Promise<ExtractionResult> => {
+			assert.equal("localOcr" in options, false);
+			const result: ReturnType<typeof extractedDocument> = extractedDocument(bytes, id, format);
 			const name: string = Buffer.from(bytes).toString();
-			if (name === "a.png") {
-				result.input.extraction.version = LOCAL_OCR_VERSIONS[localOcr.model];
-			}
 			if (name === "c.jpg") {
-				result.input.extraction.version = LOCAL_OCR_VERSIONS["paddleocr-vl-1.6"];
+				result.input.extraction.version = "pdfjs-6.5.438+pp-ocrv6-medium-onnx+document-2";
+			}
+			if (name === "f.pdf") {
+				result.input.extraction.version = "pdfjs-6.5.438+paddleocr-vl-1.6-gguf-spotting+document-2";
 			}
 			if (name === "d.pdf") {
 				for (const span of result.input.pages[0].spans) {
@@ -226,7 +222,12 @@ test("the selected OCR model is used for the folder and embedded PDF text retain
 	});
 	const run: StoredDocumentImport | null = await service.run({ existingSources: [] });
 	assert.ok(run);
-	assert.deepEqual(run.files.map((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): "failed" | "unsupported" | "imported" | "skipped" => file.status), ["imported", "imported", "failed", "failed", "failed"]);
+	assert.deepEqual(run.files.map((file: StoredDocumentImport['files'][number]): string => file.status), ["imported", "imported", "failed", "imported", "imported", "failed"]);
+	for (const file of run.files) {
+		if (file.status === "failed") {
+			assert.equal(file.issues[0].code, "invalid-provenance");
+		}
+	}
 });
 
 test("a transient ancestor replacement cannot replace the file identity selected before snapshotting", async (): Promise<void> => {
