@@ -9,17 +9,23 @@ import type { ModelAsset } from './local-ocr-assets.js';
 
 const publisher: "huggingface.co" = 'huggingface.co';
 const downloadHosts: Set<string> = new Set([publisher, 'cas-bridge.xethub.hf.co', 'us.aws.cdn.hf.co']);
+export const vulkanRuntimeArchiveUrl: string = 'https://github.com/ggml-org/llama.cpp/releases/download/b12283/llama-b12283-bin-win-vulkan-x64.zip';
+export const vulkanRuntimeLicenseUrl: string = 'https://raw.githubusercontent.com/ggml-org/llama.cpp/b12283/LICENSE';
+const runtimeDownloadHosts: Set<string> = new Set(['release-assets.githubusercontent.com']);
 const redirects: Set<number> = new Set([301, 302, 303, 307, 308]);
 const maxRedirects: number = 4;
 const inactivityMs: 60000 = 60_000;
 
-function trustedUrl(url: URL): boolean {
-    return url.protocol === 'https:' && !url.port && !url.username && !url.password && !url.hash && downloadHosts.has(url.hostname);
+function trustedUrl(url: URL, hosts: ReadonlySet<string>): boolean {
+    return url.protocol === 'https:' && !url.port && !url.username && !url.password && !url.hash && hosts.has(url.hostname);
 }
 
 async function fetchAsset(source: string, signal: AbortSignal): Promise<ReadableStream<Uint8Array>> {
     let url: URL = new URL(source);
-    if (!trustedUrl(url) || url.hostname !== publisher || !url.pathname.startsWith('/PaddlePaddle/')) {
+    const runtime: boolean = url.href === vulkanRuntimeArchiveUrl;
+    const license: boolean = url.href === vulkanRuntimeLicenseUrl;
+    const hosts: ReadonlySet<string> = runtime ? runtimeDownloadHosts : downloadHosts;
+    if (!runtime && !license && (!trustedUrl(url, hosts) || url.hostname !== publisher || !url.pathname.startsWith('/PaddlePaddle/'))) {
         throw new Error('Invalid model source.');
     }
     for (let hop: number = 0; hop <= maxRedirects; hop++) {
@@ -35,7 +41,7 @@ async function fetchAsset(source: string, signal: AbortSignal): Promise<Readable
             throw new Error('Model download returned an unexpected response.');
         }
         url = new URL(location, url);
-        if (!trustedUrl(url)) {
+        if (license || !trustedUrl(url, hosts)) {
             throw new Error('Model download redirected to an untrusted source.');
         }
     }

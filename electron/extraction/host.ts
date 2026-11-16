@@ -16,13 +16,17 @@ import {
     PDF_EXTRACTION_VERSION,
     type ExtractionJob,
     type ExtractionProgress,
-    type ExtractionResult
+    type ExtractionResult,
+    type OcrGpuFailure,
+    type OcrRegion
 } from '../../src/shared/pdf-extraction.js';
 import { imageInputDimensions, ImageInputError } from './image-input.js';
 import { recognizePaddleMedium, type PaddleMediumFiles } from './paddle-medium.js';
 import { PaddleVlCleanupError, recognizePaddleVl, type PaddleVlFiles } from './paddle-vl.js';
 
-export type LocalDocumentOcr = { model: 'pp-ocrv6-medium'; files: PaddleMediumFiles } | { model: 'paddleocr-vl-1.6'; files: PaddleVlFiles };
+type PreparedLocalDocumentOcr = { model: 'pp-ocrv6-medium'; files: PaddleMediumFiles } | { model: 'paddleocr-vl-1.6'; files: PaddleVlFiles };
+export type LocalDocumentOcr = PreparedLocalDocumentOcr |
+    { model: PreparedLocalDocumentOcr['model']; prepare: (signal: AbortSignal) => Promise<PreparedLocalDocumentOcr> };
 interface ExtractionOptions {
     signal?: AbortSignal;
     onProgress?: (progress: ExtractionProgress) => void;
@@ -41,6 +45,17 @@ let cleanupFailed: boolean = false;
 
 function failure(code: string, message: string, status: 'failed' | 'cancelled' = 'failed'): ExtractionResult {
     return { status, issues: [importIssue(code, message)] };
+}
+
+function gpuRecognitionFailure(model: LocalDocumentOcr, signal: AbortSignal, prepared: boolean, error: unknown): OcrGpuFailure | undefined {
+    if (!('prepare' in model) || signal.aborted) {
+        return undefined;
+    }
+    if (prepared) {
+        return { code: 'ocr-gpu-failed', message: 'GPU recognition could not complete. Choose CPU in Settings to retry.' };
+    }
+    const message: string = error instanceof Error && error.message ? error.message.slice(0, 500) : 'GPU acceleration is unavailable. Choose CPU in Settings.';
+    return { code: 'ocr-gpu-unavailable', message };
 }
 
 async function assetFiles(): Promise<Map<string, string>> {
@@ -156,6 +171,7 @@ export async function extractDocumentBytes(
         let started: boolean = false;
         let handled: boolean = false;
         let recognition: Promise<unknown> | undefined;
+        let preparedOcr: Promise<PreparedLocalDocumentOcr> | undefined;
         let lastOcrPage: number = 0;
         let ocrPixels: number = 0;
         let extractionVersion: string = PDF_EXTRACTION_VERSION;
@@ -188,7 +204,8 @@ export async function extractDocumentBytes(
         };
 
         const abort: () => void = (): void => finish(failure('cancelled', 'Document extraction was cancelled.', 'cancelled'));
-        const timeout: NodeJS.Timeout = setTimeout((): void => finish(failure('timeout', 'Document extraction exceeded its local execution time limit.')), PDF_EXTRACTION_LIMITS.timeoutMs);
+        const timeout: NodeJS.Timeout = setTimeout((): void => finish(failure('timeout', 'Document extraction exceeded its local execution time limit.')),
+            PDF_EXTRACTION_LIMITS.timeoutMs + (localOcr && 'prepare' in localOcr ? 120_000 : 0));
         const authorized: (event: IpcMainEvent | IpcMainInvokeEvent) => boolean | undefined = (event: IpcMainEvent | IpcMainInvokeEvent): boolean | undefined =>
             window &&
             !window.isDestroyed() &&
@@ -196,7 +213,8 @@ export async function extractDocumentBytes(
             event.senderFrame === window.webContents.mainFrame &&
             event.senderFrame?.url === EXTRACTION_URL;
 
-        const recognize: (event: IpcMainInvokeEvent, requestJobId: unknown, payload: unknown) => Promise<{ text: string; x0: number; y0: number; x1: number; y1: number; }[]> = async (event: IpcMainInvokeEvent, requestJobId: unknown, payload: unknown): Promise<{ text: string; x0: number; y0: number; x1: number; y1: number; }[]> => {
+        const recognize: (event: IpcMainInvokeEvent, requestJobId: unknown, payload: unknown) => Promise<OcrRegion[] | OcrGpuFailure> =
+        async (event: IpcMainInvokeEvent, requestJobId: unknown, payload: unknown): Promise<OcrRegion[] | OcrGpuFailure> => {
             if (!localOcr || !authorized(event) || settled || !started || requestJobId !== jobId || recognition) {
                 throw new Error('OCR request denied.');
             }
@@ -213,9 +231,13 @@ export async function extractDocumentBytes(
             lastOcrPage = pageNumber;
             ocrPixels += width * height;
             timeout.refresh();
-            const pending: Promise<{ text: string; x0: number; y0: number; x1: number; y1: number; }[]> = localOcr.model === 'pp-ocrv6-medium'
-                ? recognizePaddleMedium(localOcr.files, png, width, height, modelAbort.signal)
-                : recognizePaddleVl(localOcr.files, png, width, height, modelAbort.signal);
+            let modelPrepared: boolean = false;
+            preparedOcr ??= 'prepare' in localOcr ? localOcr.prepare(modelAbort.signal) : Promise.resolve(localOcr);
+            const pending: Promise<OcrRegion[]> = preparedOcr.then((model: PreparedLocalDocumentOcr): Promise<OcrRegion[]> => {
+                modelPrepared = true;
+                return model.model === 'pp-ocrv6-medium' ? recognizePaddleMedium(model.files, png, width, height, modelAbort.signal)
+                    : recognizePaddleVl(model.files, png, width, height, modelAbort.signal);
+            });
             recognition = pending;
             try {
                 const regions: { text: string; x0: number; y0: number; x1: number; y1: number; }[] = ocrRegionsSchema.parse(await pending);
@@ -228,6 +250,10 @@ export async function extractDocumentBytes(
                 if (error instanceof PaddleVlCleanupError) {
                     cleanupFailed = true;
                     finish(failure('engine-cleanup', 'The temporary local OCR image could not be removed.'));
+                }
+                const gpuFailure: OcrGpuFailure | undefined = gpuRecognitionFailure(localOcr, modelAbort.signal, modelPrepared, error);
+                if (gpuFailure) {
+                    return gpuFailure;
                 }
                 throw new Error('The selected local OCR model could not read this page.', { cause: error });
             } finally {

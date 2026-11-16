@@ -9,20 +9,80 @@
 		@if (status(); as current) {
 			<div class="ocr-option">
 				<div>
+					<h3 id="ocr-option-device" tabindex="-1">AI processing device</h3>
+					<p id="ocr-device-hint">CPU is the default and can be significantly slower. GPU requires compatible hardware.</p>
+					<p role="status">{{ deviceMessage(current) }}</p>
+					@if (!current.gpu.download) {
+						<p id="ocr-gpu-status" role="status">{{ gpuMessage(current.gpu) }}</p>
+					}
+				</div>
+				<div class="ocr-device-actions">
+					<div class="ocr-device-choices" role="group" aria-labelledby="ocr-option-device" aria-describedby="ocr-device-hint">
+						<button
+							type="button"
+							class="button-secondary compact"
+							[disabled]="busy()"
+							[attr.aria-pressed]="current.device === 'cpu'"
+							(click)="change({ type: 'select-device', device: 'cpu' }, $event)"
+						>
+							CPU
+						</button>
+						<button
+							type="button"
+							class="button-secondary compact"
+							[disabled]="busy() || current.gpu.state !== 'available'"
+							[attr.aria-pressed]="current.device === 'gpu'"
+							(click)="change({ type: 'select-device', device: 'gpu' }, $event)"
+						>
+							GPU
+						</button>
+					</div>
+					@if (current.gpu.state === 'download-required' && !current.gpu.download) {
+						<button
+							type="button"
+							class="button-secondary compact"
+							[disabled]="busy()"
+							aria-describedby="ocr-vulkan-size"
+							(click)="change({ type: 'install-gpu-runtime' }, $event)"
+						>
+							Download Vulkan runtime
+						</button>
+						<span class="ocr-size" id="ocr-vulkan-size">{{ size(current.gpu.downloadBytes) }} download</span>
+					} @else if (!cancellableGpuCheck() && (current.gpu.state === 'unchecked' || current.gpu.state === 'unavailable')) {
+						<button type="button" class="button-secondary compact" [disabled]="busy()" (click)="change({ type: 'check-gpu' }, $event)">
+							{{ current.gpu.state === 'unavailable' ? 'Retry GPU check' : 'Check GPU' }}
+						</button>
+					}
+				</div>
+			</div>
+			@if (current.gpu.download; as gpuDownload) {
+				<div class="ocr-download">
+					<label for="ocr-gpu-download-progress">Downloading Vulkan runtime</label>
+					<progress id="ocr-gpu-download-progress" [value]="gpuDownload.receivedBytes" [max]="gpuDownload.totalBytes"></progress>
+					<span>{{ size(gpuDownload.receivedBytes) }} of {{ size(gpuDownload.totalBytes) }}</span>
+					<button type="button" class="button-secondary compact" (click)="cancel($event)" [disabled]="cancelling()">
+						{{ cancelling() ? 'Cancelling…' : 'Cancel download' }}
+					</button>
+				</div>
+			} @else if (current.gpu.state === 'checking' || cancellableGpuCheck()) {
+				<div class="ocr-download">
+					<progress aria-labelledby="ocr-gpu-status"></progress>
+					@if (cancellableGpuCheck()) {
+						<button type="button" class="button-secondary compact" (click)="cancel($event)" [disabled]="cancelling()">
+							{{ cancelling() ? 'Cancelling…' : 'Cancel GPU check' }}
+						</button>
+					}
+				</div>
+			}
+			<div class="ocr-option">
+				<div>
 					<h3 id="ocr-option-standard" tabindex="-1">Standard OCR</h3>
 					<p>Built-in Tesseract recognition. Ready to use.</p>
 				</div>
 				@if (current.selection === 'standard') {
 					<strong role="status">In use</strong>
 				} @else {
-					<button
-						type="button"
-						class="button-secondary"
-						[disabled]="changing() || !!current.download"
-						(click)="change({ type: 'select', selection: 'standard' }, $event)"
-					>
-						Use Standard OCR
-					</button>
+					<button type="button" class="button-secondary" [disabled]="busy()" (click)="change({ type: 'select', selection: 'standard' }, $event)">Use Standard OCR</button>
 				}
 			</div>
 			@for (model of current.models; track model.model) {
@@ -31,17 +91,18 @@
 						<h3 [id]="'ocr-option-' + model.model" tabindex="-1">{{ model.name }}</h3>
 						<p>{{ descriptions[model.model] }}</p>
 						<p>{{ size(model.downloadBytes) }} download · {{ model.installed ? 'Installed' : 'Not installed' }}</p>
+						<p>{{ model.gpuSupported ? 'CPU or compatible GPU' : 'CPU only' }}</p>
 						@if (model.runtimeIssue) {
 							<p>{{ model.runtimeIssue }}</p>
 						}
 					</div>
 					@if (current.selection === model.model) {
-						<strong role="status">In use</strong>
+						<strong role="status">{{ current.device === 'gpu' && (!model.gpuSupported || current.gpu.state !== 'available') ? 'Selected' : 'In use' }}</strong>
 					} @else if (model.installed) {
 						<button
 							type="button"
 							class="button-secondary"
-							[disabled]="changing() || !!current.download || !model.runtimeAvailable"
+							[disabled]="busy() || !model.runtimeAvailable"
 							(click)="change({ type: 'select', selection: model.model }, $event)"
 						>
 							Use {{ model.name }}
@@ -50,7 +111,7 @@
 						<button
 							type="button"
 							class="button-secondary"
-							[disabled]="changing() || !!current.download || !model.runtimeAvailable"
+							[disabled]="busy() || !model.runtimeAvailable"
 							(click)="change({ type: 'install', model: model.model }, $event)"
 						>
 							Download {{ model.name }}
@@ -78,7 +139,9 @@
 			@if (!status()) {
 				<button class="button-secondary ocr-feedback" type="button" (click)="refresh()">Retry</button>
 			}
-		} @else if (status()?.failedDownload && !changing()) {
+		} @else if (status()?.gpu?.failedDownload && !busy()) {
+			<p class="ocr-feedback error" role="alert">The Vulkan runtime could not be downloaded or installed. Try again.</p>
+		} @else if (status()?.failedDownload && !busy()) {
 			<p class="ocr-feedback error" role="alert">The model could not be downloaded or installed. Try again.</p>
 		}
 	</div>

@@ -1,6 +1,26 @@
-import { Component, DestroyRef, effect, inject, input, signal, type EffectCleanupRegisterFn, type WritableSignal, type InputSignal } from '@angular/core';
+import { Component, DestroyRef, computed, effect, inject, input, signal, type EffectCleanupRegisterFn, type WritableSignal, type InputSignal, type Signal } from '@angular/core';
 import type { LocalOcrModel } from '../shared/pdf-extraction.js';
-import type { LocalOcrRequest, LocalOcrStatus } from '../shared/local-ocr-settings.js';
+import type { LocalOcrGpuStatus, LocalOcrRequest, LocalOcrStatus } from '../shared/local-ocr-settings.js';
+
+type SettingsChange = Exclude<LocalOcrRequest, { type: 'status' | 'cancel' }>;
+
+const gpuMessages: Record<LocalOcrGpuStatus['state'], string> = {
+	unsupported: 'GPU acceleration is unavailable on this platform.',
+	'download-required': 'Install the Vulkan runtime to check GPU compatibility.',
+	'model-required': 'Install a GPU-capable OCR model to check GPU compatibility.',
+	unchecked: 'GPU compatibility has not been checked in this session.',
+	checking: 'Checking GPU compatibility…',
+	available: 'GPU available.',
+	unavailable: 'The GPU check did not pass.'
+};
+
+const changeErrors: Record<SettingsChange['type'], string> = {
+	install: 'The model could not be downloaded or installed. Try again.',
+	select: 'The OCR selection could not be saved. Try again.',
+	'select-device': 'The preferred device could not be saved. Try again.',
+	'install-gpu-runtime': 'The Vulkan runtime could not be downloaded or installed. Try again.',
+	'check-gpu': 'The GPU check could not complete. Try again.'
+};
 
 @Component({
 	selector: 'app-local-ocr-settings', standalone: true, templateUrl: './local-ocr-settings.html',
@@ -8,12 +28,18 @@ import type { LocalOcrRequest, LocalOcrStatus } from '../shared/local-ocr-settin
 export class LocalOcrSettings {
 	readonly active: InputSignal<boolean> = input.required<boolean>();
 	readonly status: WritableSignal<LocalOcrStatus | null> = signal<LocalOcrStatus | null>(null);
-	readonly changing: WritableSignal<boolean> = signal(false);
+	private readonly changing: WritableSignal<boolean> = signal(false);
 	readonly cancelling: WritableSignal<boolean> = signal(false);
 	readonly error: WritableSignal<string | null> = signal<string | null>(null);
+	readonly busy: Signal<boolean> = computed((): boolean => {
+		const current: LocalOcrStatus | null = this.status();
+		return this.changing() || this.cancelling() || !!current?.download || !!current?.gpu.download || this.cancellableGpuCheck() ||
+			current?.gpu.state === 'checking';
+	});
+	readonly cancellableGpuCheck: Signal<boolean> = computed((): boolean => this.status()?.gpu.cancellableCheck ?? false);
 	readonly descriptions: Record<LocalOcrModel, string> = {
 		'pp-ocrv6-medium': 'Smaller model for everyday scans and photos.',
-		'paddleocr-vl-1.6': 'Larger, slower model for difficult scans, photos, and complex layouts.',
+		'paddleocr-vl-1.6': 'Larger model for difficult scans, photos, and complex layouts.',
 	};
 	private revision: number = 0;
 	private refreshId: number = 0;
@@ -27,7 +53,7 @@ export class LocalOcrSettings {
 			}
 			void this.refresh();
 			const timer: number = window.setInterval((): void => {
-				if (this.changing() || this.status()?.download) {
+				if (this.busy()) {
 					void this.refresh();
 				}
 			}, 500);
@@ -43,6 +69,35 @@ export class LocalOcrSettings {
 		const unit: "gigabyte" | "megabyte" = bytes >= 1_000_000_000 ? 'gigabyte' : 'megabyte';
 		return new Intl.NumberFormat(undefined, { style: 'unit', unit, maximumFractionDigits: 2 })
 			.format(bytes / (unit === 'gigabyte' ? 1_000_000_000 : 1_000_000));
+	}
+
+	gpuMessage(gpu: LocalOcrGpuStatus): string {
+		return gpu.cancellableCheck ? gpuMessages.checking : gpu.issue ?? gpuMessages[gpu.state];
+	}
+
+	deviceMessage(current: LocalOcrStatus): string {
+		if (current.selection === 'standard') {
+			return 'Standard OCR uses CPU.';
+		}
+		const model: LocalOcrStatus['models'][number] | undefined = current.models.find(
+			(item: LocalOcrStatus['models'][number]): boolean => item.model === current.selection
+		);
+		if (current.device === 'cpu') {
+			return `${model?.name ?? 'The selected model'} can run on CPU.`;
+		}
+		if (!model?.gpuSupported) {
+			return `${model?.name ?? 'The selected model'} requires CPU. Select CPU to use this model.`;
+		}
+		switch (current.gpu.state) {
+			case 'available':
+				return `${model.name} can run on GPU.`;
+			case 'unchecked':
+				return `ReceiptMatch will check GPU compatibility when ${model.name} needs to read a scan.`;
+			case 'checking':
+				return `${model.name} is waiting for the GPU check.`;
+			default:
+				return `Select CPU to use ${model.name} while GPU is unavailable.`;
+		}
 	}
 
 	async refresh(): Promise<void> {
@@ -63,8 +118,8 @@ export class LocalOcrSettings {
 		}
 	}
 
-	async change(request: Extract<LocalOcrRequest, { type: 'install' | 'select' }>, event: Event): Promise<void> {
-		if (this.changing() || this.status()?.download) {
+	async change(request: SettingsChange, event: Event): Promise<void> {
+		if (this.busy()) {
 			return;
 		}
 		this.revision++;
@@ -72,7 +127,7 @@ export class LocalOcrSettings {
 		this.changing.set(true);
 		this.error.set(null);
 		const trigger: EventTarget | null = event.currentTarget;
-		const selection: "standard" | "pp-ocrv6-medium" | "paddleocr-vl-1.6" = request.type === 'install' ? request.model : request.selection;
+		const option: string = request.type === 'install' ? request.model : request.type === 'select' ? request.selection : 'device';
 		try {
 			const status: LocalOcrStatus = await window.receiptmatch.localOcr(request);
 			if (!this.disposed) {
@@ -80,23 +135,25 @@ export class LocalOcrSettings {
 			}
 		} catch {
 			if (!this.disposed && !this.cancellationRequested) {
-				this.error.set(request.type === 'install' ? 'The model could not be downloaded or installed. Try again.' : 'The OCR selection could not be saved. Try again.');
+				this.error.set(changeErrors[request.type]);
 			}
 		} finally {
 			this.revision++;
 			if (!this.disposed) {
 				this.changing.set(false);
 				void this.refresh();
-				this.restoreFocus(trigger, selection);
+				this.restoreFocus(trigger, option);
 			}
 		}
 	}
 
 	async cancel(event: Event): Promise<void> {
-		const download: { model: LocalOcrModel; receivedBytes: number; totalBytes: number; } | null | undefined = this.status()?.download;
-		if (this.cancelling() || !download) {
+		const current: LocalOcrStatus | null = this.status();
+		const checkingGpu: boolean = this.cancellableGpuCheck();
+		if (this.cancelling() || (!current?.download && !current?.gpu.download && !checkingGpu)) {
 			return;
 		}
+		const option: string = current?.download?.model ?? 'device';
 		const trigger: EventTarget | null = event.currentTarget;
 		this.revision++;
 		this.cancellationRequested = true;
@@ -108,24 +165,30 @@ export class LocalOcrSettings {
 			}
 		} catch {
 			if (!this.disposed) {
-				this.error.set('The download could not be cancelled. Try again.');
+				this.error.set(checkingGpu ? 'The GPU check could not be cancelled. Try again.' : 'The download could not be cancelled. Try again.');
 			}
 		} finally {
 			this.revision++;
 			if (!this.disposed) {
 				this.cancelling.set(false);
-				this.restoreFocus(trigger, download.model);
+				this.restoreFocus(trigger, option);
 			}
 		}
 	}
 
-	private restoreFocus(trigger: EventTarget | null, selection: string): void {
+	private restoreFocus(trigger: EventTarget | null, option: string): void {
 		requestAnimationFrame((): void => {
 			if (this.disposed || !this.active() || (document.activeElement !== document.body && document.activeElement !== trigger)) {
 				return;
 			}
-			const heading: HTMLElement | null = document.getElementById('ocr-option-' + selection);
-			(heading?.parentElement?.parentElement?.querySelector<HTMLElement>('button:not(:disabled)') ?? heading)?.focus();
+			if (trigger instanceof HTMLButtonElement && trigger.isConnected && !trigger.disabled) {
+				trigger.focus();
+				return;
+			}
+			const heading: HTMLElement | null = document.getElementById('ocr-option-' + option);
+			const row: HTMLElement | null | undefined = heading?.parentElement?.parentElement;
+			(row?.querySelector<HTMLElement>('button[aria-pressed="true"]:not(:disabled)') ??
+				row?.querySelector<HTMLElement>('button:not(:disabled)') ?? heading)?.focus();
 		});
 	}
 }

@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test, vi, type Mock } from 'vitest';
-import { downloadModelAssets } from '../../electron/local-ocr-transfer.js';
+import { downloadModelAssets, vulkanRuntimeArchiveUrl, vulkanRuntimeLicenseUrl } from '../../electron/local-ocr-transfer.js';
 
 const url: "https://huggingface.co/PaddlePaddle/model/resolve/revision/model.onnx" = 'https://huggingface.co/PaddlePaddle/model/resolve/revision/model.onnx';
 const data: Buffer<ArrayBuffer> = Buffer.from('model bytes');
@@ -46,6 +46,29 @@ test('rejects an unapproved redirect and a corrupt payload', (): Promise<void> =
     await assert.rejects(downloadModelAssets([asset], staging, signal, (): undefined => undefined), /untrusted source/);
     assert.equal(fetchModel.mock.calls.length, 1);
     await assert.rejects(downloadModelAssets([asset], staging, signal, (): undefined => undefined), /integrity check failed/);
+}));
+
+test('uses the pinned Vulkan release and only accepts its GitHub release asset redirect', (): Promise<void> => withStaging(async (staging: string): Promise<void> => {
+    const cdn: string = 'https://release-assets.githubusercontent.com/asset?signature=example';
+    const fetchRuntime: ReturnType<typeof vi.fn<typeof fetch>> = vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: cdn } }))
+        .mockResolvedValueOnce(new Response(new Uint8Array(data)))
+        .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: 'https://huggingface.co/PaddlePaddle/asset' } }))
+        .mockResolvedValueOnce(new Response(new Uint8Array(data)))
+        .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: vulkanRuntimeLicenseUrl.replace('/b12283/', '/b12284/') } }));
+    vi.stubGlobal('fetch', fetchRuntime);
+    const runtime: typeof asset = { ...asset, file: 'runtime.zip', url: vulkanRuntimeArchiveUrl };
+    const license: typeof asset = { ...asset, file: 'LICENSE', url: vulkanRuntimeLicenseUrl };
+    const signal: AbortSignal = new AbortController().signal;
+    const track: () => void = (): void => undefined;
+    await downloadModelAssets([runtime], staging, signal, track);
+    assert.deepEqual(await readFile(path.join(staging, runtime.file)), data);
+    await assert.rejects(downloadModelAssets([runtime], staging, signal, track), /untrusted source/);
+    await assert.rejects(downloadModelAssets([{ ...runtime, url: vulkanRuntimeArchiveUrl.replace('/b12283/', '/b12284/') }], staging, signal, track), /Invalid model source/);
+    await downloadModelAssets([license], staging, signal, track);
+    assert.deepEqual(await readFile(path.join(staging, license.file)), data);
+    await assert.rejects(downloadModelAssets([license], staging, signal, track), /untrusted source/);
+    assert.equal(fetchRuntime.mock.calls.length, 5);
 }));
 
 test('aborts a stalled response body when the caller cancels', (): Promise<void> => withStaging(async (staging: string): Promise<void> => {

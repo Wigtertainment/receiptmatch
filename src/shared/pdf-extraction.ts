@@ -27,6 +27,12 @@ export const ocrRegionsSchema: z.ZodArray<z.ZodObject<{ text: z.ZodString; x0: z
 }).refine((region: { text: string; x0: number; y0: number; x1: number; y1: number; }): boolean => region.x1 > region.x0 && region.y1 > region.y0)).max(BANK_IMPORT_LIMITS.spansPerPage);
 export type OcrRaster = z.infer<typeof ocrRasterSchema>;
 export type OcrRegion = z.infer<typeof ocrRegionsSchema>[number];
+export const ocrGpuFailureSchema: z.ZodObject<{ code: z.ZodEnum<{ 'ocr-gpu-unavailable': 'ocr-gpu-unavailable'; 'ocr-gpu-failed': 'ocr-gpu-failed' }>;
+    message: z.ZodString }, z.core.$strict> = z.strictObject({
+    code: z.enum(['ocr-gpu-unavailable', 'ocr-gpu-failed']),
+    message: z.string().min(1).max(500)
+});
+export type OcrGpuFailure = z.infer<typeof ocrGpuFailureSchema>;
 type ExtractionProgressSchemaType = z.ZodObject<{
 	phase: z.ZodEnum<{
 		text: "text";

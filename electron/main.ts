@@ -10,7 +10,7 @@ import type { MatchDetails } from "../src/shared/workspace-matching.js";
 import type { MatchSummary } from "../src/shared/workspace-matching.js";
 import type { DocumentSnapshot } from "../src/shared/protocol.js";
 import type { LocalOcrModel } from "../src/shared/pdf-extraction.js";
-import type { LocalOcrStatus } from "../src/shared/local-ocr-settings.js";
+import type { LocalOcrRequest, LocalOcrStatus } from "../src/shared/local-ocr-settings.js";
 import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, session } from 'electron';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -157,7 +157,7 @@ async function launch(): Promise<void> {
     try {
       const status: LocalOcrStatus = await localOcr.status();
       const model: { model: LocalOcrModel; name: string; downloadBytes: number; installed: boolean; runtimeAvailable: boolean; runtimeIssue?: string; } = status.models.find((model: { model: LocalOcrModel; name: string; downloadBytes: number; installed: boolean; runtimeAvailable: boolean; runtimeIssue?: string; }): boolean => model.model === modelId)!;
-      if (status.download || !model.runtimeAvailable) {
+      if (status.download || status.gpu.download || !model.runtimeAvailable) {
         throw new Error('The local OCR model cannot be installed right now.');
       }
       if (model.installed) {
@@ -180,19 +180,43 @@ async function launch(): Promise<void> {
     }
   }
 
+  async function requestGpuInstall(): Promise<void> {
+    if (confirmingOcrDownload) {
+      throw new Error('A local OCR download confirmation is already open.');
+    }
+    confirmingOcrDownload = true;
+    try {
+      const status: LocalOcrStatus = await localOcr.status();
+      if (status.download || status.gpu.download || status.gpu.state !== 'download-required') {
+        throw new Error('The Vulkan runtime cannot be installed right now.');
+      }
+      const size: string = new Intl.NumberFormat(undefined, { style: 'unit', unit: 'megabyte', maximumFractionDigits: 1 }).format(status.gpu.downloadBytes / 1_000_000);
+      const confirmation: Electron.MessageBoxReturnValue = await dialog.showMessageBox(window, {
+        type: 'question', title: 'Download GPU runtime', message: 'Download the Vulkan runtime for local OCR?',
+        detail: `Download size: ${size}. The runtime uses the model files already available on this device.`,
+        buttons: ['Download', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true
+      });
+      if (confirmation.response === 0 && !closeRequested && !window.isDestroyed()) {
+        await localOcr.installGpuRuntime();
+      }
+    } finally {
+      confirmingOcrDownload = false;
+    }
+  }
+
   ipcMain.handle('app:local-ocr', async (event: Electron.IpcMainInvokeEvent, payload: unknown): Promise<LocalOcrStatus> => {
     if (!authorized(event) || closeRequested) {
       throw new Error('Local OCR settings request denied.');
     }
-    const request: { type: "status"; } | { type: "select"; selection: "pp-ocrv6-medium" | "paddleocr-vl-1.6" | "standard"; } | { type: "install"; model: "pp-ocrv6-medium" | "paddleocr-vl-1.6"; } | { type: "cancel"; } = localOcrRequestSchema.parse(payload);
-    if (request.type === 'cancel') {
-      await localOcr.cancel();
-    }
-    if (request.type === 'select') {
-      await localOcr.select(request.selection);
-    }
-    if (request.type === 'install') {
-      await requestOcrInstall(request.model);
+    const request: LocalOcrRequest = localOcrRequestSchema.parse(payload);
+    switch (request.type) {
+      case 'cancel': await localOcr.cancel(); break;
+      case 'select': await localOcr.select(request.selection); break;
+      case 'install': await requestOcrInstall(request.model); break;
+      case 'select-device': await localOcr.selectDevice(request.device); break;
+      case 'check-gpu': await localOcr.checkGpu(); break;
+      case 'install-gpu-runtime': await requestGpuInstall(); break;
+      case 'status': break;
     }
     return localOcr.status();
   });

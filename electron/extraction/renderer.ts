@@ -14,13 +14,15 @@ import {
 import {
     extractionJobSchema,
     LOCAL_OCR_VERSIONS,
+    ocrGpuFailureSchema,
     ocrRegionsSchema,
     PDF_EXTRACTION_LIMITS,
     PDF_EXTRACTION_VERSION,
     type ExtractionBridge,
     type ExtractionJob,
     type ExtractionProgress,
-    type ExtractionResult
+    type ExtractionResult,
+    type OcrGpuFailure
 } from '../../src/shared/pdf-extraction.js';
 import { embeddedTextGeometry, ocrWordGeometry, type GeometryResult } from './geometry.js';
 import { assertImageDimensions, imageInputDimensions, IMAGE_MIME_TYPES, ImageInputError } from './image-input.js';
@@ -168,10 +170,18 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
                 throw new Error('Raster serialization failed.');
             }
             const raster: { pageNumber: number; width: number; height: number; png: Uint8Array<ArrayBuffer>; } = { pageNumber: page.pageNumber, width: canvas.width, height: canvas.height, png: new Uint8Array(await blob.arrayBuffer()) };
-            const regions: { text: string; x0: number; y0: number; x1: number; y1: number; }[] = ocrRegionsSchema.parse(await window.receiptMatchExtraction.recognize(raster));
+            const response: unknown = await window.receiptMatchExtraction.recognize(raster);
+            const failure: ZodSafeParseResult<OcrGpuFailure> = ocrGpuFailureSchema.safeParse(response);
+            if (failure.success) {
+                throw new ExtractionFault(failure.data.code, failure.data.message);
+            }
+            const regions: { text: string; x0: number; y0: number; x1: number; y1: number; }[] = ocrRegionsSchema.parse(response);
             extractionVersion = LOCAL_OCR_VERSIONS[model];
             return regions;
-        } catch {
+        } catch (error: unknown) {
+            if (error instanceof ExtractionFault) {
+                throw error;
+            }
             throw new ExtractionFault('ocr-model', 'The selected local OCR model could not read this page.');
         }
     };
