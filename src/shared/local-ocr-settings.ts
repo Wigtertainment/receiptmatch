@@ -1,18 +1,42 @@
 import { z } from 'zod';
-import { localOcrModelSchema, type LocalOcrModel } from './pdf-extraction.js';
+export const nuExtractDeviceSchema: z.ZodEnum<{ cpu: 'cpu'; gpu: 'gpu' }> = z.enum(['cpu', 'gpu']);
+export type NuExtractDevice = z.infer<typeof nuExtractDeviceSchema>;
 
-export const localOcrSelectionSchema: z.ZodUnion<readonly [z.ZodLiteral<"standard">, z.ZodEnum<{ "pp-ocrv6-medium": "pp-ocrv6-medium"; "paddleocr-vl-1.6": "paddleocr-vl-1.6"; }>]> = z.union([z.literal('standard'), localOcrModelSchema]);
-export type LocalOcrSelection = z.infer<typeof localOcrSelectionSchema>;
-export const localOcrRequestSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{ type: z.ZodLiteral<"status">; }, z.core.$strict>, z.ZodObject<{ type: z.ZodLiteral<"select">; selection: typeof localOcrSelectionSchema; }, z.core.$strict>, z.ZodObject<{ type: z.ZodLiteral<"install">; model: z.ZodEnum<{ "pp-ocrv6-medium": "pp-ocrv6-medium"; "paddleocr-vl-1.6": "paddleocr-vl-1.6"; }>; }, z.core.$strict>, z.ZodObject<{ type: z.ZodLiteral<"cancel">; }, z.core.$strict>], "type"> = z.discriminatedUnion('type', [
+type OcrRequestOptions = [
+    z.ZodObject<{ type: z.ZodLiteral<'status'> }, z.core.$strict>,
+    z.ZodObject<{ type: z.ZodLiteral<'install-nuextract'> }, z.core.$strict>,
+    z.ZodObject<{ type: z.ZodLiteral<'install-nuextract-vulkan'> }, z.core.$strict>,
+    z.ZodObject<{ type: z.ZodLiteral<'check-nuextract-gpu'> }, z.core.$strict>,
+    z.ZodObject<{ type: z.ZodLiteral<'cancel-nuextract'> }, z.core.$strict>,
+    z.ZodObject<{ type: z.ZodLiteral<'select-nuextract-device'>; device: typeof nuExtractDeviceSchema }, z.core.$strict>
+];
+export const localOcrRequestSchema: z.ZodDiscriminatedUnion<OcrRequestOptions, 'type'> = z.discriminatedUnion('type', [
     z.strictObject({ type: z.literal('status') }),
-    z.strictObject({ type: z.literal('select'), selection: localOcrSelectionSchema }),
-    z.strictObject({ type: z.literal('install'), model: localOcrModelSchema }),
-    z.strictObject({ type: z.literal('cancel') })
+    z.strictObject({ type: z.literal('install-nuextract') }),
+    z.strictObject({ type: z.literal('install-nuextract-vulkan') }),
+    z.strictObject({ type: z.literal('check-nuextract-gpu') }),
+    z.strictObject({ type: z.literal('cancel-nuextract') }),
+    z.strictObject({ type: z.literal('select-nuextract-device'), device: nuExtractDeviceSchema })
 ]);
 export type LocalOcrRequest = z.infer<typeof localOcrRequestSchema>;
-export interface LocalOcrStatus {
-    selection: LocalOcrSelection;
-    models: { model: LocalOcrModel; name: string; downloadBytes: number; installed: boolean; runtimeAvailable: boolean; runtimeIssue?: string }[];
-    download: { model: LocalOcrModel; receivedBytes: number; totalBytes: number } | null;
-    failedDownload: LocalOcrModel | null;
+export type LocalOcrStatus = NuExtractSettingsStatus;
+
+export interface NuExtractDownload {
+    kind: 'model' | 'vulkan';
+    receivedBytes: number;
+    totalBytes: number;
+}
+
+export interface NuExtractSettingsStatus {
+    installed: boolean;
+    cpuAvailable: boolean;
+    cpuIssue?: string;
+    device: NuExtractDevice;
+    modelDownloadBytes: number;
+    vulkanDownloadBytes: number;
+    gpu: 'unsupported' | 'download-required' | 'unchecked' | 'checking' | 'available' | 'unavailable';
+    gpuIssue?: string;
+    download: NuExtractDownload | null;
+    busy: boolean;
+    failedDownload: NuExtractDownload['kind'] | null;
 }

@@ -5,6 +5,7 @@ import { applyDocumentFieldCorrections, type DocumentCorrection } from '../../sr
 import type { SupportingDocument } from '../../src/shared/supporting-document.js';
 import type { StoredDocumentImport } from '../../src/shared/workspace-documents.js';
 import { evaluateStoredReceipt, withGenericIssueDate } from './interpret.js';
+import { projectReceiptAnalyses, type ReceiptAnalysisVersion } from './analysis-history.js';
 
 export class SupportingDocumentState {
 	readonly automatic: SupportingDocument;
@@ -45,22 +46,24 @@ export class SupportingDocumentState {
 }
 
 export class WorkspaceDocumentState {
+	readonly analyzed: StoredDocumentImport[];
 	readonly correctionBase: StoredDocumentImport[];
 	readonly effective: StoredDocumentImport[];
 	readonly hasAutomaticChanges: boolean;
 
-	constructor(readonly imports: StoredDocumentImport[], readonly corrections: ReadonlyMap<string, DocumentCorrection>) {
+	constructor(readonly imports: StoredDocumentImport[], readonly corrections: ReadonlyMap<string, DocumentCorrection>, readonly versions: readonly ReceiptAnalysisVersion[] = []) {
+		this.analyzed = projectReceiptAnalyses(imports, versions);
 		const byDocument: Map<string, DocumentCorrection[]> = new Map<string, DocumentCorrection[]>();
 		for (const correction of corrections.values()) {
 			const fields: DocumentCorrection[] = byDocument.get(correction.documentId) ?? [];
 			fields.push(correction);
 			byDocument.set(correction.documentId, fields);
 		}
-		const states: Map<string, SupportingDocumentState> = new Map(imports.flatMap((run: StoredDocumentImport): (readonly [string, SupportingDocumentState])[] => run.files.flatMap((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): [] | [readonly [string, SupportingDocumentState]] => file.status === 'imported' ?
+		const states: Map<string, SupportingDocumentState> = new Map(this.analyzed.flatMap((run: StoredDocumentImport): (readonly [string, SupportingDocumentState])[] => run.files.flatMap((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): [] | [readonly [string, SupportingDocumentState]] => file.status === 'imported' ?
 			[[file.record.id, new SupportingDocumentState(file.record.result, byDocument.get(file.record.id))] as const] : [])));
 		this.hasAutomaticChanges = [...states.values()].some((state: SupportingDocumentState): boolean => state.automatic !== state.original);
 		const project: (view: "correctionBase" | "effective") => StoredDocumentImport[] = (view: 'correctionBase' | 'effective'): StoredDocumentImport[] => {
-			const records: StoredDocumentImport[] = imports.map((run: StoredDocumentImport): StoredDocumentImport => {
+			const records: StoredDocumentImport[] = this.analyzed.map((run: StoredDocumentImport): StoredDocumentImport => {
 				const files: ({ status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; })[] = run.files.map((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; } => {
 					if (file.status !== 'imported') {
 						return file;
@@ -70,7 +73,7 @@ export class WorkspaceDocumentState {
 				});
 				return files.some((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }, index: number): boolean => file !== run.files[index]) ? { ...run, files } : run;
 			});
-			return records.some((run: StoredDocumentImport, index: number): boolean => run !== imports[index]) ? records : imports;
+			return records.some((run: StoredDocumentImport, index: number): boolean => run !== this.analyzed[index]) ? records : this.analyzed;
 		};
 		this.correctionBase = project('correctionBase');
 		this.effective = project('effective');

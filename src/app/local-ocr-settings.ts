@@ -1,6 +1,23 @@
-import { Component, DestroyRef, effect, inject, input, signal, type EffectCleanupRegisterFn, type WritableSignal, type InputSignal } from '@angular/core';
-import type { LocalOcrModel } from '../shared/pdf-extraction.js';
+import { Component, DestroyRef, computed, effect, inject, input, signal, type EffectCleanupRegisterFn, type WritableSignal, type InputSignal, type Signal } from '@angular/core';
 import type { LocalOcrRequest, LocalOcrStatus } from '../shared/local-ocr-settings.js';
+
+type SettingsChange = Exclude<LocalOcrRequest, { type: 'status' | 'cancel-nuextract' }>;
+
+const changeErrors: Record<SettingsChange['type'], string> = {
+	'install-nuextract': 'NuExtract3 could not be downloaded or installed. Try again.',
+	'install-nuextract-vulkan': 'The Vulkan runtime could not be downloaded or installed. Try again.',
+	'check-nuextract-gpu': 'The GPU check could not complete. Try again.',
+	'select-nuextract-device': 'The preferred device could not be saved. Try again.'
+};
+
+const gpuMessages: Record<LocalOcrStatus['gpu'], string> = {
+	unsupported: 'GPU acceleration is unavailable on this platform.',
+	'download-required': 'Install the Vulkan runtime to check GPU compatibility.',
+	unchecked: 'Check GPU compatibility before selecting GPU.',
+	checking: 'Checking GPU compatibility…',
+	available: 'GPU available.',
+	unavailable: 'The GPU check did not pass.'
+};
 
 @Component({
 	selector: 'app-local-ocr-settings', standalone: true, templateUrl: './local-ocr-settings.html',
@@ -8,13 +25,10 @@ import type { LocalOcrRequest, LocalOcrStatus } from '../shared/local-ocr-settin
 export class LocalOcrSettings {
 	readonly active: InputSignal<boolean> = input.required<boolean>();
 	readonly status: WritableSignal<LocalOcrStatus | null> = signal<LocalOcrStatus | null>(null);
-	readonly changing: WritableSignal<boolean> = signal(false);
+	private readonly changing: WritableSignal<boolean> = signal(false);
 	readonly cancelling: WritableSignal<boolean> = signal(false);
 	readonly error: WritableSignal<string | null> = signal<string | null>(null);
-	readonly descriptions: Record<LocalOcrModel, string> = {
-		'pp-ocrv6-medium': 'Smaller model for everyday scans and photos.',
-		'paddleocr-vl-1.6': 'Larger, slower model for difficult scans, photos, and complex layouts.',
-	};
+	readonly busy: Signal<boolean> = computed((): boolean => this.changing() || this.cancelling() || this.status()?.busy === true);
 	private revision: number = 0;
 	private refreshId: number = 0;
 	private disposed: boolean = false;
@@ -27,7 +41,7 @@ export class LocalOcrSettings {
 			}
 			void this.refresh();
 			const timer: number = window.setInterval((): void => {
-				if (this.changing() || this.status()?.download) {
+				if (this.busy()) {
 					void this.refresh();
 				}
 			}, 500);
@@ -43,6 +57,10 @@ export class LocalOcrSettings {
 		const unit: "gigabyte" | "megabyte" = bytes >= 1_000_000_000 ? 'gigabyte' : 'megabyte';
 		return new Intl.NumberFormat(undefined, { style: 'unit', unit, maximumFractionDigits: 2 })
 			.format(bytes / (unit === 'gigabyte' ? 1_000_000_000 : 1_000_000));
+	}
+
+	gpuMessage(status: LocalOcrStatus): string {
+		return status.gpuIssue ?? gpuMessages[status.gpu];
 	}
 
 	async refresh(): Promise<void> {
@@ -63,8 +81,8 @@ export class LocalOcrSettings {
 		}
 	}
 
-	async change(request: Extract<LocalOcrRequest, { type: 'install' | 'select' }>, event: Event): Promise<void> {
-		if (this.changing() || this.status()?.download) {
+	async change(request: SettingsChange, event: Event): Promise<void> {
+		if (this.busy()) {
 			return;
 		}
 		this.revision++;
@@ -72,7 +90,6 @@ export class LocalOcrSettings {
 		this.changing.set(true);
 		this.error.set(null);
 		const trigger: EventTarget | null = event.currentTarget;
-		const selection: "standard" | "pp-ocrv6-medium" | "paddleocr-vl-1.6" = request.type === 'install' ? request.model : request.selection;
 		try {
 			const status: LocalOcrStatus = await window.receiptmatch.localOcr(request);
 			if (!this.disposed) {
@@ -80,21 +97,23 @@ export class LocalOcrSettings {
 			}
 		} catch {
 			if (!this.disposed && !this.cancellationRequested) {
-				this.error.set(request.type === 'install' ? 'The model could not be downloaded or installed. Try again.' : 'The OCR selection could not be saved. Try again.');
+				this.error.set(changeErrors[request.type]);
 			}
 		} finally {
 			this.revision++;
 			if (!this.disposed) {
 				this.changing.set(false);
 				void this.refresh();
-				this.restoreFocus(trigger, selection);
+				this.restoreFocus(trigger);
 			}
 		}
 	}
 
 	async cancel(event: Event): Promise<void> {
-		const download: { model: LocalOcrModel; receivedBytes: number; totalBytes: number; } | null | undefined = this.status()?.download;
-		if (this.cancelling() || !download) {
+		const current: LocalOcrStatus | null = this.status();
+		const checkingGpu: boolean = current?.gpu === 'checking';
+		const canCancel: boolean = !!current?.download || checkingGpu;
+		if (this.cancelling() || !canCancel) {
 			return;
 		}
 		const trigger: EventTarget | null = event.currentTarget;
@@ -102,30 +121,35 @@ export class LocalOcrSettings {
 		this.cancellationRequested = true;
 		this.cancelling.set(true);
 		try {
-			const status: LocalOcrStatus = await window.receiptmatch.localOcr({ type: 'cancel' });
+			const status: LocalOcrStatus = await window.receiptmatch.localOcr({ type: 'cancel-nuextract' });
 			if (!this.disposed) {
-				this.status.set(status); this.error.set(null);
+				this.status.set(status);
+				this.error.set(null);
 			}
 		} catch {
 			if (!this.disposed) {
-				this.error.set('The download could not be cancelled. Try again.');
+				this.error.set(checkingGpu ? 'The GPU check could not be cancelled. Try again.' : 'The download could not be cancelled. Try again.');
 			}
 		} finally {
 			this.revision++;
 			if (!this.disposed) {
 				this.cancelling.set(false);
-				this.restoreFocus(trigger, download.model);
+				void this.refresh();
+				this.restoreFocus(trigger);
 			}
 		}
 	}
 
-	private restoreFocus(trigger: EventTarget | null, selection: string): void {
+	private restoreFocus(trigger: EventTarget | null): void {
 		requestAnimationFrame((): void => {
 			if (this.disposed || !this.active() || (document.activeElement !== document.body && document.activeElement !== trigger)) {
 				return;
 			}
-			const heading: HTMLElement | null = document.getElementById('ocr-option-' + selection);
-			(heading?.parentElement?.parentElement?.querySelector<HTMLElement>('button:not(:disabled)') ?? heading)?.focus();
+			if (trigger instanceof HTMLButtonElement && trigger.isConnected && !trigger.disabled) {
+				trigger.focus();
+			} else {
+				(document.querySelector<HTMLElement>('#nuextract-settings button:not(:disabled)') ?? document.getElementById('ocr-option-nuextract'))?.focus();
+			}
 		});
 	}
 }

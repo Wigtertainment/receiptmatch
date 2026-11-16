@@ -22,6 +22,7 @@ type StoredBankImportSchemaType = z.ZodObject<{
 			layoutId: z.ZodString;
 			layoutVersion: z.ZodString;
 		}, z.core.$strict>>;
+		localRecognition: typeof bankImportResultSchema.shape.localRecognition;
 		sourceProvenance: z.ZodNullable<z.ZodObject<{
 			sourceId: z.ZodString;
 			sha256: z.ZodString;
@@ -493,7 +494,7 @@ export type BankImportRunResult =
 export interface BankImportSummary {
     id: string;
     filePath: string;
-    bankId: string;
+    bankId: string | null;
     status: 'complete' | 'partial';
     transactions: number;
     drafts: number;

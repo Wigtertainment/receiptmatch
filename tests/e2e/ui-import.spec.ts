@@ -296,7 +296,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		const deadline: number = performance.now() + 20000;
 		while (performance.now() < deadline) {
 			const entry: CommandTraceEntry | undefined = await currentApplication().evaluate(
-				(_electron: typeof Electron.CrossProcessExports, { type, after }: { type: "get-state" | "new" | "open" | "save" | "import-statement" | "import-documents" | "cancel-import" | "rename" | "set-transaction-ignored" | "review-match" | "set-duplicate-decision" | "correct-bank-row" | "correct-document-field" | "approve-matches"; after: number; }): CommandTraceEntry | undefined => globalThis.uiCommandTrace.find((entry: CommandTraceEntry): boolean => entry.phase === 'end' && entry.type === type && entry.id > after),
+				(_electron: typeof Electron.CrossProcessExports, { type, after }: { type: WorkspaceCommand['type']; after: number; }): CommandTraceEntry | undefined => globalThis.uiCommandTrace.find((entry: CommandTraceEntry): boolean => entry.phase === 'end' && entry.type === type && entry.id > after),
 				{ type, after }
 			);
 			if (entry) {

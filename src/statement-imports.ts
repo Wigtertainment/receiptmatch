@@ -1,8 +1,8 @@
-import type { MatchApprovalSelection } from "./shared/match-approvals.js";
 import type { BankCorrection } from "./shared/bank-corrections.js";
 import type { BankImportResult } from "./shared/bank-import.js";
 import { NgTemplateOutlet } from '@angular/common';
-import { Component, DestroyRef, computed, effect, inject, input, output, signal, untracked, type WritableSignal, type OutputEmitterRef, type Signal, type InputSignal } from '@angular/core';
+import { Component, DestroyRef, afterRenderEffect, computed, effect, inject, input, output, signal, untracked, viewChild, type ElementRef, type WritableSignal,
+    type OutputEmitterRef, type Signal, type InputSignal } from '@angular/core';
 import { type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDrawerComponent, WigDropdownComponent, WigInputComponent, WigTableComponent,
     WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
 import { InputLength } from './app/input-length.js';
@@ -20,6 +20,7 @@ import type { ExtractionProgress } from './shared/pdf-extraction.js';
 import type { ZodSafeParseResult } from 'zod';
 
 type ImportRow = TransactionCandidate | UnresolvedDraft;
+type RowSourceRecord = Pick<StoredBankImport, 'filePath' | 'result'>;
 type BookingAction = 'correction' | 'source';
 type DuplicateAction = Extract<WorkspaceCommand, { type: 'set-duplicate-decision' }>['decision'];
 type ExclusionAction = Extract<DuplicateAction, 'keep-first' | 'keep-second'>;
@@ -76,7 +77,7 @@ function directionLabel(value: ImportRow['direction']): "Unknown" | "Incoming" |
 })
 class RowSource {
     readonly row: InputSignal<ImportRow> = input.required<ImportRow>();
-    readonly record: InputSignal<StoredBankImport> = input.required<StoredBankImport>();
+    readonly record: InputSignal<RowSourceRecord> = input.required<RowSourceRecord>();
     readonly date: (value: string | null, locale?: string | string[]) => string = formatCalendarDate;
     readonly money: (value: (Omit<Money, "currency"> & { currency: string | null; }) | null, locale?: string | string[]) => string = formatMoney;
     readonly direction: (value: ImportRow["direction"]) => "Unknown" | "Incoming" | "Outgoing" = directionLabel;
@@ -115,7 +116,12 @@ class RowSource {
     templateUrl: './app/statement-imports.html' })
 export class StatementImports {
     readonly state: InputSignal<WorkspaceState> = input.required<WorkspaceState>();
-    readonly workspaceCommand: OutputEmitterRef<{ type: "get-state"; } | { type: "new"; } | { type: "open"; } | { type: "save"; } | { type: "import-statement"; } | { type: "import-documents"; } | { type: "cancel-import"; } | { type: "rename"; name: string; } | { type: "set-transaction-ignored"; revision: number; transactionId: string; ignored: boolean; remember?: true | undefined; } | { type: "review-match"; revision: number; transactionId: string; review: { status: "open"; } | { status: "assigned"; documentId: string; } | { status: "completed-without-document"; }; } | { type: "set-duplicate-decision"; revision: number; transactionId: string; otherTransactionId: string; decision: "separate" | "keep-first" | "keep-second" | "clear"; } | { type: "correct-bank-row"; revision: number; rowId: string; changes: { bookingDate?: string | undefined; accountAmount?: { coefficient: string; currency: string; scale: number; } | undefined; }; } | { change: { kind: "amount"; value: { coefficient: string; currency: string; scale: number; }; } | { kind: "date"; value: string; }; documentId: string; sectionId: string; fieldId: string | null; type: "correct-document-field"; revision: number; } | { type: "approve-matches"; loadRevision: number; selections: MatchApprovalSelection[]; }> = output<WorkspaceCommand>();
+    readonly workspaceCommand: OutputEmitterRef<WorkspaceCommand> = output<WorkspaceCommand>();
+    private readonly importAction: Signal<WigButtonComponent | undefined> = viewChild<WigButtonComponent>('importAction');
+    private readonly cancelImportAction: Signal<WigButtonComponent | undefined> = viewChild<WigButtonComponent>('cancelImportAction');
+    private readonly aiOfferAction: Signal<WigButtonComponent | undefined> = viewChild<WigButtonComponent>('aiOfferAction');
+    private readonly aiReviewHeading: Signal<ElementRef<HTMLHeadingElement> | undefined> = viewChild<ElementRef<HTMLHeadingElement>>('aiReviewHeading');
+    private previousAiView: { stage: 'offer' | 'review' | undefined; importing: boolean; loadRevision: number | undefined } | undefined;
     readonly records: WritableSignal<StoredBankImport[]> = signal<StoredBankImport[]>([]);
     readonly loading: WritableSignal<boolean> = signal(false);
     readonly detailsError: WritableSignal<string | null> = signal<string | null>(null);
@@ -290,6 +296,7 @@ export class StatementImports {
     private disposed: boolean = false;
 
     constructor() {
+        afterRenderEffect({ write: (): void => this.focusAfterAiTransition() });
         effect((): void => {
             const value: WorkspaceState = this.state();
             const key: string = this.key(value);
@@ -303,6 +310,30 @@ export class StatementImports {
         inject(DestroyRef).onDestroy((): void => {
             this.disposed = true; this.generation++;
         });
+    }
+
+    private focusAfterAiTransition(): void {
+        const state: WorkspaceState = this.state();
+        const previous: typeof this.previousAiView = this.previousAiView;
+        const stage: NonNullable<typeof this.previousAiView>['stage'] = state.statementFallback?.stage;
+        const loadRevision: number | undefined = state.workspace?.loadRevision;
+        this.previousAiView = { stage, importing: !!state.statementImport, loadRevision };
+        if (previous?.loadRevision !== loadRevision) {
+            return;
+        }
+        if (state.busy) {
+            if (state.statementImport?.localAi && previous?.stage === 'offer' && !previous.importing) {
+                this.cancelImportAction()?.nativeButton.focus();
+            }
+            return;
+        }
+        if (stage === 'review' && (previous?.stage !== 'review' || previous.importing)) {
+            this.aiReviewHeading()?.nativeElement.focus();
+        } else if (stage === 'offer' && previous?.importing) {
+            this.aiOfferAction()?.nativeButton.focus();
+        } else if (!stage && previous?.stage) {
+            this.importAction()?.nativeButton.focus();
+        }
     }
 
     private key(value: WorkspaceState): string {
@@ -513,11 +544,11 @@ export class StatementImports {
         return { bookingDate, amount, previousAmount };
     }
 
-    pageNumber(record: StoredBankImport, pageId: string | null): number | null {
+    pageNumber(record: Pick<StoredBankImport, 'result'>, pageId: string | null): number | null {
         return record.result.sourceProvenance?.pages.find((page: { pageId: string; pageNumber: number; width: number; height: number; }): boolean => page.pageId === pageId)?.pageNumber ?? null;
     }
 
-    issueContext(record: StoredBankImport, issue: ImportIssue): string {
+    issueContext(record: Pick<StoredBankImport, 'result'>, issue: ImportIssue): string {
         const values: string[] = []; const page: number | null = this.pageNumber(record, issue.pageId);
         if (page !== null) {
             values.push(`Page ${page}`);
@@ -545,7 +576,7 @@ export class StatementImports {
     }
 
     progressText(): string {
-        const current: { cancelling: boolean; progress: ExtractionProgress | null; } | null = this.state().statementImport;
+        const current: WorkspaceState['statementImport'] = this.state().statementImport;
         if (!current) {
             return '';
         }
@@ -554,10 +585,10 @@ export class StatementImports {
         }
         const progress: ExtractionProgress | null = current.progress;
         if (!progress) {
-            return 'Choose a PDF statement in the file dialog.';
+            return current.localAi ? 'Preparing local AI recognition…' : 'Choose a PDF statement in the file dialog.';
         }
         const phases: { loading: string; text: string; rendering: string; ocr: string; 'page-complete': string; } = { loading: 'Opening PDF', text: 'Reading PDF text', rendering: 'Preparing page image', ocr: 'Reading page with local English OCR', 'page-complete': 'Page read' };
         const page: string = progress.pageNumber && progress.pageCount ? ` · Page ${progress.pageNumber} of ${progress.pageCount}` : '';
-        return phases[progress.phase] + page;
+        return (current.localAi && progress.phase === 'ocr' ? 'Reading table with local AI' : phases[progress.phase]) + page;
     }
 }

@@ -13,10 +13,9 @@ import {
 } from '../../src/shared/bank-import.js';
 import {
     extractionJobSchema,
-    LOCAL_OCR_VERSIONS,
-    ocrRegionsSchema,
     PDF_EXTRACTION_LIMITS,
     PDF_EXTRACTION_VERSION,
+    RECEIPT_RASTER_LIMITS,
     type ExtractionBridge,
     type ExtractionJob,
     type ExtractionProgress,
@@ -95,7 +94,6 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
     }) : null;
     let worker: Worker | undefined;
     let ocrUnavailable: boolean = false;
-    let extractionVersion: string = PDF_EXTRACTION_VERSION;
     let pageNumber: number | null = null;
     let totalPixels: number = 0;
     let totalSpans: number = 0;
@@ -160,24 +158,26 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
             .filter((word: Tesseract.Word): string => word.text.trim()).map((word: Tesseract.Word): { x0: number; y0: number; x1: number; y1: number; text: string; } => ({ text: word.text, ...word.bbox }));
     };
 
-    const recognizeModel: (canvas: HTMLCanvasElement, page: ImportPage, pageCount: number, model: NonNullable<ExtractionJob["ocrModel"]>) => Promise<{ text: string; x0: number; y0: number; x1: number; y1: number; }[]> = async (canvas: HTMLCanvasElement, page: ImportPage, pageCount: number, model: NonNullable<ExtractionJob['ocrModel']>): Promise<{ text: string; x0: number; y0: number; x1: number; y1: number; }[]> => {
-        progress('ocr', pageCount);
+    async function sendRaster(canvas: HTMLCanvasElement, page: ImportPage, pageCount: number): Promise<void> {
+        progress('rendering', pageCount);
         try {
             const blob: Blob | null = await new Promise<Blob | null>((resolve: (value: Blob | PromiseLike<Blob | null> | null) => void): void => canvas.toBlob(resolve, 'image/png'));
             if (!blob) {
                 throw new Error('Raster serialization failed.');
             }
             const raster: { pageNumber: number; width: number; height: number; png: Uint8Array<ArrayBuffer>; } = { pageNumber: page.pageNumber, width: canvas.width, height: canvas.height, png: new Uint8Array(await blob.arrayBuffer()) };
-            const regions: { text: string; x0: number; y0: number; x1: number; y1: number; }[] = ocrRegionsSchema.parse(await window.receiptMatchExtraction.recognize(raster));
-            extractionVersion = LOCAL_OCR_VERSIONS[model];
-            return regions;
+            await window.receiptMatchExtraction.sendRaster(raster);
         } catch {
-            throw new ExtractionFault('ocr-model', 'The selected local OCR model could not read this page.');
+            throw new ExtractionFault('receipt-raster', 'The receipt page could not be rendered within the local image limits.');
         }
-    };
+    }
 
     const recognize: (canvas: HTMLCanvasElement, page: ImportPage, pageCount: number) => Promise<void> = async (canvas: HTMLCanvasElement, page: ImportPage, pageCount: number): Promise<void> => {
-        const words: { text: string; x0: number; y0: number; x1: number; y1: number; }[] = job.ocrModel ? await recognizeModel(canvas, page, pageCount, job.ocrModel) : await recognizeStandard(canvas, pageCount);
+        if (job.rasterOnly) {
+            await sendRaster(canvas, page, pageCount);
+            return;
+        }
+        const words: { text: string; x0: number; y0: number; x1: number; y1: number; }[] = await recognizeStandard(canvas, pageCount);
         for (const { text, ...bounds } of words) {
             const box: GeometryResult = ocrWordGeometry(bounds, page, canvas);
             if (!box.region || box.clipped) {
@@ -196,7 +196,7 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
         if (pages.every((page: ImportPage): boolean => page.status === 'failed')) {
             return { status: 'failed', issues };
         }
-        const input: BankImportInput = { source: { sourceId: job.sourceId, sha256: job.sha256 }, extraction: { runId: job.jobId, version: extractionVersion }, pages, issues };
+        const input: BankImportInput = { source: { sourceId: job.sourceId, sha256: job.sha256 }, extraction: { runId: job.jobId, version: PDF_EXTRACTION_VERSION }, pages, issues };
         const checked: ZodSafeParseResult<BankImportInput> = bankImportInputSchema.safeParse(input);
         if (!checked.success) {
             return failed('extraction-limit', 'The extracted document could not satisfy the bounded positioned-text contract.');
@@ -278,6 +278,18 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
         return canvas;
     }
 
+    async function extractEmbeddedPage(pdfPage: pdfjs.PDFPageProxy, page: ImportPage, viewport: pdfjs.PageViewport, pageCount: number): Promise<boolean> {
+        await appendEmbeddedText(pdfPage, page, viewport, pageCount);
+        const operations: PDFOperatorList = await pdfPage.getOperatorList();
+        if (!page.spans.length) {
+            return false;
+        }
+        if (operations.fnArray.some((operation: number): boolean => imageOperations.has(operation))) {
+            issue('mixed-content', 'This page contains embedded text and image content. Image regions were not separately OCR-interpreted.', page.pageId);
+        }
+        return true;
+    }
+
     async function extractPdfPage(pdf: pdfjs.PDFDocumentProxy, number: number, pageCount: number): Promise<void> {
         pageNumber = number;
         const pageId: string = `page-${number}`;
@@ -288,14 +300,7 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
         const page: ImportPage = { pageId, pageNumber: number, width: viewport.width, height: viewport.height, status: 'complete', spans: [] };
         let canvas: HTMLCanvasElement | undefined;
         try {
-            await appendEmbeddedText(pdfPage, page, viewport, pageCount);
-            const operations: PDFOperatorList = await pdfPage.getOperatorList();
-            const hasImages: boolean = operations.fnArray.some((operation: number): boolean => imageOperations.has(operation));
-            if (page.spans.length) {
-                if (hasImages) {
-                    issue('mixed-content', 'This page contains embedded text and image content. Image regions were not separately OCR-interpreted.', pageId);
-                }
-            } else {
+            if (job.rasterOnly || !await extractEmbeddedPage(pdfPage, page, viewport, pageCount)) {
                 const raster: PageViewport = pdfPage.getViewport({ scale: 2 });
                 canvas = createPageCanvas(raster, pageCount);
                 const context: CanvasRenderingContext2D | null = canvas.getContext('2d');
@@ -334,8 +339,9 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
             return await extractImage(job.format);
         }
         const document: pdfjs.PDFDocumentProxy = await loadingTask!.promise;
-        if (document.numPages < 1 || document.numPages > PDF_EXTRACTION_LIMITS.pages) {
-            throw new ExtractionFault('page-limit', 'The PDF exceeds the local page limit.', true);
+        const pageLimit: number = job.rasterOnly ? RECEIPT_RASTER_LIMITS.pages : PDF_EXTRACTION_LIMITS.pages;
+        if (document.numPages < 1 || document.numPages > pageLimit) {
+            throw new ExtractionFault('page-limit', `The PDF exceeds the local page limit of ${pageLimit}.`, true);
         }
         for (let number: number = 1; number <= document.numPages; number++) {
             await extractPdfPage(document, number, document.numPages);

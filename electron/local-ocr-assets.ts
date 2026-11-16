@@ -1,5 +1,3 @@
-import type { LocalOcrModel } from '../src/shared/pdf-extraction.js';
-
 export interface ModelAsset {
     file: string;
     url: string;
@@ -7,57 +5,20 @@ export interface ModelAsset {
     sha256: string;
 }
 
-const publisher: "https://huggingface.co/PaddlePaddle" = 'https://huggingface.co/PaddlePaddle';
-const mediumDetection: "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_det_onnx/resolve/61323801669c338b7891481ec7bac61ce31b576a" = `${publisher}/PP-OCRv6_medium_det_onnx/resolve/61323801669c338b7891481ec7bac61ce31b576a`;
-const mediumRecognition: "https://huggingface.co/PaddlePaddle/PP-OCRv6_medium_rec_onnx/resolve/50c7eacafc52fa7bcf4194e8cd08e46f8558504b" = `${publisher}/PP-OCRv6_medium_rec_onnx/resolve/50c7eacafc52fa7bcf4194e8cd08e46f8558504b`;
-const vlWeights: "https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6-GGUF/resolve/511b09642bb324401f15f97cc23bc67e8f0a291d" = `${publisher}/PaddleOCR-VL-1.6-GGUF/resolve/511b09642bb324401f15f97cc23bc67e8f0a291d`;
-const vlTemplate: "https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6/resolve/132c45f52c0a26ed5a6b2f6bd8e3985794cc27dd/chat_template.jinja" = `${publisher}/PaddleOCR-VL-1.6/resolve/132c45f52c0a26ed5a6b2f6bd8e3985794cc27dd/chat_template.jinja`;
+const nuExtractRevision: string = '28a1aae6288c5d50bdf999ca2e572240966d669b';
+const nuExtractSource: string = 'https://huggingface.co/numind/NuExtract3-GGUF/resolve/' + nuExtractRevision;
 
-export const LOCAL_OCR_ASSETS: Readonly<Record<LocalOcrModel, readonly ModelAsset[]>> = {
-    'pp-ocrv6-medium': [
-        {
-            file: 'medium-det/inference.onnx',
-            url: `${mediumDetection}/inference.onnx`,
-            bytes: 62_032_837,
-            sha256: 'eb13b44b25bb36f89528b68720af8a61d9cf381176107f465db1757b65d086e1'
-        },
-        {
-            file: 'medium-det/inference.yml',
-            url: `${mediumDetection}/inference.yml`,
-            bytes: 886,
-            sha256: '7298d5ead546584af2504d03355f881ac7a7bc0eb1e282d3e159277c1d0af871'
-        },
-        {
-            file: 'medium-rec/inference.onnx',
-            url: `${mediumRecognition}/inference.onnx`,
-            bytes: 76_554_979,
-            sha256: '9c09abf0957f7968c7586464b7397b84ad2387a0497a351af40e9acc71b673ba'
-        },
-        {
-            file: 'medium-rec/inference.yml',
-            url: `${mediumRecognition}/inference.yml`,
-            bytes: 150_580,
-            sha256: '991b700facf5b50a7de193468207d5f4255b538dde0d312ae3b7c7a9b6873129'
-        }
-    ],
-    'paddleocr-vl-1.6': [
-        {
-            file: 'model.gguf',
-            url: `${vlWeights}/PaddleOCR-VL-1.6-GGUF.gguf`,
-            bytes: 935_769_056,
-            sha256: 'f3ae46ec885050acf4b3d31944431e1fd90d50664fb09126af4a3c050ba14ee8'
-        },
-        {
-            file: 'mmproj.gguf',
-            url: `${vlWeights}/PaddleOCR-VL-1.6-GGUF-mmproj.gguf`,
-            bytes: 881_770_560,
-            sha256: '204d757d7610d9b3faab10d506d69e5b244e32bf765e2bab2d0167e65e0a058a'
-        },
-        {
-            file: 'chat_template.jinja',
-            url: vlTemplate,
-            bytes: 1_474,
-            sha256: '2f27812dab7f333e471884e0c803d807f11953d5453140dfb1aaba234f872bc8'
-        }
-    ]
-};
+export const NUEXTRACT_ASSETS: readonly [ModelAsset, ModelAsset] = [
+    {
+        file: 'NuExtract3-Q4_K_M.gguf',
+        url: nuExtractSource + '/NuExtract3-Q4_K_M.gguf',
+        bytes: 2_783_445_984,
+        sha256: '7ee3c0ee9e5699a4391624ae758487f583f73b3242aa4e73dc2bb33e508d703e'
+    },
+    {
+        file: 'mmproj-NuExtract3-BF16.gguf',
+        url: nuExtractSource + '/mmproj-NuExtract3-BF16.gguf',
+        bytes: 675_569_184,
+        sha256: '9a506ce43544691f4f56f1533768f43e1887ef69b8cd74b2e7a46c4d9a155a01'
+    }
+];

@@ -53,8 +53,9 @@ export function validateDuplicateDecisions(decisions: Iterable<DuplicateDecision
 	}
 	const referenced: Set<string> = new Set(parsed.flatMap(({ firstId, secondId }: DuplicateDecision): string[] => [firstId, secondId]));
 	const owners: Map<string, { readonly statementId: string; readonly account: string | null; readonly scope: string; readonly references: Set<string>; }> = new Map(imports.flatMap((record: StoredBankImport): (readonly [string, { readonly statementId: string; readonly account: string | null; readonly scope: string; readonly references: Set<string>; }])[] => {
+		const bank: string | undefined = record.result.adapter?.bankId;
 		const selected: { rowId: string; transactionId: string; }[] = record.transactions.filter((row: { rowId: string; transactionId: string; }): boolean => referenced.has(row.transactionId));
-		if (!selected.length) {
+		if (!bank || !selected.length) {
 			return [];
 		}
 		const rows: Map<string, TransactionCandidate> = new Map(record.result.transactions.map((row: TransactionCandidate): [string, TransactionCandidate] => [row.rowId, row]));
@@ -62,7 +63,7 @@ export function validateDuplicateDecisions(decisions: Iterable<DuplicateDecision
 		return selected.flatMap(({ transactionId, rowId }: { rowId: string; transactionId: string; }): [] | [readonly [string, { readonly statementId: string; readonly account: string | null; readonly scope: string; readonly references: Set<string>; }]] => {
 			const row: TransactionCandidate | undefined = rows.get(rowId), account: { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; } | undefined = row && accounts.get(row.accountSectionId);
 			return row && account ? [[transactionId, { statementId: record.id, account: statementAccountKey(account.accountReference?.value),
-				scope: JSON.stringify([record.result.adapter?.bankId, account.currency.value, row.direction]), references: bankTransactionIds(row.references) }] as const] : [];
+				scope: JSON.stringify([bank, account.currency.value, row.direction]), references: bankTransactionIds(row.references) }] as const] : [];
 		});
 	}));
 	for (const decision of parsed) {

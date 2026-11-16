@@ -1,4 +1,4 @@
-import type { BankImportInput, ImportIssue, ImportPage, PositionedSpan } from "../../src/shared/bank-import.js";
+import type { BankImportInput, ImportIssue, PositionedSpan } from "../../src/shared/bank-import.js";
 import type { SupportingDocument } from "../../src/shared/supporting-document.js";
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -6,7 +6,7 @@ import { lstat, opendir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { importIssue } from "../../src/shared/bank-import.js";
-import { extractionProgressSchema, extractionResultSchema, LOCAL_OCR_VERSIONS, PDF_EXTRACTION_VERSION, type ExtractionProgress, type ExtractionResult } from "../../src/shared/pdf-extraction.js";
+import { extractionProgressSchema, extractionResultSchema, PDF_EXTRACTION_VERSION, type ExtractionProgress, type ExtractionResult } from "../../src/shared/pdf-extraction.js";
 import {
 	DOCUMENT_IMPORT_LIMITS,
 	storedDocumentImportSchema,
@@ -17,7 +17,6 @@ import {
 	type WorkspaceSource,
 } from "../../src/shared/workspace-documents.js";
 import { assertSourceNotCancelled, readSourceSnapshot, SourceReadError } from "../import/source.js";
-import type { LocalDocumentOcr } from "../extraction/host.js";
 import { interpretSupportingDocument } from "./interpret.js";
 import type { Stats } from 'node:fs';
 import type { Dirent } from 'node:fs';
@@ -33,12 +32,11 @@ export interface DocumentImportService {
 }
 interface DocumentImportDependencies {
 	choose(): Promise<string | null>;
-	localOcr?: () => Promise<LocalDocumentOcr | undefined>;
 	extract(
 		bytes: Uint8Array,
 		sourceId: string,
 		format: DocumentFormat,
-		options: { signal?: AbortSignal; onProgress?: (progress: ExtractionProgress) => void; localOcr?: LocalDocumentOcr },
+		options: { signal?: AbortSignal; onProgress?: (progress: ExtractionProgress) => void },
 	): Promise<ExtractionResult>;
 }
 const formats: Readonly<Record<string, DocumentFormat>> = { ".pdf": "pdf", ".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg" };
@@ -57,18 +55,12 @@ function isCancelled(error: unknown, signal: AbortSignal | undefined): boolean {
 	return signal?.aborted === true || (error instanceof SourceReadError && error.code === "cancelled");
 }
 
-function assertExtractionProvenance(input: BankImportInput, sourceId: string, sha256: string, format: 'pdf' | 'png' | 'jpeg', localOcr: LocalDocumentOcr | undefined): void {
-	const expectedVersion: string = localOcr ? LOCAL_OCR_VERSIONS[localOcr.model] : PDF_EXTRACTION_VERSION;
-	const validVersion: boolean = input.extraction.version === expectedVersion || isEmbeddedPdfExtraction(input, format);
+function assertExtractionProvenance(input: BankImportInput, sourceId: string, sha256: string, format: DocumentFormat): void {
 	const validImage: boolean = format === 'pdf' || isCompleteImageExtraction(input);
-	if (input.source.sourceId !== sourceId || input.source.sha256 !== sha256 || !z.uuid().safeParse(input.extraction.runId).success || !validVersion || !validImage) {
+	if (input.source.sourceId !== sourceId || input.source.sha256 !== sha256 || !z.uuid().safeParse(input.extraction.runId).success ||
+		input.extraction.version !== PDF_EXTRACTION_VERSION || !validImage) {
 		throw new SourceReadError("invalid-provenance", "The extraction does not match the selected source and execution.");
 	}
-}
-
-function isEmbeddedPdfExtraction(input: BankImportInput, format: 'pdf' | 'png' | 'jpeg'): boolean {
-	return format === 'pdf' && input.extraction.version === PDF_EXTRACTION_VERSION &&
-		input.pages.every((page: ImportPage): boolean => page.spans.every((span: PositionedSpan): boolean => span.method === 'embedded-text'));
 }
 
 function isCompleteImageExtraction(input: BankImportInput): boolean {
@@ -107,7 +99,6 @@ export class FolderDocumentImportService implements DocumentImportService {
 			}
 		const folderPath: string = path.resolve(selected),
 			identities: Set<string> = new Set(options.existingSources.map((source: WorkspaceSource): string => source.id.toLowerCase()));
-		const localOcr: LocalDocumentOcr | undefined = await this.dependencies.localOcr?.();
 		const freshId: () => string = (): string => {
 			let id: string;
 			do {
@@ -192,7 +183,6 @@ export class FolderDocumentImportService implements DocumentImportService {
 				assertSourceNotCancelled(options.signal);
 				const raw: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; } = await this.dependencies.extract(bytes, sourceId, format, {
 					signal: options.signal,
-					localOcr,
 					onProgress: (value: ExtractionProgress): void => {
 						if (!acceptingProgress || options.signal?.aborted) {
 							return;
@@ -219,7 +209,7 @@ export class FolderDocumentImportService implements DocumentImportService {
 					report.files.push({ status: "failed", filePath, format, sha256, issues: extraction.issues, analysis: null });
 					return;
 				}
-				assertExtractionProvenance(extraction.input, sourceId, sha256, format, localOcr);
+				assertExtractionProvenance(extraction.input, sourceId, sha256, format);
 				const analysis: SupportingDocument = interpretSupportingDocument(extraction.input);
 				assertSourceNotCancelled(options.signal);
 				if (analysis.status === "failed") {

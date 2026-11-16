@@ -1,5 +1,5 @@
 import type { BankImportInput, ImportIssue, TransactionCandidate } from "../../src/shared/bank-import.js";
-import type { MatchApproval, MatchApprovalSelection } from "../../src/shared/match-approvals.js";
+import type { MatchApproval } from "../../src/shared/match-approvals.js";
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
 import type { MatchSummary } from "../../src/shared/workspace-matching.js";
 import assert from 'node:assert/strict';
@@ -153,7 +153,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 	}
 
 	async function command(value: WorkspaceCommand): Promise<WorkspaceState> {
-		return page.evaluate((payload: { type: "get-state"; } | { type: "new"; } | { type: "open"; } | { type: "save"; } | { type: "import-statement"; } | { type: "import-documents"; } | { type: "cancel-import"; } | { type: "rename"; name: string; } | { type: "set-transaction-ignored"; revision: number; transactionId: string; ignored: boolean; remember?: true | undefined; } | { type: "review-match"; revision: number; transactionId: string; review: { status: "open"; } | { status: "assigned"; documentId: string; } | { status: "completed-without-document"; }; } | { type: "set-duplicate-decision"; revision: number; transactionId: string; otherTransactionId: string; decision: "separate" | "keep-first" | "keep-second" | "clear"; } | { type: "correct-bank-row"; revision: number; rowId: string; changes: { bookingDate?: string | undefined; accountAmount?: { coefficient: string; currency: string; scale: number; } | undefined; }; } | { change: { kind: "amount"; value: { coefficient: string; currency: string; scale: number; }; } | { kind: "date"; value: string; }; documentId: string; sectionId: string; fieldId: string | null; type: "correct-document-field"; revision: number; } | { type: "approve-matches"; loadRevision: number; selections: MatchApprovalSelection[]; }): Promise<WorkspaceState> => window.receiptmatch.command(payload), value);
+		return page.evaluate((payload: WorkspaceCommand): Promise<WorkspaceState> => window.receiptmatch.command(payload), value);
 	}
 
 	async function records(): Promise<StoredBankImport[]> {
@@ -386,7 +386,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		seed.pragma('foreign_keys=ON');
 		try {
 			// The seven original tables are unchanged; remove the additive manifest to reproduce format 1.
-			seed.exec(`DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
+			seed.exec(`DROP TABLE receipt_analysis_versions; DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
                 DROP TABLE match_results; DROP TABLE document_imports; DROP TABLE bank_imports; PRAGMA user_version=1;
                 INSERT INTO sources VALUES('legacy-source','/synthetic/original.pdf',NULL);
                 INSERT INTO accounts VALUES('legacy-account','Legacy account','EUR');

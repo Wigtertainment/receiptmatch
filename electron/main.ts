@@ -1,4 +1,3 @@
-import type { MatchApprovalSelection } from "../src/shared/match-approvals.js";
 import type { StoredBankImport } from "../src/shared/workspace-import.js";
 import type { StoredDocumentImport } from "../src/shared/workspace-documents.js";
 import type { ReconciliationExportReport } from "../src/shared/document-export.js";
@@ -9,32 +8,35 @@ import type { OriginalPreviewResult } from "../src/shared/original-preview.js";
 import type { MatchDetails } from "../src/shared/workspace-matching.js";
 import type { MatchSummary } from "../src/shared/workspace-matching.js";
 import type { DocumentSnapshot } from "../src/shared/protocol.js";
-import type { LocalOcrModel } from "../src/shared/pdf-extraction.js";
-import type { LocalOcrStatus } from "../src/shared/local-ocr-settings.js";
+import type { LocalOcrRequest, LocalOcrStatus, NuExtractSettingsStatus } from "../src/shared/local-ocr-settings.js";
 import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, session } from 'electron';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { randomBytes } from 'node:crypto';
-import { commandSchema, documentExportRequestSchema, documentSnapshotRequestSchema, exportSettingsRequestSchema, matchRequestSchema, type WorkspaceState } from '../src/shared/protocol.js';
+import { commandSchema, documentExportRequestSchema, documentSnapshotRequestSchema, exportSettingsRequestSchema, matchRequestSchema, type WorkspaceCommand, type WorkspaceState } from '../src/shared/protocol.js';
 import type { DocumentExportResponse } from '../src/shared/document-export.js';
 import { originalAdoptionRequestSchema, originalPreviewRequestSchema, originalSourceExtensions } from '../src/shared/original-preview.js';
 import { WorkspaceSession } from './workspace-session.js';
 import { offerStartupUpdate } from './desktop-update.js';
 import type { BaseUpdater } from 'electron-updater';
 import { StatementImportService } from './import/service.js';
+import { proposeNuExtractStatement, type StatementProposalExtraction } from './import/nuextract-statement.js';
+import type { BankImportInput } from '../src/shared/bank-import.js';
 import { FolderDocumentImportService } from './documents/service.js';
 import { isRendererRequestAllowed, resolveRendererUrl } from './runtime-policy.js';
 import { OriginalPreviewWindows, type OriginalSource } from './original-preview.js';
 import { readExportFilenamePattern, saveExportFilenamePattern } from './export-settings.js';
 import { ExportDestinationError } from './document-export.js';
-import { LocalOcrSettings } from './local-ocr-settings.js';
+import { NuExtractSettings } from './nuextract-settings.js';
 import { localOcrRequestSchema } from '../src/shared/local-ocr-settings.js';
 import type { ZodSafeParseResult } from 'zod';
-import type { LocalDocumentOcr } from './extraction/host.js';
+import type { ExtractionOptions } from './extraction/host.js';
+import { reanalyzeNuExtractReceipt, type ReceiptAiSource } from './documents/nuextract-receipt.js';
+import { receiptAiDiscardRequestSchema, receiptAiRequestSchema, type ReceiptAiPreviewResult, type ReceiptAiRequest, type ReceiptAiResult } from '../src/shared/receipt-ai.js';
 
 // Load the same module instance as other main-process consumers of the extraction API.
-const { extractPdfBytes, extractDocumentBytes }: Pick<typeof import("./extraction/host.js"), "extractPdfBytes" | "extractDocumentBytes"> = createRequire(__filename)('./extraction-host.cjs') as Pick<typeof import('./extraction/host.js'), 'extractPdfBytes' | 'extractDocumentBytes'>;
+const { extractPdfBytes, extractDocumentBytes, renderDocumentImages }: Pick<typeof import("./extraction/host.js"), "extractPdfBytes" | "extractDocumentBytes" | "renderDocumentImages"> = createRequire(__filename)('./extraction-host.cjs') as Pick<typeof import('./extraction/host.js'), 'extractPdfBytes' | 'extractDocumentBytes' | 'renderDocumentImages'>;
 
 app.setName('ReceiptMatch');
 if (process.platform === 'win32') {
@@ -90,10 +92,10 @@ async function launch(): Promise<void> {
       contextIsolation: true, nodeIntegration: false, spellcheck: false } });
   const userData: string = app.getPath('userData');
   const runtimes: string = path.join(app.isPackaged ? process.resourcesPath : userData, 'local-ocr-runtimes');
-  const localOcr: LocalOcrSettings = new LocalOcrSettings(path.join(userData, 'local-ocr'), {
-    'pp-ocrv6-medium': path.join(runtimes, 'python', process.platform === 'win32' ? 'python.exe' : 'bin/python3.12'),
-    'paddleocr-vl-1.6': path.join(runtimes, 'llama', process.platform === 'win32' ? 'llama-mtmd-cli.exe' : 'llama-mtmd-cli')
-  });
+  const nuExtract: NuExtractSettings = new NuExtractSettings(path.join(userData, 'local-ocr'),
+    path.join(runtimes, 'llama', process.platform === 'win32' ? 'llama-server.exe' : 'llama-server'),
+    path.join(__dirname, 'extraction', 'nuextract-probe.png'));
+  await nuExtract.resetLegacySelection().catch((): undefined => undefined);
   const previews: OriginalPreviewWindows = new OriginalPreviewWindows(process.argv.includes('--hidden'), windowIcon);
   let previewLoadRevision: number | undefined;
   const publish: (state: WorkspaceState) => void = (state: WorkspaceState): void => {
@@ -136,44 +138,51 @@ async function launch(): Promise<void> {
       const selected: Electron.OpenDialogReturnValue = await dialog.showOpenDialog(window, { title: 'Import bank statement', properties: ['openFile'], filters: [{ name: 'PDF bank statement', extensions: ['pdf'] }] });
       return selected.canceled ? null : selected.filePaths[0] ?? null;
     },
-    extract: extractPdfBytes
+    extract: extractPdfBytes,
+    propose: (bytes: Uint8Array, input: BankImportInput, options: ExtractionOptions): Promise<StatementProposalExtraction> => proposeNuExtractStatement(bytes, input, {
+      runtimeFiles: (): ReturnType<NuExtractSettings['runtimeFiles']> => nuExtract.runtimeFiles(),
+      render: renderDocumentImages
+    }, options)
   }), new FolderDocumentImportService({
     choose: async (): Promise<string | null> => {
       const selected: Electron.OpenDialogReturnValue = await dialog.showOpenDialog(window, { title: 'Analyze supporting document folder', properties: ['openDirectory'] });
       return selected.canceled ? null : selected.filePaths[0] ?? null;
     },
-    extract: extractDocumentBytes,
-    localOcr: (): Promise<LocalDocumentOcr | undefined> => localOcr.selected()
-  }), extractDocumentBytes, path.join(userData, 'transaction-ignore-rules'));
+    extract: extractDocumentBytes
+  }), extractDocumentBytes, path.join(userData, 'transaction-ignore-rules'), {
+    analyze: (source: ReceiptAiSource, options?: ExtractionOptions): Promise<ReceiptAiResult> => reanalyzeNuExtractReceipt(source, {
+      runtimeFiles: (): ReturnType<NuExtractSettings['runtimeFiles']> => nuExtract.runtimeFiles(),
+      render: renderDocumentImages
+    }, options)
+  });
   const authorized: (event: Electron.IpcMainInvokeEvent) => boolean = (event: Electron.IpcMainInvokeEvent): boolean => event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && event.senderFrame.url === appUrl;
   const exportSettingsFile: string = path.join(app.getPath('userData'), 'export-settings.json');
   let confirmingOcrDownload: boolean = false;
 
-  async function requestOcrInstall(modelId: LocalOcrModel): Promise<void> {
+  async function requestNuExtractInstall(kind: 'model' | 'vulkan'): Promise<void> {
     if (confirmingOcrDownload) {
       throw new Error('A local OCR download confirmation is already open.');
     }
     confirmingOcrDownload = true;
     try {
-      const status: LocalOcrStatus = await localOcr.status();
-      const model: { model: LocalOcrModel; name: string; downloadBytes: number; installed: boolean; runtimeAvailable: boolean; runtimeIssue?: string; } = status.models.find((model: { model: LocalOcrModel; name: string; downloadBytes: number; installed: boolean; runtimeAvailable: boolean; runtimeIssue?: string; }): boolean => model.model === modelId)!;
-      if (status.download || !model.runtimeAvailable) {
-        throw new Error('The local OCR model cannot be installed right now.');
+      const status: NuExtractSettingsStatus = await nuExtract.status();
+      const modelDownload: boolean = kind === 'model';
+      const available: boolean = modelDownload ? status.cpuAvailable && !status.installed : status.gpu === 'download-required';
+      if (status.busy || !available) {
+        throw new Error('The NuExtract3 download is unavailable.');
       }
-      if (model.installed) {
-        await localOcr.select(modelId);
-      } else {
-        const unit: "gigabyte" | "megabyte" = model.downloadBytes >= 1_000_000_000 ? 'gigabyte' : 'megabyte';
-        const size: string = new Intl.NumberFormat(undefined, { style: 'unit', unit, maximumFractionDigits: 2 })
-          .format(model.downloadBytes / (unit === 'gigabyte' ? 1_000_000_000 : 1_000_000));
-        const confirmation: Electron.MessageBoxReturnValue = await dialog.showMessageBox(window, {
-          type: 'question', title: 'Download OCR model', message: `Download ${model.name} to this device?`,
-            detail: `Download size: ${size}. ReceiptMatch processes documents on this device.`,
-          buttons: ['Download', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true
-        });
-        if (confirmation.response === 0 && !closeRequested && !window.isDestroyed()) {
-          await localOcr.install(modelId);
-        }
+      const bytes: number = modelDownload ? status.modelDownloadBytes : status.vulkanDownloadBytes;
+      const unit: 'gigabyte' | 'megabyte' = modelDownload ? 'gigabyte' : 'megabyte';
+      const size: string = new Intl.NumberFormat(undefined, { style: 'unit', unit, maximumFractionDigits: 2 })
+        .format(bytes / (modelDownload ? 1_000_000_000 : 1_000_000));
+      const name: string = modelDownload ? 'NuExtract3' : 'the NuExtract3 Vulkan runtime';
+      const confirmation: Electron.MessageBoxReturnValue = await dialog.showMessageBox(window, {
+        type: 'question', title: 'Download local AI', message: 'Download ' + name + ' to this device?',
+        detail: 'Download size: ' + size + '. ReceiptMatch processes documents on this device.',
+        buttons: ['Download', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true
+      });
+      if (confirmation.response === 0 && !closeRequested && !window.isDestroyed()) {
+        await (modelDownload ? nuExtract.install() : nuExtract.installVulkan());
       }
     } finally {
       confirmingOcrDownload = false;
@@ -184,17 +193,19 @@ async function launch(): Promise<void> {
     if (!authorized(event) || closeRequested) {
       throw new Error('Local OCR settings request denied.');
     }
-    const request: { type: "status"; } | { type: "select"; selection: "pp-ocrv6-medium" | "paddleocr-vl-1.6" | "standard"; } | { type: "install"; model: "pp-ocrv6-medium" | "paddleocr-vl-1.6"; } | { type: "cancel"; } = localOcrRequestSchema.parse(payload);
-    if (request.type === 'cancel') {
-      await localOcr.cancel();
+    const request: LocalOcrRequest = localOcrRequestSchema.parse(payload);
+    if (request.type === 'check-nuextract-gpu' && workspace.state().busy) {
+      throw new Error('Finish the workspace action before checking GPU compatibility.');
     }
-    if (request.type === 'select') {
-      await localOcr.select(request.selection);
+    switch (request.type) {
+      case 'install-nuextract': await requestNuExtractInstall('model'); break;
+      case 'install-nuextract-vulkan': await requestNuExtractInstall('vulkan'); break;
+      case 'check-nuextract-gpu': await nuExtract.checkGpu(); break;
+      case 'cancel-nuextract': await nuExtract.cancel(); break;
+      case 'select-nuextract-device': await nuExtract.selectDevice(request.device); break;
+      case 'status': break;
     }
-    if (request.type === 'install') {
-      await requestOcrInstall(request.model);
-    }
-    return localOcr.status();
+    return nuExtract.status();
   });
   let exportSettingsWrite: Promise<string> | null = null;
   ipcMain.handle('app:export-settings', async (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<string> => {
@@ -239,7 +250,7 @@ async function launch(): Promise<void> {
     if (closeRequested) {
       return workspace.state();
     }
-    const command: ZodSafeParseResult<{ type: "get-state"; } | { type: "new"; } | { type: "open"; } | { type: "save"; } | { type: "import-statement"; } | { type: "import-documents"; } | { type: "cancel-import"; } | { type: "rename"; name: string; } | { type: "set-transaction-ignored"; revision: number; transactionId: string; ignored: boolean; remember?: true | undefined; } | { type: "review-match"; revision: number; transactionId: string; review: { status: "open"; } | { status: "assigned"; documentId: string; } | { status: "completed-without-document"; }; } | { type: "set-duplicate-decision"; revision: number; transactionId: string; otherTransactionId: string; decision: "separate" | "keep-first" | "keep-second" | "clear"; } | { type: "correct-bank-row"; revision: number; rowId: string; changes: { bookingDate?: string | undefined; accountAmount?: { coefficient: string; currency: string; scale: number; } | undefined; }; } | { change: { kind: "amount"; value: { coefficient: string; currency: string; scale: number; }; } | { kind: "date"; value: string; }; documentId: string; sectionId: string; fieldId: string | null; type: "correct-document-field"; revision: number; } | { type: "approve-matches"; loadRevision: number; selections: MatchApprovalSelection[]; }> = commandSchema.safeParse(payload);
+    const command: ZodSafeParseResult<WorkspaceCommand> = commandSchema.safeParse(payload);
     return command.success ? workspace.dispatch(command.data) : workspace.rejectRequest();
   });
 
@@ -312,6 +323,29 @@ async function launch(): Promise<void> {
       throw new Error('Workspace request denied.');
     }
     return workspace.analyzeOriginal(request.data);
+  });
+
+  ipcMain.handle('workspace:reanalyze-receipt', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<ReceiptAiPreviewResult> => {
+    if (!authorized(event) || closeRequested || payload.length !== 1) {
+      return Promise.resolve({ status: 'failed', error: 'Receipt analysis request denied.' });
+    }
+    const request: ZodSafeParseResult<ReceiptAiRequest> = receiptAiRequestSchema.safeParse(payload[0]);
+    return request.success ? workspace.reanalyzeReceipt(request.data) : Promise.resolve({ status: 'failed', error: 'Invalid receipt analysis request.' });
+  });
+
+  ipcMain.handle('workspace:accept-receipt-analysis', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<OriginalAdoptionResult> => {
+    if (!authorized(event) || closeRequested || payload.length !== 1) {
+      return Promise.resolve({ status: 'failed', error: 'Receipt analysis confirmation denied.' });
+    }
+    const request: ReturnType<typeof originalAdoptionRequestSchema.safeParse> = originalAdoptionRequestSchema.safeParse(payload[0]);
+    return request.success ? workspace.acceptReceiptAnalysis(request.data) : Promise.resolve({ status: 'failed', error: 'Invalid receipt analysis confirmation.' });
+  });
+
+  ipcMain.handle('workspace:discard-receipt-analysis', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): void => {
+    if (!authorized(event) || closeRequested || payload.length !== 1) {
+      throw new Error('Receipt analysis discard denied.');
+    }
+    workspace.discardReceiptAnalysis(receiptAiDiscardRequestSchema.parse(payload[0]));
   });
 
   ipcMain.handle('workspace:accept-original-analysis', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<OriginalAdoptionResult> => {
@@ -421,7 +455,7 @@ async function launch(): Promise<void> {
       while (exportSettingsWrite) {
         await exportSettingsWrite.catch((): null => null);
       }
-      await localOcr.cancel();
+      await nuExtract.cancel();
       if (!window.isDestroyed()) {
         closing = true; window.close();
       }
@@ -463,7 +497,7 @@ async function launch(): Promise<void> {
         return;
       }
       await exportSettingsWrite?.catch((): null => null);
-      await localOcr.cancel();
+      await nuExtract.cancel();
       if (!updater.install(false, true)) {
         throw new Error('The update installer could not start.');
       }

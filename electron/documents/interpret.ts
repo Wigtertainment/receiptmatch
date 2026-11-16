@@ -717,7 +717,12 @@ function referencesOnLine(line: string): { label: string; value: string; }[] {
 }
 
 export function hasFullDocumentReference(field: DocumentSection['references'][number], value: string): boolean {
-	const lines: { label: string; value: string; }[] = field.evidence.flatMap((item: SourceEvidence): { label: string; value: string; }[] => referencesOnLine(item.rawText));
+	const lines: { label: string; value: string; }[] = field.evidence.flatMap((item: SourceEvidence): { label: string; value: string; }[] => {
+		const receipt: RegExpExecArray | null = field.role === 'receipt'
+			? /^(belegnummer|check\s*(?:number|no\.?|#)|chk)(?:\s*[:#]\s*|\s+|$)(.*)$/i.exec(item.rawText.trim())
+			: null;
+		return receipt ? [{ label: receipt[1], value: receipt[2].trim() }] : referencesOnLine(item.rawText);
+	});
 	const labelled: { label: string; value: string; }[] = lines.filter((line: { label: string; value: string; }): boolean => line.label.toLowerCase() === field.label.toLowerCase());
 	return labelled.some((line: { label: string; value: string; }): boolean => line.value === value) ||
 		(labelled.some((line: { label: string; value: string; }): boolean => !line.value) && field.evidence.some((item: SourceEvidence): boolean => item.rawText.trim() === value));
@@ -843,6 +848,8 @@ function periodDateRole(base: DateRole, count: number, first: boolean): DateRole
 function soleCurrency(values: string[], matchCount: number): string[] {
 	return values.length === 1 && matchCount === 1 ? values : [];
 }
+
+export { currencies as printedCurrencies, dateCandidates, linesOf as positionedLines, numberCandidates, source as positionedLineEvidence };
 
 export function interpretSupportingDocument(rawInput: unknown): SupportingDocument {
 	const checked: ZodSafeParseResult<BankImportInput> = bankImportInputSchema.safeParse(rawInput);
