@@ -205,9 +205,10 @@ test('checks NuExtract3 tables against the original statement and preserves the 
             return Promise.resolve({ status: 'complete', images: [image] });
         },
         start: (): Promise<Pick<NuExtractRuntime, 'extract' | 'close'>> => Promise.resolve({
-            extract: ({ images }: NuExtractRequest): Promise<Record<string, unknown>> => {
+            extract: ({ images, jsonObject }: NuExtractRequest): Promise<Record<string, unknown>> => {
                 calls++;
                 assert.deepEqual(images, [image]);
+                assert.equal(jsonObject, true);
                 return Promise.resolve({ headings: columns, rows: [
                     { cells: [bookings[0][0], bookings[0][1], bookings[0][2], null, bookings[0][4]] },
                     { cells: [bookings[1][0], bookings[1][1], null, '999,99', bookings[1][4]] }

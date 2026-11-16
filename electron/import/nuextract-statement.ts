@@ -51,7 +51,7 @@ async function recognizePages(files: NuExtractRuntimeFiles, images: Uint8Array[]
             options.signal?.throwIfAborted();
             if (page.status === 'complete' && page.spans.length) {
                 options.onProgress?.({ phase: 'ocr', pageNumber: page.pageNumber, pageCount: images.length, completedPages: index });
-                const table: string[][] | undefined = readTable(await runtime.extract({ images: [image], template, instructions, maxTokens: 4096 }, options.signal));
+                const table: string[][] | undefined = readTable(await runtime.extract({ images: [image], template, instructions, maxTokens: 4096, jsonObject: true }, options.signal));
                 options.signal?.throwIfAborted();
                 if (table) {
                     tables.set(page.pageNumber, table);

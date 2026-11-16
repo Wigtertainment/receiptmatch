@@ -19,6 +19,7 @@ export interface NuExtractRequest {
 	template: Readonly<Record<string, unknown>>;
 	instructions: string;
 	maxTokens?: number;
+	jsonObject?: true;
 }
 
 type RuntimeProcess = ChildProcessByStdio<null, Readable, Readable>;
@@ -200,6 +201,7 @@ function requestBody(input: NuExtractRequest): string {
 		seed: 42,
 		max_tokens: maxTokens,
 		cache_prompt: false,
+		...(input.jsonObject ? { response_format: { type: "json_object" } } : {}),
 		chat_template_kwargs: { template, instructions: input.instructions, enable_thinking: false },
 	});
 }

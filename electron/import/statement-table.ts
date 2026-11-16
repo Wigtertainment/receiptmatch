@@ -161,7 +161,7 @@ function bookingRows(lines: Line[], header: Header): SourceRow[] {
         if (looksLikeBooking(row.values, header.columns)) {
             bookings.push(row);
             previous = row;
-        } else if (previous && previous.values[description] && row.values[description] && !balanceSummary.test(row.values[description]) &&
+        } else if (previous?.values[description] && row.values[description] && !balanceSummary.test(row.values[description]) &&
             row.values.every((value: string, index: number): boolean => index === description || value === '')) {
             previous.cells[description].push(...row.cells[description]);
             previous.values[description] = textOf(previous.cells[description]);

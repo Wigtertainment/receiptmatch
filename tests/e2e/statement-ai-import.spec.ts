@@ -8,6 +8,7 @@ import {
 	expect, test, type ElectronApplication, type Locator, type Page, type PlaywrightTestArgs, type PlaywrightTestOptions, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions
 } from '@playwright/test';
 import { NUEXTRACT_ASSETS } from '../../electron/local-ocr-assets.js';
+import type { ImportIssue } from '../../src/shared/bank-import.js';
 import type { LocalOcrStatus } from '../../src/shared/local-ocr-settings.js';
 import type { WorkspaceState } from '../../src/shared/protocol.js';
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
@@ -114,7 +115,14 @@ async function openOffer(application: ElectronApplication, page: Page, file: str
 
 async function reviewAndConfirm(page: Page): Promise<string> {
 	const review: Locator = page.getByTestId('statement-ai-review');
-	await expect(review).toBeVisible({ timeout: 270_000 });
+	await expect.poll(async (): Promise<string | undefined> => {
+		const current: WorkspaceState = await state(page);
+		if (!current.statementImport && current.importOutcome?.status === 'failed') {
+			throw new Error(current.importOutcome.issues.map((issue: ImportIssue): string => issue.message).join('\n'));
+		}
+		return current.statementFallback?.stage;
+	}, { timeout: 270_000 }).toBe('review');
+	await expect(review).toBeVisible();
 	await expect(review.getByRole('heading', { name: 'Unresolved drafts' })).toBeVisible();
 	const proposed: Locator = review.getByTestId('statement-ai-row').filter({ hasText: 'Juniper Supplies' });
 	await expect(proposed).toContainText('Page 1');
