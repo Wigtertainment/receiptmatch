@@ -63,14 +63,14 @@ test('keeps a new profile free of old settings and rejects retired model command
     }
 });
 
-test('keeps GPU selected after reopening and automatically verifies it before the first analysis', async (): Promise<void> => {
+test('checks a saved GPU preference once and reuses the result after an update or restart', async (): Promise<void> => {
     const root: string = await mkdtemp(path.join(os.tmpdir(), 'receiptmatch-nuextract-gpu-'));
     const executable: string = path.join(root, 'vulkan-server');
     const probe: string = path.join(root, 'probe.png');
     try {
         await installedModel(root);
         vi.spyOn(vulkan, 'supportsVulkanRuntime').mockReturnValue(true);
-        vi.spyOn(vulkan, 'vulkanRuntimeExecutable').mockResolvedValue(executable);
+        const runtimeExecutable: MockInstance<typeof vulkan.vulkanRuntimeExecutable> = vi.spyOn(vulkan, 'vulkanRuntimeExecutable').mockResolvedValue(executable);
         const list: MockInstance<typeof runtime.listNuExtractVulkanDevices> = vi.spyOn(runtime, 'listNuExtractVulkanDevices').mockResolvedValue(['Vulkan0']);
         const probeRuntime: Pick<NuExtractRuntime, 'extract' | 'close'> = {
             extract: (): Promise<Record<string, unknown>> => Promise.resolve({ invoice_number: 'RM-2047' }),
@@ -78,7 +78,7 @@ test('keeps GPU selected after reopening and automatically verifies it before th
         };
         const start: MockInstance<typeof runtime.NuExtractRuntime.start> = vi.spyOn(runtime.NuExtractRuntime, 'start').mockResolvedValue(probeRuntime as NuExtractRuntime);
 
-        await new NuExtractSettings(root, process.execPath, probe).selectDevice('gpu');
+        await writeFile(path.join(root, 'nuextract-device.json'), JSON.stringify('gpu'));
         const reopened: NuExtractSettings = new NuExtractSettings(root, process.execPath, probe);
         const pending: NuExtractSettingsStatus = await reopened.status();
         assert.equal(pending.device, 'gpu');
@@ -93,14 +93,35 @@ test('keeps GPU selected after reopening and automatically verifies it before th
         assert.deepEqual(await reopened.runtimeFiles(), files);
         assert.equal(list.mock.calls.length, 1);
 
+        const updatedApp: string = path.join(root, 'updated-app');
+        const updatedProbe: string = path.join(updatedApp, 'probe.png');
+        const updated: NuExtractSettings = new NuExtractSettings(root, path.join(updatedApp, 'cpu-runtime'), updatedProbe);
+        const saved: NuExtractSettingsStatus = await updated.status();
+        assert.equal(saved.device, 'gpu');
+        assert.equal(saved.gpu, 'available');
+        assert.equal(saved.effectiveDevice, 'gpu');
+        assert.deepEqual(await updated.runtimeFiles(), files);
+        assert.equal(list.mock.calls.length, 1);
+        assert.equal(start.mock.calls.length, 1);
+
+        await mkdir(updatedApp);
+        await writeFile(updatedProbe, 'x');
         start.mockRejectedValueOnce(new Error('GPU no longer available'));
-        await assert.rejects(reopened.startRuntime(files), runtime.NuExtractGpuUnavailableError);
-        assert.equal((await reopened.status()).device, 'gpu');
-        assert.equal((await reopened.status()).effectiveDevice, null);
-        assert.deepEqual(await reopened.runtimeFiles(), files);
+        await assert.rejects(updated.startRuntime(files), runtime.NuExtractGpuUnavailableError);
+        assert.equal((await updated.status()).device, 'gpu');
+        assert.equal((await updated.status()).effectiveDevice, null);
+        assert.equal((await new NuExtractSettings(root, process.execPath, probe).status()).gpu, 'unchecked');
+        assert.deepEqual(await updated.runtimeFiles(), files);
         assert.equal(list.mock.calls.length, 2);
 
-        await reopened.selectDevice('cpu');
+        const replacement: string = path.join(root, 'replacement-vulkan-server');
+        runtimeExecutable.mockResolvedValue(replacement);
+        const changedRuntime: NuExtractSettings = new NuExtractSettings(root, process.execPath, probe);
+        assert.equal((await changedRuntime.status()).gpu, 'unchecked');
+        assert.equal((await changedRuntime.runtimeFiles())?.executable, replacement);
+        assert.equal(list.mock.calls.length, 3);
+
+        await changedRuntime.selectDevice('cpu');
         assert.equal((await new NuExtractSettings(root, process.execPath, probe).status()).device, 'cpu');
     } finally {
         await rm(root, { recursive: true, force: true });
