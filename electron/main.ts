@@ -1,4 +1,3 @@
-import type { MatchApprovalSelection } from "../src/shared/match-approvals.js";
 import type { StoredBankImport } from "../src/shared/workspace-import.js";
 import type { StoredDocumentImport } from "../src/shared/workspace-documents.js";
 import type { ReconciliationExportReport } from "../src/shared/document-export.js";
@@ -15,13 +14,15 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { randomBytes } from 'node:crypto';
-import { commandSchema, documentExportRequestSchema, documentSnapshotRequestSchema, exportSettingsRequestSchema, matchRequestSchema, type WorkspaceState } from '../src/shared/protocol.js';
+import { commandSchema, documentExportRequestSchema, documentSnapshotRequestSchema, exportSettingsRequestSchema, matchRequestSchema, type WorkspaceCommand, type WorkspaceState } from '../src/shared/protocol.js';
 import type { DocumentExportResponse } from '../src/shared/document-export.js';
 import { originalAdoptionRequestSchema, originalPreviewRequestSchema, originalSourceExtensions } from '../src/shared/original-preview.js';
 import { WorkspaceSession } from './workspace-session.js';
 import { offerStartupUpdate } from './desktop-update.js';
 import type { BaseUpdater } from 'electron-updater';
 import { StatementImportService } from './import/service.js';
+import { proposeNuExtractStatement, type StatementProposalExtraction } from './import/nuextract-statement.js';
+import type { BankImportInput } from '../src/shared/bank-import.js';
 import { FolderDocumentImportService } from './documents/service.js';
 import { isRendererRequestAllowed, resolveRendererUrl } from './runtime-policy.js';
 import { OriginalPreviewWindows, type OriginalSource } from './original-preview.js';
@@ -137,7 +138,11 @@ async function launch(): Promise<void> {
       const selected: Electron.OpenDialogReturnValue = await dialog.showOpenDialog(window, { title: 'Import bank statement', properties: ['openFile'], filters: [{ name: 'PDF bank statement', extensions: ['pdf'] }] });
       return selected.canceled ? null : selected.filePaths[0] ?? null;
     },
-    extract: extractPdfBytes
+    extract: extractPdfBytes,
+    propose: (bytes: Uint8Array, input: BankImportInput, options: ExtractionOptions): Promise<StatementProposalExtraction> => proposeNuExtractStatement(bytes, input, {
+      runtimeFiles: (): ReturnType<NuExtractSettings['runtimeFiles']> => nuExtract.runtimeFiles(),
+      render: renderDocumentImages
+    }, options)
   }), new FolderDocumentImportService({
     choose: async (): Promise<string | null> => {
       const selected: Electron.OpenDialogReturnValue = await dialog.showOpenDialog(window, { title: 'Analyze supporting document folder', properties: ['openDirectory'] });
@@ -146,7 +151,7 @@ async function launch(): Promise<void> {
     extract: extractDocumentBytes
   }), extractDocumentBytes, path.join(userData, 'transaction-ignore-rules'), {
     analyze: (source: ReceiptAiSource, options?: ExtractionOptions): Promise<ReceiptAiResult> => reanalyzeNuExtractReceipt(source, {
-      runtimeFiles: (): ReturnType<NuExtractSettings['receiptRuntimeFiles']> => nuExtract.receiptRuntimeFiles(),
+      runtimeFiles: (): ReturnType<NuExtractSettings['runtimeFiles']> => nuExtract.runtimeFiles(),
       render: renderDocumentImages
     }, options)
   });
@@ -245,7 +250,7 @@ async function launch(): Promise<void> {
     if (closeRequested) {
       return workspace.state();
     }
-    const command: ZodSafeParseResult<{ type: "get-state"; } | { type: "new"; } | { type: "open"; } | { type: "save"; } | { type: "import-statement"; } | { type: "import-documents"; } | { type: "cancel-import"; } | { type: "rename"; name: string; } | { type: "set-transaction-ignored"; revision: number; transactionId: string; ignored: boolean; remember?: true | undefined; } | { type: "review-match"; revision: number; transactionId: string; review: { status: "open"; } | { status: "assigned"; documentId: string; } | { status: "completed-without-document"; }; } | { type: "set-duplicate-decision"; revision: number; transactionId: string; otherTransactionId: string; decision: "separate" | "keep-first" | "keep-second" | "clear"; } | { type: "correct-bank-row"; revision: number; rowId: string; changes: { bookingDate?: string | undefined; accountAmount?: { coefficient: string; currency: string; scale: number; } | undefined; }; } | { change: { kind: "amount"; value: { coefficient: string; currency: string; scale: number; }; } | { kind: "date"; value: string; }; documentId: string; sectionId: string; fieldId: string | null; type: "correct-document-field"; revision: number; } | { type: "approve-matches"; loadRevision: number; selections: MatchApprovalSelection[]; }> = commandSchema.safeParse(payload);
+    const command: ZodSafeParseResult<WorkspaceCommand> = commandSchema.safeParse(payload);
     return command.success ? workspace.dispatch(command.data) : workspace.rejectRequest();
   });
 

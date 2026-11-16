@@ -1,5 +1,4 @@
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
-import type { MatchApprovalSelection } from "../../src/shared/match-approvals.js";
 import type { BankCorrection } from "../../src/shared/bank-corrections.js";
 import type { DocumentCorrection } from "../../src/shared/document-corrections.js";
 import type { DuplicateDecision } from "../../src/shared/transaction-duplicates.js";
@@ -254,7 +253,7 @@ test('direct Electron development and stylesheet HMR', async ({ development: { p
 	async function command(value: WorkspaceCommand): Promise<WorkspaceState> {
 		return bounded(
 			`Completing the actual ${value.type} command`,
-			page.evaluate((value: { type: "get-state"; } | { type: "new"; } | { type: "open"; } | { type: "save"; } | { type: "import-statement"; } | { type: "import-documents"; } | { type: "cancel-import"; } | { type: "rename"; name: string; } | { type: "set-transaction-ignored"; revision: number; transactionId: string; ignored: boolean; remember?: true | undefined; } | { type: "review-match"; revision: number; transactionId: string; review: { status: "open"; } | { status: "assigned"; documentId: string; } | { status: "completed-without-document"; }; } | { type: "set-duplicate-decision"; revision: number; transactionId: string; otherTransactionId: string; decision: "separate" | "keep-first" | "keep-second" | "clear"; } | { type: "correct-bank-row"; revision: number; rowId: string; changes: { bookingDate?: string | undefined; accountAmount?: { coefficient: string; currency: string; scale: number; } | undefined; }; } | { change: { kind: "amount"; value: { coefficient: string; currency: string; scale: number; }; } | { kind: "date"; value: string; }; documentId: string; sectionId: string; fieldId: string | null; type: "correct-document-field"; revision: number; } | { type: "approve-matches"; loadRevision: number; selections: MatchApprovalSelection[]; }): Promise<WorkspaceState> => window.receiptmatch.command(value), value),
+			page.evaluate((value: WorkspaceCommand): Promise<WorkspaceState> => window.receiptmatch.command(value), value),
 			typeof value === 'object' && value !== null && 'type' in value && value.type === 'import-statement' ? 45000 : 20000
 		);
 	}

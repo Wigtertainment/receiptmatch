@@ -224,6 +224,8 @@ export const adapterMetadataSchema: AdapterMetadataSchemaType = z.strictObject({
         .max(32)
 });
 const selectedAdapter: z.ZodObject<{ bankId: z.ZodString; adapterId: z.ZodString; version: z.ZodString; layoutId: z.ZodString; layoutVersion: z.ZodString; }, z.core.$strict> = z.strictObject({ bankId: id, adapterId: id, version: id, layoutId: id, layoutVersion: id });
+const localRecognitionSchema: z.ZodObject<{ model: z.ZodEnum<{ 'paddleocr-vl-1.6': 'paddleocr-vl-1.6'; nuextract3: 'nuextract3' }>; parserVersion: z.ZodLiteral<'1'> }, z.core.$strict> =
+    z.strictObject({ model: z.enum(['paddleocr-vl-1.6', 'nuextract3']), parserVersion: z.literal('1') });
 const provenanceSchema: z.ZodObject<{ sourceId: z.ZodString; sha256: z.ZodString; extractionRunId: z.ZodString; extractionVersion: z.ZodString; pages: z.ZodArray<typeof pageMetadata>; }, z.core.$strict> = sourceSchema.extend({ extractionRunId: id, extractionVersion: id, pages: z.array(pageMetadata).min(1).max(BANK_IMPORT_LIMITS.pages) });
 type BankImportResultSchemaType = z.ZodObject<{
 	contractVersion: z.ZodLiteral<"1">;
@@ -234,6 +236,7 @@ type BankImportResultSchemaType = z.ZodObject<{
 		unsupported: "unsupported";
 	}>;
 	adapter: z.ZodNullable<typeof selectedAdapter>;
+	localRecognition: z.ZodOptional<typeof localRecognitionSchema>;
 	sourceProvenance: z.ZodNullable<typeof provenanceSchema>;
 	accountSections: z.ZodArray<typeof accountSectionSchema>;
 	transactions: z.ZodArray<typeof transactionSchema>;
@@ -245,6 +248,7 @@ export const bankImportResultSchema: BankImportResultSchemaType = z
         contractVersion: z.literal('1'),
         status: z.enum(['complete', 'partial', 'unsupported', 'failed']),
         adapter: selectedAdapter.nullable(),
+        localRecognition: localRecognitionSchema.optional(),
         sourceProvenance: provenanceSchema.nullable(),
         accountSections: z.array(accountSectionSchema).max(200),
         transactions: z.array(transactionSchema).max(BANK_IMPORT_LIMITS.rows),
@@ -279,8 +283,12 @@ export const bankImportResultSchema: BankImportResultSchemaType = z
     });
 
 function checkResultStatus(value: BankImportResult, ctx: z.RefinementCtx): void {
-    if ((value.status === 'complete' || value.status === 'partial') && (!value.adapter || !value.sourceProvenance || !value.accountSections.length)) {
-        ctx.addIssue({ code: 'custom', message: 'Parsed results need adapter, source and account provenance.' });
+    const parser: BankImportResult['adapter'] | BankImportResult['localRecognition'] = value.adapter ?? value.localRecognition;
+    if ((value.status === 'complete' || value.status === 'partial') && (!parser || !value.sourceProvenance || !value.accountSections.length)) {
+        ctx.addIssue({ code: 'custom', message: 'Parsed results need parser, source and account provenance.' });
+    }
+    if (value.adapter && value.localRecognition) {
+        ctx.addIssue({ code: 'custom', message: 'Results must identify a single statement parser.' });
     }
     if (value.status === 'complete' && (value.issues.length || value.unresolvedDrafts.length)) {
             ctx.addIssue({ code: 'custom', message: 'Complete results cannot hide issues or unresolved rows.' });

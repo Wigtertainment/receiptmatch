@@ -43,7 +43,7 @@ export function parseBankStatement(payload: unknown, adapters: readonly BankAdap
             }
         const adapter: BankAdapter = identified[0];
         const parsed: ZodSafeParseResult<BankImportResult> = bankImportResultSchema.safeParse(adapter.parse(input));
-        if (!parsed.success) {
+        if (!parsed.success || parsed.data.localRecognition) {
             return emptyImportResult(input, 'failed', importIssue('invalid-adapter-result', 'The selected adapter returned an invalid result.'));
         }
         const result: BankImportResult = parsed.data;

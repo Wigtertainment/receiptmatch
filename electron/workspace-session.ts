@@ -7,11 +7,11 @@ import type { ExtractionProgress } from "../src/shared/pdf-extraction.js";
 import type { StatementOverlap } from "../src/shared/statement-overlaps.js";
 import type { StoredSupportingDocument } from "../src/shared/workspace-documents.js";
 import type { DocumentFileResult, DocumentImportProgress } from "../src/shared/workspace-documents.js";
-import type { BankImportRunResult } from "../src/shared/workspace-import.js";
 import { isDeepStrictEqual } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
+import { basename } from 'node:path';
 import { ZodError, type ZodSafeParseResult } from 'zod';
-import type { DocumentSnapshot, DocumentSnapshotRequest, WorkspaceCommand, WorkspaceState } from '../src/shared/protocol.js';
+import type { DocumentSnapshot, DocumentSnapshotRequest, StatementFallbackState, WorkspaceCommand, WorkspaceState } from '../src/shared/protocol.js';
 import type { ReceiptAiChange, ReceiptAiDiscardRequest, ReceiptAiPreviewResult, ReceiptAiRequest, ReceiptAiResult } from '../src/shared/receipt-ai.js';
 import { importIssue, type TransactionCandidate, type UnresolvedDraft } from '../src/shared/bank-import.js';
 import { applyBankCorrections, bankCorrectionSchema, type BankCorrection } from '../src/shared/bank-corrections.js';
@@ -24,7 +24,7 @@ import { originalSourceExtensions, type OriginalAdoptionRequest, type OriginalAd
 import type { OriginalSource } from './original-preview.js';
 import { storedBankImportSchema, type StoredBankImport } from '../src/shared/workspace-import.js';
 import { createWorkspace, isSourceRelocationPath, loadWorkspace, newMetadata, saveWorkspace, validateSourceReplacements, type SavedWorkspace, type WorkspaceMetadata } from './store.js';
-import type { BankImportService } from './import/service.js';
+import type { BankImportAttempt, BankImportOptions, BankImportService, StatementFallback, StatementFallbackResult } from './import/service.js';
 import { readSourceSnapshot } from './import/source.js';
 import type { DocumentImportService } from './documents/service.js';
 import type { ReceiptAiSource } from './documents/nuextract-receipt.js';
@@ -87,6 +87,13 @@ function sameDocumentCorrection(previous: DocumentCorrectionValue, change: Docum
   return previous.kind === 'date' && previous.value === change.value;
 }
 
+type PendingStatementFallback = { stage: 'offer'; token: string; source: StatementFallback } | { stage: 'review'; token: string; record: StoredBankImport };
+type StatementAiCommand = Extract<WorkspaceCommand, { type: 'try-statement-ai' | 'confirm-statement-ai' | 'discard-statement-ai' }>;
+
+function isStatementAiCommand(command: WorkspaceCommand): command is StatementAiCommand {
+  return command.type === 'try-statement-ai' || command.type === 'confirm-statement-ai' || command.type === 'discard-statement-ai';
+}
+
 interface ReceiptAnalysisSource extends ReceiptAiSource {
   documentId: string;
   sourceId: string;
@@ -132,6 +139,7 @@ export class WorkspaceSession {
     plan: ReturnType<typeof prepareAdoption> } | null = null;
   private importController: AbortController | null = null;
   private statementImport: WorkspaceState['statementImport'] = null;
+  private pendingStatementFallback: PendingStatementFallback | null = null;
   private importOutcome: WorkspaceState['importOutcome'] = null;
   private documentImport: WorkspaceState['documentImport'] = null;
   private documentOutcome: WorkspaceState['documentOutcome'] = null;
@@ -143,7 +151,7 @@ export class WorkspaceSession {
 
   state(): WorkspaceState {
     const imports: BankImportSummary[] = this.effectiveImports.map((record: StoredBankImport): BankImportSummary => ({
-      id: record.id, filePath: record.filePath, bankId: record.result.adapter!.bankId,
+      id: record.id, filePath: record.filePath, bankId: record.result.adapter?.bankId ?? null,
       status: record.result.status === 'complete' ? 'complete' as const : 'partial' as const,
       transactions: record.result.transactions.length, drafts: record.result.unresolvedDrafts.length, issues: record.result.issues.length
     }));
@@ -164,6 +172,7 @@ export class WorkspaceSession {
       failed: record.files.filter((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): file is { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; } => file.status === 'failed').length, unsupported: record.files.filter((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): file is { status: "unsupported"; filePath: string; issues: ImportIssue[]; } => file.status === 'unsupported').length,
       directoryIssues: record.directoryIssues.length
     }));
+    const statementFallback: StatementFallbackState | undefined = this.statementFallbackState();
     return {
       workspace: this.metadata ? {
         id: this.metadata.id, loadRevision: this.loadRevision, matchRevision: this.matchRevision, name: this.metadata.name,
@@ -183,8 +192,18 @@ export class WorkspaceSession {
       } : null,
       busy: this.busy, error: this.error, ...(this.approvalIssue ? { approvalIssue: { ...this.approvalIssue } } : {}),
       statementImport: structuredClone(this.statementImport), importOutcome: structuredClone(this.importOutcome),
+      ...(statementFallback ? { statementFallback } : {}),
       documentImport: structuredClone(this.documentImport), documentOutcome: structuredClone(this.documentOutcome)
     };
+  }
+
+  private statementFallbackState(): StatementFallbackState | undefined {
+    const pending: PendingStatementFallback | null = this.pendingStatementFallback;
+    if (!pending) {
+      return undefined;
+    }
+    return pending.stage === 'offer' ? { stage: 'offer', token: pending.token, fileName: basename(pending.source.filePath) }
+      : { stage: 'review', token: pending.token, fileName: basename(pending.record.filePath), result: structuredClone(pending.record.result) };
   }
 
   bankImports(): StoredBankImport[] {
@@ -734,23 +753,28 @@ export class WorkspaceSession {
     this.importOutcome = { status: 'failed', importId: null, issues: [importIssue(code, detail)] };
   }
 
+  private statementProgress(controller: AbortController, workspaceId: string): Pick<BankImportOptions, 'signal' | 'onProgress'> {
+    return { signal: controller.signal, onProgress: (progress: ExtractionProgress): void => {
+      if (this.importController !== controller || controller.signal.aborted || this.metadata?.id !== workspaceId || !this.statementImport) {
+        return;
+      }
+      this.statementImport = { ...this.statementImport, progress: structuredClone(progress) };
+      this.publish();
+    } };
+  }
+
   private async importStatement(): Promise<void> {
     const controller: AbortController = this.importController!; const workspaceId: string = this.metadata!.id;
     if (!this.importService) {
       this.failedImport('import-unavailable', 'Statement import is not available.'); return;
     }
-    const result: BankImportRunResult = await this.importService.run({
-      existing: this.bankImports(), existingSources: this.sources(), signal: controller.signal,
-      onProgress: (progress: ExtractionProgress): void => {
-        if (this.importController !== controller || controller.signal.aborted || this.metadata?.id !== workspaceId || !this.statementImport) {
-          return;
-        }
-        this.statementImport = { cancelling: false, progress: structuredClone(progress) }; this.publish();
-      }
+    const result: BankImportAttempt = await this.importService.run({
+      existing: this.bankImports(), existingSources: this.sources(), ...this.statementProgress(controller, workspaceId)
     });
     if (controller.signal.aborted || this.metadata?.id !== workspaceId || result.status === 'cancelled') {
       this.importOutcome = { status: 'cancelled', importId: null, issues: [] }; return;
     }
+    this.pendingStatementFallback = null;
     if (result.status === 'imported') {
       this.retainStatementImport(result.record, workspaceId);
     } else if (result.status === 'skipped') {
@@ -765,8 +789,56 @@ export class WorkspaceSession {
       }
       this.importOutcome = { status: 'skipped', importId: result.importId, issues: [] };
     } else {
+      if (result.status === 'unsupported' && 'fallback' in result) {
+        this.pendingStatementFallback = { stage: 'offer', token: randomUUID(), source: result.fallback };
+      }
       this.importOutcome = { status: result.status, importId: null, issues: structuredClone(result.issues) };
     }
+  }
+
+  private async tryStatementAi(): Promise<void> {
+    const pending: PendingStatementFallback | null = this.pendingStatementFallback;
+    if (pending?.stage !== 'offer' || !this.metadata || !this.importController) {
+      return;
+    }
+    const controller: AbortController = this.importController;
+    const workspaceId: string = this.metadata.id;
+    const result: StatementFallbackResult = await pending.source.run(this.statementProgress(controller, workspaceId));
+    if (controller.signal.aborted || result.status === 'cancelled') {
+      this.importOutcome = { status: 'cancelled', importId: null, issues: [] }; return;
+    }
+    if (result.status !== 'proposed') {
+      this.importOutcome = { status: 'failed', importId: null, issues: structuredClone(result.issues) }; return;
+    }
+    const record: ZodSafeParseResult<StoredBankImport> = storedBankImportSchema.safeParse(result.record);
+    if (!record.success || !record.data.result.localRecognition || record.data.filePath !== pending.source.filePath) {
+      this.failedImport('invalid-import', 'The local statement proposal could not be validated.'); return;
+    }
+    this.pendingStatementFallback = { stage: 'review', token: randomUUID(), record: record.data };
+  }
+
+  private async confirmStatementAi(): Promise<void> {
+    const pending: PendingStatementFallback | null = this.pendingStatementFallback;
+    if (pending?.stage !== 'review' || !this.metadata) {
+      return;
+    }
+    this.pendingStatementFallback = null;
+    let fingerprint: string | undefined;
+    try {
+      const bytes: Uint8Array = await readSourceSnapshot(pending.record.filePath, ['.pdf']);
+      fingerprint = createHash('sha256').update(bytes).digest('hex');
+    } catch {
+      // A proposal can outlive the original path while the user reviews it.
+    }
+    if (!fingerprint || fingerprint !== pending.record.result.sourceProvenance?.sha256) {
+      this.failedImport('source-changed', 'The original PDF changed or is no longer available. Choose the file again to create a new proposal.'); return;
+    }
+    this.retainStatementImport(pending.record, this.metadata.id);
+  }
+
+  private discardStatementAi(): void {
+    this.pendingStatementFallback = null;
+    this.importOutcome = { status: 'cancelled', importId: null, issues: [] };
   }
 
   private retainStatementImport(imported: StoredBankImport, workspaceId: string): void {
@@ -1210,13 +1282,16 @@ export class WorkspaceSession {
     if (this.busy) {
       return { ...this.state(), error: 'Finish the current workspace action before starting another.' };
     }
+    if (isStatementAiCommand(command) && !this.statementAiCommandMatches(command)) {
+      return this.state();
+    }
     if (command.type === 'rename') {
       if (this.metadata) {
         this.metadata = { ...this.metadata, name: command.name };
       }
       this.error = null; this.approvalIssue = undefined; this.publish(); return this.state();
     }
-    if (command.type === 'import-statement' || command.type === 'import-documents') {
+    if (command.type === 'import-statement' || command.type === 'try-statement-ai' || command.type === 'import-documents') {
       if (!this.beginImport(command.type)) {
         return this.state();
       }
@@ -1230,7 +1305,7 @@ export class WorkspaceSession {
     } catch (error: unknown) {
       this.recordCommandError(command.type, error);
     } finally {
-      if (command.type === 'import-statement') {
+      if (command.type === 'import-statement' || command.type === 'try-statement-ai') {
         this.importController = null; this.statementImport = null;
       }
       if (command.type === 'import-documents') {
@@ -1239,6 +1314,11 @@ export class WorkspaceSession {
       this.busy = false; this.publish();
     }
     return this.state();
+  }
+
+  private statementAiCommandMatches(command: StatementAiCommand): boolean {
+    const pending: PendingStatementFallback | null = this.pendingStatementFallback;
+    return pending?.token === command.token && (command.type === 'discard-statement-ai' || pending.stage === (command.type === 'try-statement-ai' ? 'offer' : 'review'));
   }
 
   private cancelImport(): WorkspaceState {
@@ -1254,12 +1334,14 @@ export class WorkspaceSession {
     return this.state();
   }
 
-  private beginImport(type: 'import-statement' | 'import-documents'): boolean {
-    if (type === 'import-statement') {
+  private beginImport(type: 'import-statement' | 'try-statement-ai' | 'import-documents'): boolean {
+    if (type !== 'import-documents') {
       if (!this.metadata) {
         this.error = 'Create or open a workspace before importing a statement.'; this.publish(); return false;
       }
-      this.importController = new AbortController(); this.statementImport = { cancelling: false, progress: null }; this.importOutcome = null;
+      this.importController = new AbortController();
+      this.statementImport = { cancelling: false, progress: null, ...(type === 'try-statement-ai' ? { localAi: true as const } : {}) };
+      this.importOutcome = null;
     }
     if (type === 'import-documents') {
       if (!this.metadata) {
@@ -1280,6 +1362,9 @@ export class WorkspaceSession {
       case 'correct-bank-row': this.correctBankRow(command); break;
       case 'correct-document-field': this.correctDocumentField(command); break;
       case 'import-statement': return this.importStatement();
+      case 'try-statement-ai': return this.tryStatementAi();
+      case 'confirm-statement-ai': return this.confirmStatementAi();
+      case 'discard-statement-ai': this.discardStatementAi(); break;
       case 'import-documents': return this.importDocuments();
       case 'new': return this.newWorkspace();
       case 'open': return this.openWorkspace();
@@ -1300,6 +1385,7 @@ export class WorkspaceSession {
     this.documentCorrections.clear(); this.documentView = null;
     this.reviewApprovals.clear(); this.ignoredTransactions.clear(); this.duplicateDecisions.clear(); this.sourceRelocations.clear();
     this.sourceReplacements.clear(); this.archivedSourceReviews.clear(); this.pendingAnalysis = null;
+    this.pendingStatementFallback = null;
     this.importOutcome = null; this.documentOutcome = null; this.loadRevision++; this.matchRevision++;
   }
 
@@ -1325,11 +1411,12 @@ export class WorkspaceSession {
     this.documentCorrections = new Map(loaded.documentCorrections);
     this.restoreMatches(loaded);
     this.pendingAnalysis = null;
+    this.pendingStatementFallback = null;
     this.importOutcome = null; this.documentOutcome = null; this.loadRevision++; this.matchRevision++;
   }
 
   private recordCommandError(type: WorkspaceCommand['type'], error: unknown): void {
-    if (type === 'import-statement') {
+    if (type === 'import-statement' || type === 'try-statement-ai' || type === 'confirm-statement-ai') {
       if (this.importController?.signal.aborted) {
         this.importOutcome = { status: 'cancelled', importId: null, issues: [] };
       } else {

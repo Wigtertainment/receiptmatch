@@ -133,7 +133,7 @@ export class NuExtractSettings {
         return { executable, gpuDevice, model: path.join(directory, NUEXTRACT_ASSETS[0].file), projector: path.join(directory, NUEXTRACT_ASSETS[1].file) };
     }
 
-    async receiptRuntimeFiles(): Promise<NuExtractRuntimeFiles | undefined> {
+    async runtimeFiles(): Promise<NuExtractRuntimeFiles | undefined> {
         const [directory, preferred, executable]: [string | undefined, NuExtractDevice, string | undefined] = await Promise.all([
             this.installedDirectory(), this.readDevice(), vulkanRuntimeExecutable(this.root)
         ]);

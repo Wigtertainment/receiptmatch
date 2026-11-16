@@ -88,7 +88,7 @@ test('exports copies and the saved reconciliation CSV and shows mixed outcomes a
 		new Map([[first.transactionId, approved.id], [second.transactionId, missing.id]]));
 	const database: Database.Database = new Database(workspacePath);
 	try {
-		database.exec('DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; PRAGMA user_version = 7;');
+		database.exec('DROP TABLE receipt_analysis_versions; DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; PRAGMA user_version = 7;');
 	} finally {
 		database.close();
 	}

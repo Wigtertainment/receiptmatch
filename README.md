@@ -35,6 +35,8 @@ ReceiptMatch reads embedded PDF text directly and uses built-in Standard OCR for
 
 To compare a receipt with an AI analysis, open **Settings → Document recognition** and download **NuExtract3**. After importing a receipt, use **Analyze with NuExtract3** to review the proposal before applying it. ReceiptMatch applies only changes it can verify against the original. Analysis runs locally on your CPU. On Windows, you can also use a compatible Vulkan GPU. CPU processing can take several minutes per document.
 
+If ReceiptMatch cannot identify a bank statement's layout, you can try NuExtract3. Review the proposed bookings and their source evidence before confirming the import.
+
 ## How it works
 
 1. **Add your statement and receipts.** Create a workspace and open **Sources**. Use **Import statement** for your bank PDF and **Choose folder** for receipts and invoices.

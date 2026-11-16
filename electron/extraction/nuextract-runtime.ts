@@ -16,8 +16,9 @@ export interface NuExtractRuntimeFiles {
 
 export interface NuExtractRequest {
 	images: readonly Uint8Array[];
-	template: Record<string, string>;
+	template: Readonly<Record<string, unknown>>;
 	instructions: string;
+	maxTokens?: number;
 }
 
 type RuntimeProcess = ChildProcessByStdio<null, Readable, Readable>;
@@ -171,6 +172,10 @@ function requestLocal(port: number, endpoint: RuntimeEndpoint, key: string, sign
 
 function requestBody(input: NuExtractRequest): string {
 	const template: string = JSON.stringify(input.template);
+	const maxTokens: number = input.maxTokens ?? 512;
+	if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 4096) {
+		throw new Error("NuExtract3 exceeded its local generation limit.");
+	}
 	if (!input.images.length || input.images.length > maxImages || Buffer.byteLength(template) > maxTemplateBytes || Buffer.byteLength(input.instructions) > maxTemplateBytes) {
 		throw new Error("NuExtract3 exceeded its local request limit.");
 	}
@@ -193,13 +198,13 @@ function requestBody(input: NuExtractRequest): string {
 		messages: [{ role: "user", content }],
 		temperature: 0,
 		seed: 42,
-		max_tokens: 512,
+		max_tokens: maxTokens,
 		cache_prompt: false,
 		chat_template_kwargs: { template, instructions: input.instructions, enable_thinking: false },
 	});
 }
 
-function extractionResult(response: unknown, template: Record<string, string>): Record<string, unknown> {
+function extractionResult(response: unknown, template: NuExtractRequest["template"]): Record<string, unknown> {
 	const choice: unknown = record(response) && Array.isArray(response.choices) ? response.choices[0] : undefined;
 	if (!record(choice) || choice.finish_reason !== "stop" || !record(choice.message) || typeof choice.message.content !== "string") {
 		throw new Error("NuExtract3 returned an incomplete extraction.");
