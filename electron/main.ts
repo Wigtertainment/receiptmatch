@@ -33,7 +33,8 @@ import { localOcrRequestSchema } from '../src/shared/local-ocr-settings.js';
 import type { ZodSafeParseResult } from 'zod';
 import type { ExtractionOptions } from './extraction/host.js';
 import { reanalyzeNuExtractReceipt, type ReceiptAiSource } from './documents/nuextract-receipt.js';
-import { receiptAiDiscardRequestSchema, receiptAiRequestSchema, type ReceiptAiPreviewResult, type ReceiptAiRequest, type ReceiptAiResult } from '../src/shared/receipt-ai.js';
+import { receiptAiAcceptRequestSchema, receiptAiDiscardRequestSchema, receiptAiRequestSchema,
+  type ReceiptAiPreviewResult, type ReceiptAiRequest, type ReceiptAiResult } from '../src/shared/receipt-ai.js';
 
 // Load the same module instance as other main-process consumers of the extraction API.
 const { extractPdfBytes, extractDocumentBytes, renderDocumentImages }: Pick<typeof import("./extraction/host.js"), "extractPdfBytes" | "extractDocumentBytes" | "renderDocumentImages"> = createRequire(__filename)('./extraction-host.cjs') as Pick<typeof import('./extraction/host.js'), 'extractPdfBytes' | 'extractDocumentBytes' | 'renderDocumentImages'>;
@@ -337,7 +338,7 @@ async function launch(): Promise<void> {
     if (!authorized(event) || closeRequested || payload.length !== 1) {
       return Promise.resolve({ status: 'failed', error: 'Receipt analysis confirmation denied.' });
     }
-    const request: ReturnType<typeof originalAdoptionRequestSchema.safeParse> = originalAdoptionRequestSchema.safeParse(payload[0]);
+    const request: ReturnType<typeof receiptAiAcceptRequestSchema.safeParse> = receiptAiAcceptRequestSchema.safeParse(payload[0]);
     return request.success ? workspace.acceptReceiptAnalysis(request.data) : Promise.resolve({ status: 'failed', error: 'Invalid receipt analysis confirmation.' });
   });
 

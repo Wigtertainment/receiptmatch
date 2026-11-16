@@ -12,7 +12,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { ZodError, type ZodSafeParseResult } from 'zod';
 import type { DocumentSnapshot, DocumentSnapshotRequest, StatementFallbackState, WorkspaceCommand, WorkspaceState } from '../src/shared/protocol.js';
-import type { ReceiptAiChange, ReceiptAiDiscardRequest, ReceiptAiPreviewResult, ReceiptAiRequest, ReceiptAiResult } from '../src/shared/receipt-ai.js';
+import type { ReceiptAiAcceptRequest, ReceiptAiChange, ReceiptAiDiscardRequest, ReceiptAiPreviewResult, ReceiptAiProposal, ReceiptAiRequest, ReceiptAiResult } from '../src/shared/receipt-ai.js';
 import { importIssue, type TransactionCandidate, type UnresolvedDraft } from '../src/shared/bank-import.js';
 import { applyBankCorrections, bankCorrectionSchema, type BankCorrection } from '../src/shared/bank-corrections.js';
 import { documentCorrectionKey, documentCorrectionSchema, type DocumentCorrection, type DocumentCorrectionValue } from '../src/shared/document-corrections.js';
@@ -27,7 +27,7 @@ import { createWorkspace, isSourceRelocationPath, loadWorkspace, newMetadata, sa
 import type { BankImportAttempt, BankImportOptions, BankImportService, StatementFallback, StatementFallbackResult } from './import/service.js';
 import { readSourceSnapshot } from './import/source.js';
 import type { DocumentImportService } from './documents/service.js';
-import type { ReceiptAiSource } from './documents/nuextract-receipt.js';
+import { applySelectedReceiptAi, type ReceiptAiSource } from './documents/nuextract-receipt.js';
 import type { ExtractionOptions } from './extraction/host.js';
 import { prepareReceiptAnalysisVersion, type ReceiptVersionPlan } from './documents/prepare-analysis-version.js';
 import type { ReceiptAnalysisVersion } from './documents/analysis-history.js';
@@ -104,6 +104,21 @@ interface PendingReceiptAnalysis {
   matchRevision: number;
   source: Omit<ReceiptAnalysisSource, 'previous'>;
   plan: ReceiptVersionPlan;
+  proposals?: ReceiptAiProposal[];
+}
+
+function preserveReceiptCorrection(proposal: ReceiptAiProposal, document: SupportingDocument, corrections: readonly DocumentCorrection[]): ReceiptAiProposal {
+  if (proposal.field === 'reference' || proposal.unavailable || !corrections.length) {
+    return proposal;
+  }
+  const section: DocumentSection | undefined = document.sections.find((item: DocumentSection): boolean => item.sectionId === proposal.sectionId);
+  const kind: 'date' | 'amount' = proposal.field === 'issue-date' ? 'date' : 'amount';
+  const fieldIds: string[] = kind === 'date'
+    ? (section?.dates ?? []).filter((item: DocumentSection['dates'][number]): boolean => item.role === 'issue').map((item: DocumentSection['dates'][number]): string => item.id)
+    : (section?.amounts ?? []).filter((item: DocumentSection['amounts'][number]): boolean => item.role === 'billed-total').map((item: DocumentSection['amounts'][number]): string => item.id);
+  const maintained: boolean = corrections.some((correction: DocumentCorrection): boolean =>
+    correction.sectionId === proposal.sectionId && correction.change.kind === kind && (correction.fieldId === null || fieldIds.includes(correction.fieldId)));
+  return maintained ? { ...proposal, unavailable: 'This field has a manual correction. Edit it in the receipt details.' } : proposal;
 }
 
 export interface ReceiptAiDependencies {
@@ -362,7 +377,7 @@ export class WorkspaceSession {
     if (!this.metadata || request.loadRevision !== this.loadRevision) {
       return null;
     }
-    const run: StoredDocumentImport | undefined = this.documents().analyzed.find((record: StoredDocumentImport): boolean => record.id === request.reportId);
+    const run: StoredDocumentImport | undefined = this.documents().correctionBase.find((record: StoredDocumentImport): boolean => record.id === request.reportId);
     const file: DocumentFileResult | undefined = run?.files[request.fileIndex];
     if (file?.status === 'imported') {
       const { filePath, format, result }: StoredSupportingDocument = file.record;
@@ -411,12 +426,25 @@ export class WorkspaceSession {
   }
 
   private prepareReceiptAnalysis(request: ReceiptAiRequest, source: ReceiptAnalysisSource, result: Extract<ReceiptAiResult, { status: 'ready' }>): ReceiptAiPreviewResult {
-    const current: Extract<AnalyzedSource, { kind: 'document' }> | null = supportingDocumentSource(this.documents().analyzed, source.documentId);
+    const records: StoredDocumentImport[] = result.proposals ? this.documents().correctionBase : this.documents().analyzed;
+    const current: Extract<AnalyzedSource, { kind: 'document' }> | null = supportingDocumentSource(records, source.documentId);
     if (!current) {
       return { status: 'failed', error: 'The original receipt is no longer available. Analyze it again.' };
     }
     const corrections: DocumentCorrection[] = [...this.documentCorrections.values()].filter((edit: DocumentCorrection): boolean => edit.documentId === source.documentId);
-    const plan: ReceiptVersionPlan = prepareReceiptAnalysisVersion(current.record, result.analysis, corrections);
+    const plan: ReceiptVersionPlan = prepareReceiptAnalysisVersion(current.record, result.analysis, corrections, result.proposals !== undefined);
+    if (result.proposals) {
+      const proposals: ReceiptAiProposal[] = result.proposals.map((proposal: ReceiptAiProposal): ReceiptAiProposal => preserveReceiptCorrection(proposal, current.record.result, corrections));
+      const hasSelectable: boolean = proposals.some((proposal: ReceiptAiProposal): boolean => !proposal.unavailable);
+      const conflicts: string[] = hasSelectable && [...this.currentApprovals().values()].some((approval: MatchApproval): boolean => approval.documentId === source.documentId)
+        ? ['Changing this receipt may send approved matches back for review.'] : [];
+      const blockingConflict: string | undefined = hasSelectable ? undefined : 'There are no suggestions available to apply.';
+      const token: string = randomUUID();
+      const { documentId, filePath, format, sha256, sourceId }: ReceiptAnalysisSource = source;
+      this.pendingReceiptAnalysis = { token, request, source: { documentId, filePath, format, sha256, sourceId },
+        plan: { ...plan, conflicts, blockingConflict }, proposals, matchRevision: this.matchRevision };
+      return structuredClone({ ...result, token, proposals, analysis: plan.analysis, conflicts, blockingConflict });
+    }
     const conflicts: string[] = [...plan.conflicts];
     if (plan.invalidatesApproval && [...this.currentApprovals().values()].some((approval: MatchApproval): boolean => approval.documentId === source.documentId)) {
       conflicts.push('Approved matches for this receipt will need review again.');
@@ -443,7 +471,7 @@ export class WorkspaceSession {
     }
   }
 
-  async acceptReceiptAnalysis(request: OriginalAdoptionRequest): Promise<OriginalAdoptionResult> {
+  async acceptReceiptAnalysis(request: ReceiptAiAcceptRequest): Promise<OriginalAdoptionResult> {
     const pending: PendingReceiptAnalysis | null = this.pendingReceiptAnalysis;
     if (this.busy || pending?.token !== request.token || request.loadRevision !== this.loadRevision || pending.matchRevision !== this.matchRevision) {
       return { status: 'failed', error: 'The receipt preview is no longer current. Analyze the receipt again.' };
@@ -461,7 +489,11 @@ export class WorkspaceSession {
         this.pendingReceiptAnalysis = null;
         return { status: 'failed', error: 'The original receipt changed or is no longer available. Analyze it again.' };
       }
-      this.applyReceiptAnalysis(pending);
+      const plan: ReceiptVersionPlan = pending.proposals ? this.selectedReceiptPlan(pending, request) : pending.plan;
+      if (plan.blockingConflict) {
+        return { status: 'failed', error: plan.blockingConflict };
+      }
+      this.applyReceiptAnalysis({ ...pending, plan });
       this.pendingReceiptAnalysis = null;
       return { status: 'adopted' };
     } catch (error: unknown) {
@@ -470,6 +502,19 @@ export class WorkspaceSession {
       this.busy = false;
       this.publish();
     }
+  }
+
+  private selectedReceiptPlan(pending: PendingReceiptAnalysis, request: ReceiptAiAcceptRequest): ReceiptVersionPlan {
+    if (!request.selectedFields?.length) {
+      throw new Error('Select at least one suggestion to apply.');
+    }
+    const current: Extract<AnalyzedSource, { kind: 'document' }> | null = supportingDocumentSource(this.documents().correctionBase, pending.source.documentId);
+    if (!current) {
+      throw new Error('The original receipt is no longer available. Analyze it again.');
+    }
+    const proposed: SupportingDocument = applySelectedReceiptAi(current.record.result, pending.proposals!, request.selectedFields, request.currency);
+    const corrections: DocumentCorrection[] = [...this.documentCorrections.values()].filter((edit: DocumentCorrection): boolean => edit.documentId === pending.source.documentId);
+    return prepareReceiptAnalysisVersion(current.record, proposed, corrections, true);
   }
 
   private async receiptAnalysisStillCurrent(pending: PendingReceiptAnalysis): Promise<boolean> {

@@ -717,6 +717,9 @@ function referencesOnLine(line: string): { label: string; value: string; }[] {
 }
 
 export function hasFullDocumentReference(field: DocumentSection['references'][number], value: string): boolean {
+	if (field.confirmedByUser) {
+		return field.candidates.includes(value);
+	}
 	const lines: { label: string; value: string; }[] = field.evidence.flatMap((item: SourceEvidence): { label: string; value: string; }[] => {
 		const receipt: RegExpExecArray | null = field.role === 'receipt'
 			? /^(belegnummer|check\s*(?:number|no\.?|#)|chk)(?:\s*[:#]\s*|\s+|$)(.*)$/i.exec(item.rawText.trim())

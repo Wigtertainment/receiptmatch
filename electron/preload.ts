@@ -6,7 +6,7 @@ import type { StoredDocumentImport } from '../src/shared/workspace-documents.js'
 import type { MatchDetails, MatchSummary } from '../src/shared/workspace-matching.js';
 import type { OriginalAdoptionRequest, OriginalAdoptionResult, OriginalAnalysisResult, OriginalPreviewRequest, OriginalPreviewResult, OriginalRelinkResult } from '../src/shared/original-preview.js';
 import type { LocalOcrRequest, LocalOcrStatus } from '../src/shared/local-ocr-settings.js';
-import type { ReceiptAiDiscardRequest, ReceiptAiPreviewResult, ReceiptAiRequest } from '../src/shared/receipt-ai.js';
+import type { ReceiptAiAcceptRequest, ReceiptAiDiscardRequest, ReceiptAiPreviewResult, ReceiptAiRequest } from '../src/shared/receipt-ai.js';
 
 const bridge: WorkspaceBridge = Object.freeze({
   command: (command: WorkspaceCommand): Promise<WorkspaceState> => ipcRenderer.invoke('workspace:command', command) as Promise<WorkspaceState>,
@@ -19,7 +19,7 @@ const bridge: WorkspaceBridge = Object.freeze({
   relinkOriginal: (request: OriginalPreviewRequest): Promise<OriginalRelinkResult> => ipcRenderer.invoke('workspace:relink-original', request) as Promise<OriginalRelinkResult>,
   analyzeOriginal: (request: OriginalPreviewRequest): Promise<OriginalAnalysisResult> => ipcRenderer.invoke('workspace:analyze-original', request) as Promise<OriginalAnalysisResult>,
   reanalyzeReceipt: (request: ReceiptAiRequest): Promise<ReceiptAiPreviewResult> => ipcRenderer.invoke('workspace:reanalyze-receipt', request) as Promise<ReceiptAiPreviewResult>,
-  acceptReceiptAnalysis: (request: OriginalAdoptionRequest): Promise<OriginalAdoptionResult> => ipcRenderer.invoke('workspace:accept-receipt-analysis', request) as Promise<OriginalAdoptionResult>,
+  acceptReceiptAnalysis: (request: ReceiptAiAcceptRequest): Promise<OriginalAdoptionResult> => ipcRenderer.invoke('workspace:accept-receipt-analysis', request) as Promise<OriginalAdoptionResult>,
   discardReceiptAnalysis: (request: ReceiptAiDiscardRequest): Promise<void> => ipcRenderer.invoke('workspace:discard-receipt-analysis', request) as Promise<void>,
   acceptOriginalAnalysis: (request: OriginalAdoptionRequest): Promise<OriginalAdoptionResult> => ipcRenderer.invoke('workspace:accept-original-analysis', request) as Promise<OriginalAdoptionResult>,
   exportSettings: (request: ExportSettingsRequest): Promise<string> => ipcRenderer.invoke('app:export-settings', request) as Promise<string>,

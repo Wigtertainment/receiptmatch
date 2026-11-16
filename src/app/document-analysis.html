@@ -100,6 +100,8 @@
 					{{ field.values.join(' / ') || 'No value found' }}
 					@if (field.correction?.corrected) {
 						<span class="source-status">Corrected</span>
+					} @else if (field.confirmedByUser) {
+						<span class="source-status">Confirmed by you</span>
 					}
 					@if (!field.correction?.corrected && field.values.length > 1) {
 						<span class="field-warning"> · Ambiguous</span>
@@ -110,10 +112,12 @@
 				@if (openDetails().has(field.id)) {
 					<div class="field-body">
 						<dl class="source-facts">
-							<div>
-								<dt>Printed label</dt>
-								<dd class="raw-text">{{ field.label }}</dd>
-							</div>
+							@if (!field.confirmedByUser || field.evidence.length) {
+								<div>
+									<dt>Printed label</dt>
+									<dd class="raw-text">{{ field.label }}</dd>
+								</div>
+							}
 							@if (field.originalValues && (field.correction?.corrected || field.originalValues.join(' / ') !== field.values.join(' / '))) {
 								<div>
 									<dt>Original values</dt>
@@ -156,8 +160,10 @@
 								}
 							</ul>
 						}
-						<h6>Source evidence</h6>
-						<ng-container [ngTemplateOutlet]="evidenceList" [ngTemplateOutletContext]="{ $implicit: field.evidence }" />
+						@if (!field.confirmedByUser || field.evidence.length) {
+							<h6>Source evidence</h6>
+							<ng-container [ngTemplateOutlet]="evidenceList" [ngTemplateOutletContext]="{ $implicit: field.evidence }" />
+						}
 					</div>
 				}
 			</details>

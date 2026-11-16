@@ -21,6 +21,7 @@ type EvidenceType = z.ZodArray<z.ZodObject<{
 }, z.core.$strict>>;
 const evidence: EvidenceType = z.array(evidenceSchema).max(256);
 const field: { id: z.ZodString; label: z.ZodString; evidence: typeof evidence; } = { id, label: text, evidence: evidence.min(1) };
+const userConfirmation: z.ZodOptional<z.ZodLiteral<true>> = z.literal(true).optional();
 const amount: z.ZodObject<{ coefficient: z.ZodString; scale: z.ZodNumber; currency: z.ZodNullable<z.ZodString>; }, z.core.$strict> = moneySchema.extend({ currency: moneySchema.shape.currency.nullable() });
 type AmountFieldType = z.ZodObject<{
 	role: z.ZodEnum<{
@@ -39,9 +40,12 @@ type AmountFieldType = z.ZodObject<{
 	id: z.ZodString;
 	label: z.ZodString;
 	evidence: typeof evidence;
+	confirmedByUser: typeof userConfirmation;
 }, z.core.$strict>;
 const amountField: AmountFieldType = z.strictObject({
 	...field,
+	evidence,
+	confirmedByUser: userConfirmation,
 	role: z.enum(['billed-total', 'balance-due', 'payment', 'refund-payment', 'credit-note-component', 'informational-fx', 'tax', 'subtotal', 'line-item', 'unknown']),
 	candidates: z.array(amount).max(8)
 });
@@ -59,9 +63,12 @@ type DateFieldType = z.ZodObject<{
 	id: z.ZodString;
 	label: z.ZodString;
 	evidence: typeof evidence;
+	confirmedByUser: typeof userConfirmation;
 }, z.core.$strict>;
 const dateField: DateFieldType = z.strictObject({
 	...field,
+	evidence,
+	confirmedByUser: userConfirmation,
 	role: z.enum(['issue', 'payment', 'due', 'service-period', 'service-start', 'service-end', 'unknown']),
 	candidates: z.array(calendarDateSchema).max(8)
 });
@@ -82,9 +89,12 @@ type ReferenceFieldType = z.ZodObject<{
 	id: z.ZodString;
 	label: z.ZodString;
 	evidence: typeof evidence;
+	confirmedByUser: typeof userConfirmation;
 }, z.core.$strict>;
 const referenceField: ReferenceFieldType = z.strictObject({
 	...field,
+	evidence,
+	confirmedByUser: userConfirmation,
 	role: z.enum(['invoice', 'receipt', 'payment', 'order', 'customer', 'account', 'table', 'related-invoice', 'unknown']),
 	candidates: z.array(text).max(8)
 });
@@ -293,6 +303,13 @@ function checkDocumentField(candidate: DocumentField, item: DocumentSection, iss
 	}
 	fieldIds.set(candidate.id, item.sectionId);
 	allEvidence.push({ values: candidate.evidence, pages: item.pageIds });
+	if ('confirmedByUser' in candidate && candidate.confirmedByUser) {
+		if (candidate.evidence.length || candidate.candidates.length !== 1) {
+			invalid('A user-confirmed field needs one value and cannot claim extracted source evidence.');
+		}
+	} else if (!candidate.evidence.length) {
+		invalid('A recognized field needs source evidence.');
+	}
 	if (new Set(candidate.candidates.map((value: string | { coefficient: string; scale: number; currency: string | null; }): string => JSON.stringify(value))).size !== candidate.candidates.length) {
 		invalid('A field cannot repeat the same candidate.');
 	}

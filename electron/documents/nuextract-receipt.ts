@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { calendarDateSchema, type BankImportInput, type SourceEvidence } from '../../src/shared/bank-import.js';
 import { originalSourceExtensions } from '../../src/shared/original-preview.js';
-import { NUEXTRACT_RECEIPT_VERSION, type ReceiptAiChange, type ReceiptAiResult } from '../../src/shared/receipt-ai.js';
+import { NUEXTRACT_RECEIPT_VERSION, type ReceiptAiChange, type ReceiptAiField, type ReceiptAiProposal, type ReceiptAiResult } from '../../src/shared/receipt-ai.js';
 import { supportingDocumentSchema, type DocumentSection, type SupportingDocument } from '../../src/shared/supporting-document.js';
 import type { DocumentFormat } from '../../src/shared/workspace-documents.js';
 import type { DocumentImagesResult, ExtractionOptions } from '../extraction/host.js';
@@ -41,7 +41,10 @@ const instructions: string = "Extract only values printed on the invoice or rece
 
 type Line = ReturnType<typeof positionedLines>[number];
 type ReferenceField = DocumentSection['references'][number];
-type CandidateAmount = DocumentSection['amounts'][number]['candidates'][number];
+type DateField = DocumentSection['dates'][number];
+type AmountField = DocumentSection['amounts'][number];
+type CurrencyField = DocumentSection['currencies'][number];
+type CandidateAmount = AmountField['candidates'][number];
 type DecimalAmount = Pick<CandidateAmount, 'coefficient' | 'scale'>;
 type FieldState = 'verified' | 'unverified' | 'absent';
 interface AnchoredValue<T> { label: string; value: T; evidence: SourceEvidence[] }
@@ -245,17 +248,163 @@ function unrecognized(label: string, value: unknown): ReceiptAiChange[] {
     return [{ label, before: null, after: display || 'Invalid model value', unrecognized: true }];
 }
 
-function reviewFields(analysis: SupportingDocument, input: BankImportInput, result: Record<string, unknown>): ReceiptAiChange[] {
+const modelFields: readonly { field: ReceiptAiField; label: string; key: string }[] = [
+    { field: 'reference', label: 'Invoice or receipt number', key: 'invoice_or_receipt_number' },
+    { field: 'issue-date', label: 'Issue date', key: 'issue_date' },
+    { field: 'billed-total', label: 'Billed total', key: 'gross_total' }
+];
+
+function isDocumentReference(field: ReferenceField): boolean {
+    return field.role === 'invoice' || field.role === 'receipt';
+}
+
+function amountText({ coefficient, scale, currency }: CandidateAmount): string {
+    const sign: string = coefficient.startsWith('-') ? '-' : '';
+    const digits: string = coefficient.slice(sign.length).padStart(scale + 1, '0');
+    const value: string = scale ? digits.slice(0, -scale) + '.' + digits.slice(-scale) : digits;
+    return sign + value + (currency ? ' ' + currency : '');
+}
+
+function currentField(section: DocumentSection | undefined, field: ReceiptAiField): string | null {
+    if (!section) {
+        return null;
+    }
+    const values: string[] = field === 'reference' ? section.references.filter(isDocumentReference).flatMap((item: ReferenceField): string[] => item.candidates)
+        : field === 'issue-date' ? section.dates.filter((item: DateField): boolean => item.role === 'issue').flatMap((item: DateField): string[] => item.candidates)
+            : section.amounts.filter((item: AmountField): boolean => item.role === 'billed-total').flatMap((item: AmountField): string[] => item.candidates.map(amountText));
+    return [...new Set(values)].join(' / ') || null;
+}
+
+function currencyForTotal(section: DocumentSection): string | undefined {
+    const values: Set<string> = new Set(section.currencies.filter((item: CurrencyField): boolean => item.role === 'settlement').flatMap((item: CurrencyField): string[] => item.candidates));
+    for (const amount of section.amounts.filter((item: AmountField): boolean => item.role === 'billed-total').flatMap((item: AmountField): CandidateAmount[] => item.candidates)) {
+        if (amount.currency) {
+            values.add(amount.currency);
+        }
+    }
+    return values.size === 1 ? [...values][0] : undefined;
+}
+
+function proposalValue(field: ReceiptAiField, raw: unknown): string | undefined {
+    if (field === 'billed-total') {
+        return decimalAmount(raw) ? String(raw).trim() : undefined;
+    }
+    if (field === 'issue-date') {
+        return calendarDateSchema.safeParse(raw).data;
+    }
+    return typeof raw === 'string' && raw.trim() && raw.length <= 160 ? raw.trim() : undefined;
+}
+
+function verifyField(analysis: SupportingDocument, section: DocumentSection, lines: Line[], field: ReceiptAiField, value: unknown): boolean {
+    switch (field) {
+        case 'reference': return verifyReference(analysis, section, lines, value);
+        case 'issue-date': return verifyDate(analysis, section, lines, value);
+        case 'billed-total': return verifyTotal(analysis, section, lines, value) &&
+            !section.amounts.some((item: AmountField): boolean => item.role === 'billed-total' &&
+                item.candidates.some((amount: CandidateAmount): boolean => amount.currency === null));
+    }
+}
+
+function reviewFields(analysis: SupportingDocument, input: BankImportInput, result: Record<string, unknown>): {
+    pending: ReceiptAiChange[];
+    proposals: ReceiptAiProposal[];
+} {
     const section: DocumentSection | undefined = primarySection(analysis);
     const lines: Line[] = section ? sectionLines(input, analysis, section) : [];
-    const reference: unknown = result.invoice_or_receipt_number;
-    const date: unknown = result.issue_date;
-    const amount: unknown = result.gross_total;
-    return [
-        ...(section && verifyReference(analysis, section, lines, reference) ? [] : unrecognized('Invoice or receipt number', reference)),
-        ...(section && verifyDate(analysis, section, lines, date) ? [] : unrecognized('Issue date', date)),
-        ...(section && verifyTotal(analysis, section, lines, amount) ? [] : unrecognized('Billed total', amount))
-    ];
+    const pending: ReceiptAiChange[] = [];
+    const proposals: ReceiptAiProposal[] = [];
+    for (const { field, label, key } of modelFields) {
+        const raw: unknown = result[key];
+        const before: string | null = currentField(section, field);
+        const verified: boolean = section ? verifyField(analysis, section, lines, field, raw) : false;
+        if (!verified) {
+            pending.push(...unrecognized(label, raw));
+        }
+        const value: string | undefined = proposalValue(field, raw);
+        if (value === undefined || (verified && currentField(section, field) === before)) {
+            continue;
+        }
+        const proposal: ReceiptAiProposal = { field, label, before, value, verified, sectionId: section?.sectionId };
+        if (!section) {
+            proposal.unavailable = 'No single invoice or receipt section could be identified.';
+        } else if (field === 'billed-total') {
+            proposal.currency = currencyForTotal(section);
+            proposal.needsCurrency = !proposal.currency;
+        }
+        proposals.push(proposal);
+    }
+    return { pending, proposals };
+}
+
+function replaceConfirmed<T extends { id: string }>(analysis: SupportingDocument, fields: T[], matches: (field: T) => boolean, replacement: T): T[] {
+    const replaced: Set<string> = new Set(fields.filter(matches).map((field: T): string => field.id));
+    analysis.issues = analysis.issues.filter((issue: SupportingDocument['issues'][number]): boolean => issue.fieldId === null || !replaced.has(issue.fieldId));
+    return replaced.size ? fields.flatMap((field: T): T[] => field.id === replacement.id ? [replacement] : replaced.has(field.id) ? [] : [field])
+        : [...fields, replacement];
+}
+
+function confirmField(analysis: SupportingDocument, section: DocumentSection, proposal: ReceiptAiProposal, currency?: string): void {
+    const { field, label, value }: ReceiptAiProposal = proposal;
+    switch (field) {
+        case 'reference': {
+            const existing: ReferenceField | undefined = section.references.find(isDocumentReference);
+            section.references = replaceConfirmed(analysis, section.references, isDocumentReference, { id: existing?.id ?? randomUUID(),
+                role: existing?.role ?? (section.kind === 'receipt' ? 'receipt' : 'invoice'), label: existing?.label ?? label,
+                candidates: [value], evidence: [], confirmedByUser: true });
+            removeMissing(analysis, section, 'document-reference');
+            break;
+        }
+        case 'issue-date': {
+            const existing: DateField | undefined = section.dates.find((item: DateField): boolean => item.role === 'issue');
+            section.dates = replaceConfirmed(analysis, section.dates, (item: DateField): boolean => item.role === 'issue', { id: existing?.id ?? randomUUID(),
+                role: 'issue', label: existing?.label ?? label, candidates: [value], evidence: [], confirmedByUser: true });
+            removeMissing(analysis, section, 'issue');
+            break;
+        }
+        case 'billed-total': {
+            const existing: AmountField | undefined = section.amounts.find((item: AmountField): boolean => item.role === 'billed-total');
+            const amount: DecimalAmount | undefined = decimalAmount(value);
+            const confirmedCurrency: string | undefined = proposal.currency ?? currency;
+            if (!amount || !confirmedCurrency || !/^[A-Z]{3}$/.test(confirmedCurrency)) {
+                throw new Error('Enter the three-letter currency printed on the receipt before applying the total.');
+            }
+            section.amounts = replaceConfirmed(analysis, section.amounts, (item: AmountField): boolean => item.role === 'billed-total', { id: existing?.id ?? randomUUID(),
+                role: 'billed-total', label: existing?.label ?? label, candidates: [{ ...amount, currency: confirmedCurrency }], evidence: [], confirmedByUser: true });
+            removeMissing(analysis, section, 'billed-total');
+            break;
+        }
+    }
+}
+
+function finalizeAnalysis(analysis: SupportingDocument, input: BankImportInput): SupportingDocument {
+    if (!analysis.issues.length && !input.issues.length && analysis.sections.length) {
+        analysis.status = 'complete';
+    }
+    input.extraction = { runId: randomUUID(), version: NUEXTRACT_RECEIPT_VERSION };
+    return supportingDocumentSchema.parse(analysis);
+}
+
+export function applySelectedReceiptAi(previous: SupportingDocument, proposals: ReceiptAiProposal[], selection: readonly ReceiptAiField[],
+    currency?: string): SupportingDocument {
+    const analysis: SupportingDocument = structuredClone(previous);
+    const input: BankImportInput | null = analysis.input;
+    const section: DocumentSection | undefined = primarySection(analysis);
+    if (!input || !section || !selection.length) {
+        throw new Error('Select at least one suggestion for an identified receipt.');
+    }
+    const lines: Line[] = sectionLines(input, analysis, section);
+    for (const field of selection) {
+        const proposal: ReceiptAiProposal | undefined = proposals.find((item: ReceiptAiProposal): boolean => item.field === field);
+        if (!proposal || proposal.unavailable) {
+            throw new Error('A selected suggestion is no longer available. Analyze the receipt again.');
+        }
+        if (!proposal.verified) {
+            confirmField(analysis, section, proposal, currency);
+        } else if (!verifyField(analysis, section, lines, field, proposal.value)) {
+            throw new Error('A selected suggestion could no longer be verified. Analyze the receipt again.');
+        }
+    }
+    return finalizeAnalysis(analysis, input);
 }
 
 export function reviewNuExtractResult(previous: SupportingDocument, result: Record<string, unknown>): Extract<ReceiptAiResult, { status: 'ready' }> {
@@ -264,14 +413,10 @@ export function reviewNuExtractResult(previous: SupportingDocument, result: Reco
     if (!input || analysis.status === 'failed') {
         throw new Error('NuExtract3 needs the original receipt analysis for source verification.');
     }
-    const pending: ReceiptAiChange[] = reviewFields(analysis, input, result);
-    if (!analysis.issues.length && !input.issues.length && analysis.sections.length) {
-        analysis.status = 'complete';
-    }
-    input.extraction = { runId: randomUUID(), version: NUEXTRACT_RECEIPT_VERSION };
-    const verified: SupportingDocument = supportingDocumentSchema.parse(analysis);
+    const { pending, proposals }: ReturnType<typeof reviewFields> = reviewFields(analysis, input, result);
+    const verified: SupportingDocument = finalizeAnalysis(analysis, input);
     const { changes, conflicts }: ReturnType<typeof compareDocuments> = compareDocuments({ result: previous }, { result: verified });
-    return { status: 'ready', model: 'nuextract3', analysis: verified, changes: [...changes, ...pending], conflicts };
+    return { status: 'ready', model: 'nuextract3', analysis: verified, proposals, changes: [...changes, ...pending], conflicts };
 }
 
 function planSource(source: ReceiptAiSource): BankImportInput | undefined {
