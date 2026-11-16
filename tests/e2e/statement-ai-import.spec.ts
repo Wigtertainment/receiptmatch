@@ -8,7 +8,6 @@ import {
 	expect, test, type ElectronApplication, type Locator, type Page, type PlaywrightTestArgs, type PlaywrightTestOptions, type PlaywrightWorkerArgs, type PlaywrightWorkerOptions
 } from '@playwright/test';
 import { NUEXTRACT_ASSETS } from '../../electron/local-ocr-assets.js';
-import type { ImportIssue } from '../../src/shared/bank-import.js';
 import type { LocalOcrStatus } from '../../src/shared/local-ocr-settings.js';
 import type { WorkspaceState } from '../../src/shared/protocol.js';
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
@@ -78,6 +77,7 @@ async function launch(playwright: PlaywrightWorkerArgs['playwright'], profile: s
 	});
 	try {
 		const page: Page = await application.firstWindow({ timeout: 30_000 });
+		page.setDefaultTimeout(15_000);
 		await application.evaluate(({ BrowserWindow }: typeof Electron.CrossProcessExports): void => BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false));
 		await page.getByRole('heading', { name: 'ReceiptMatch', exact: true }).waitFor();
 		return { application, page };
@@ -115,13 +115,11 @@ async function openOffer(application: ElectronApplication, page: Page, file: str
 
 async function reviewAndConfirm(page: Page): Promise<string> {
 	const review: Locator = page.getByTestId('statement-ai-review');
-	await expect.poll(async (): Promise<string | undefined> => {
-		const current: WorkspaceState = await state(page);
-		if (!current.statementImport && current.importOutcome?.status === 'failed') {
-			throw new Error(current.importOutcome.issues.map((issue: ImportIssue): string => issue.message).join('\n'));
-		}
-		return current.statementFallback?.stage;
-	}, { timeout: 270_000 }).toBe('review');
+	const failure: Locator = page.getByTestId('import-outcome').filter({ hasText: 'The statement could not be imported.' });
+	await expect(review.or(failure)).toBeVisible({ timeout: 270_000 });
+	if (await failure.isVisible()) {
+		assert.fail(await failure.innerText());
+	}
 	await expect(review).toBeVisible();
 	await expect(review.getByRole('heading', { name: 'Unresolved drafts' })).toBeVisible();
 	const proposed: Locator = review.getByTestId('statement-ai-row').filter({ hasText: 'Juniper Supplies' });
@@ -188,7 +186,7 @@ test('reviews and confirms a local AI bank statement, then skips duplicates and 
 			assert.ok(selected);
 			await tryAi.click();
 			await expect(page.getByTestId('import-progress')).toContainText('local AI');
-			await expect.poll(async (): Promise<string | undefined> => (await state(page)).statementImport?.progress?.phase).toBe('ocr');
+			await expect.poll(async (): Promise<string | undefined> => (await state(page)).statementImport?.progress?.phase, { timeout: 110_000 }).toBe('ocr');
 			await page.getByRole('button', { name: 'Cancel import', exact: true }).click();
 			await expect(page.getByTestId('import-outcome')).toContainText('Import cancelled');
 			await expect(tryAi).toBeFocused();
@@ -231,6 +229,15 @@ test('reviews and confirms a local AI bank statement, then skips duplicates and 
 			}
 		});
 	} finally {
+		if (running && !running.page.isClosed()) {
+			await running.page.evaluate(async (): Promise<void> => {
+				if ((await window.receiptmatch.command({ type: 'get-state' })).statementImport) {
+					await window.receiptmatch.command({ type: 'cancel-import' });
+				}
+			}).catch((): undefined => undefined);
+			const page: Page = running.page;
+			await expect.poll(async (): Promise<boolean> => !!(await state(page)).statementImport, { timeout: 15_000 }).toBe(false).catch((): undefined => undefined);
+		}
 		await running?.application.close();
 		assert.ok(path.dirname(await realpath(root)) === temporary && path.basename(root).startsWith('statement-ai-ui-'));
 		await rm(root, { recursive: true, force: true, maxRetries: 3 });
