@@ -1,8 +1,8 @@
 import type { StoredSupportingDocument } from "../shared/workspace-documents.js";
-import type { ExtractionProgress } from "../shared/pdf-extraction.js";
+import type { ExtractionProgress, LocalOcrModel } from "../shared/pdf-extraction.js";
 import { NgTemplateOutlet } from '@angular/common';
-import { Component, computed, effect, input, output, signal, untracked, type EffectCleanupRegisterFn, type OutputEmitterRef, type Signal, type WritableSignal, type InputSignal } from '@angular/core';
-import { DrawerSize, type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDrawerComponent, WigInputComponent, WigTableComponent, WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
+import { Component, DestroyRef, ElementRef, afterRenderEffect, computed, effect, inject, input, output, signal, untracked, viewChild, type EffectCleanupRegisterFn, type OutputEmitterRef, type Signal, type WritableSignal, type InputSignal } from '@angular/core';
+import { DrawerSize, type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigCheckboxComponent, WigDrawerComponent, WigIconButtonComponent, WigInputComponent, WigTableComponent, WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
 import { InputLength } from './input-length.js';
 import { OriginalPreviewButton } from './original-preview-button.js';
 import { amountEntryExample, formatAmountEntry, parseAmountEntry } from '../shared/amount-entry.js';
@@ -13,7 +13,9 @@ import {
     documentCorrectionKey, type DocumentCorrection, type DocumentCorrectionTarget, type DocumentCorrectionValue
 } from '../shared/document-corrections.js';
 import { sameMoneyValue } from '../shared/money.js';
+import type { OriginalAdoptionResult } from '../shared/original-preview.js';
 import type { DocumentImportSummary, DocumentSnapshot, OriginalDocumentFields, WorkspaceCommand, WorkspaceState, WorkspaceView } from '../shared/protocol.js';
+import type { ReceiptAiChange, ReceiptAiPreviewResult, ReceiptAiRequest } from '../shared/receipt-ai.js';
 import type { DocumentIssue, DocumentSection, SupportingDocument } from '../shared/supporting-document.js';
 import type { DocumentFileResult, DocumentFormat, DocumentImportProgress, StoredDocumentImport } from '../shared/workspace-documents.js';
 import type { ZodSafeParseResult } from 'zod';
@@ -25,6 +27,56 @@ function expanded(event: Event): boolean {
 function basename(path: string): string {
     return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 }
+
+function pageProgress(extraction?: ExtractionProgress | null): string {
+    return extraction?.pageNumber && extraction.pageCount ? ` · Page ${extraction.pageNumber} of ${extraction.pageCount}` : '';
+}
+
+interface ReceiptChangeGroup {
+    label: 'Changed' | 'Added' | 'Removed';
+    changes: ReceiptAiChange[];
+}
+
+interface ReceiptChangeSummary {
+    groups: ReceiptChangeGroup[];
+    sections: { label: string; entries: { heading: string; fields: ReceiptAiChange[] }[] }[];
+    warnings?: { before: number; after: number };
+    matching?: string | null;
+    omitted?: string | null;
+}
+
+function summarizeReceiptChanges(changes: ReceiptAiChange[]): ReceiptChangeSummary {
+    const groups: ReceiptChangeSummary['groups'] = [{ label: 'Changed', changes: [] }, { label: 'Added', changes: [] }, { label: 'Removed', changes: [] }];
+    const sections: ReceiptChangeSummary['sections'] = [{ label: 'Current analysis', entries: [] }, { label: 'AI proposal', entries: [] }];
+    const summary: ReceiptChangeSummary = { groups, sections };
+    for (const change of changes) {
+        const { kind, before, after, section }: ReceiptAiChange = change;
+        const side: ReceiptChangeSummary['sections'][number] = sections[after === null ? 0 : 1];
+        switch (kind) {
+            case 'warnings': summary.warnings = { before: before?.split(', ').length ?? 0, after: after?.split(', ').length ?? 0 }; break;
+            case 'matching': summary.matching = after; break;
+            case 'omitted': summary.omitted = after; break;
+            case 'section': side.entries.push({ heading: (after ?? before)!, fields: [] }); break;
+            default: addReceiptFieldChange(change, groups, side, section);
+        }
+    }
+    summary.groups = groups.filter((group: ReceiptChangeGroup): boolean => group.changes.length > 0);
+    summary.sections = sections.filter((side: ReceiptChangeSummary['sections'][number]): boolean => side.entries.length > 0);
+    return summary;
+}
+
+function addReceiptFieldChange(change: ReceiptAiChange, groups: ReceiptChangeGroup[], side: ReceiptChangeSummary['sections'][number], section?: string): void {
+    const { before, after }: ReceiptAiChange = change;
+    if (change.unrecognized) {
+        return;
+    }
+    if (section) {
+        side.entries.find((entry: ReceiptChangeSummary['sections'][number]['entries'][number]): boolean => entry.heading === section)?.fields.push(change);
+    } else {
+        groups[before === null ? 1 : after === null ? 2 : 0].changes.push(change);
+    }
+}
+
 const numberFormat: Intl.NumberFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
 const dateTimeFormat: Intl.DateTimeFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 const extractionLabels: { 'embedded-text': string; 'local-ocr': string; } = { 'embedded-text': 'Embedded text', 'local-ocr': 'Local OCR' };
@@ -347,15 +399,37 @@ export class DocumentAnalysis {
 
 interface DocumentFileRow { file: DocumentFileResult; total: string | null; original: OriginalDocumentFields | null; }
 interface ReportCache { workspaceKey: string; requestKey: string; records: Map<string, StoredDocumentImport>; originals: Record<string, OriginalDocumentFields>; }
+interface ReceiptAnalysisContext {
+    request: ReceiptAiRequest; workspaceKey: string; matchRevision: number; name: string; format: DocumentFormat; trigger: HTMLButtonElement;
+}
+interface ReceiptAnalysisReview { context: ReceiptAnalysisContext; result: Extract<ReceiptAiPreviewResult, { status: 'ready' }>; }
+interface ReceiptAnalysisFeedback { context: ReceiptAnalysisContext; message: string; error: boolean; }
 
 @Component({
     selector: 'app-document-imports', standalone: true,
-    imports: [DocumentAnalysis, OriginalPreviewButton, NgTemplateOutlet, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDrawerComponent, WigTableComponent, WigTemplateDirective],
+    imports: [DocumentAnalysis, OriginalPreviewButton, NgTemplateOutlet, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigCheckboxComponent, WigDrawerComponent, WigIconButtonComponent, WigTableComponent, WigTemplateDirective],
     templateUrl: './document-imports.html'
 })
 export class DocumentImports {
     readonly state: InputSignal<WorkspaceState> = input.required<WorkspaceState>();
+    readonly active: InputSignal<boolean> = input(true);
     readonly workspaceCommand: OutputEmitterRef<WorkspaceCommand> = output<WorkspaceCommand>();
+    private readonly destroyed: DestroyRef = inject(DestroyRef);
+    private readonly aiDialog: Signal<ElementRef<HTMLDialogElement> | undefined> = viewChild<ElementRef<HTMLDialogElement>>('aiDialog');
+    private readonly documentsHeading: Signal<ElementRef<HTMLHeadingElement> | undefined> = viewChild<ElementRef<HTMLHeadingElement>>('documentsHeading');
+    readonly aiPending: WritableSignal<ReceiptAnalysisContext | null> = signal<ReceiptAnalysisContext | null>(null);
+    readonly aiImport: Signal<WorkspaceState['documentImport']> = computed((): WorkspaceState['documentImport'] => {
+        const active: WorkspaceState['documentImport'] = this.state().documentImport;
+        return active?.localAi ? active : null;
+    });
+    readonly aiReview: WritableSignal<ReceiptAnalysisReview | null> = signal<ReceiptAnalysisReview | null>(null);
+    readonly aiChanges: Signal<ReceiptChangeSummary> = computed((): ReceiptChangeSummary => summarizeReceiptChanges(this.aiReview()?.result.changes ?? []));
+    readonly aiFeedback: WritableSignal<ReceiptAnalysisFeedback | null> = signal<ReceiptAnalysisFeedback | null>(null);
+    readonly aiApplying: WritableSignal<boolean> = signal(false);
+    readonly aiApplyError: WritableSignal<string | null> = signal<string | null>(null);
+    readonly aiEvidenceOpen: WritableSignal<boolean> = signal(false);
+    readonly acknowledgeAiConflicts: WritableSignal<boolean> = signal(false);
+    readonly aiModelNames: Record<LocalOcrModel, string> = { 'pp-ocrv6-medium': 'PP-OCRv6 Medium', 'paddleocr-vl-1.6': 'PaddleOCR-VL 1.6' };
     readonly workspaceKey: Signal<string> = computed((): string => {
         const workspace: WorkspaceView | null = this.state().workspace;
         return workspace ? JSON.stringify([workspace.id, workspace.loadRevision]) : '';
@@ -419,6 +493,17 @@ export class DocumentImports {
         }
         return rows;
     });
+    private readonly importedHashes: Signal<Set<string>> = computed((): Set<string> => {
+        const hashes: Set<string> = new Set();
+        for (const report of this.records()?.values() ?? []) {
+            for (const file of report.files) {
+                if (file.status === 'imported' && file.record.result.input) {
+                    hashes.add(file.record.result.input.source.sha256);
+                }
+            }
+        }
+        return hashes;
+    });
     // WigTable tracks rows by object identity. Keep the action components mounted when a report is refreshed.
     readonly tableRows: Signal<{ workspaceKey: string; reports: Map<string, { index: number; }[]>; }> = computed((): { workspaceKey: string; reports: Map<string, { index: number; }[]>; } => ({
         workspaceKey: this.workspaceKey(),
@@ -445,7 +530,27 @@ export class DocumentImports {
                     this.cache.set(null);
                 }
                 this.selectedFile.set(null);
+                this.aiPending.set(null);
+                this.clearAiReview();
+                this.aiFeedback.set(null);
             });
+        });
+
+        effect((): void => {
+            const review: ReceiptAnalysisReview | null = this.aiReview();
+            if (review && !this.aiApplying() && review.context.matchRevision !== this.state().workspace?.matchRevision) {
+                this.clearAiReview();
+                this.finishAiRequest(review.context, 'The workspace changed. Analyze the receipt again.', true, true);
+            }
+        });
+
+        afterRenderEffect((): void => {
+            const dialog: HTMLDialogElement | undefined = this.aiDialog()?.nativeElement;
+            if (dialog && this.active() && this.aiReview()?.context.workspaceKey === this.workspaceKey() && !dialog.open) {
+                dialog.showModal();
+            } else if (dialog?.open && !this.active()) {
+                dialog.close();
+            }
         });
 
         effect((onCleanup: EffectCleanupRegisterFn): void => {
@@ -497,6 +602,139 @@ export class DocumentImports {
         this.selectedFile.set(null);
     }
 
+    reanalysisFormat(file: DocumentFileResult): DocumentFormat | null {
+        if (file.status === 'imported') {
+            return file.record.result.input && !this.state().workspace?.supersededDocuments?.includes(file.record.id) ? file.record.format : null;
+        }
+        return file.status === 'failed' && file.sha256 && !this.importedHashes().has(file.sha256) ? file.format : null;
+    }
+
+    isAiPendingRow(reportId: string, fileIndex: number): boolean {
+        const request: ReceiptAiRequest | undefined = this.aiPending()?.request;
+        return request?.reportId === reportId && request.fileIndex === fileIndex;
+    }
+
+    aiProgressText(): string {
+        const active: WorkspaceState['documentImport'] = this.aiImport();
+        return active?.cancelling ? 'Cancelling AI analysis…' : 'Analyzing receipt with AI' + (pageProgress(active?.progress?.extraction) || '…');
+    }
+
+    async activateAiRow(reportId: string, fileIndex: number, event: MouseEvent): Promise<void> {
+        if (this.isAiPendingRow(reportId, fileIndex)) {
+            const active: WorkspaceState['documentImport'] = this.aiImport();
+            if (active && !active.cancelling) {
+                this.workspaceCommand.emit({ type: 'cancel-import' });
+            }
+            return;
+        }
+        const trigger: HTMLButtonElement | null = event.target instanceof Element ? event.target.closest('button') : null;
+        if (trigger) {
+            await this.reanalyze(reportId, fileIndex, trigger);
+        }
+    }
+
+    private async reanalyze(reportId: string, fileIndex: number, trigger: HTMLButtonElement): Promise<void> {
+        const workspace: WorkspaceView | null = this.state().workspace;
+        const file: DocumentFileResult | undefined = this.fileRows().get(reportId)?.[fileIndex]?.file;
+        const format: DocumentFormat | null = file ? this.reanalysisFormat(file) : null;
+        if (!workspace || !file || !format || this.state().busy || this.aiPending() || this.aiReview() || !this.detailsCurrent()) {
+            return;
+        }
+        const context: ReceiptAnalysisContext = {
+            request: { reportId, fileIndex, loadRevision: workspace.loadRevision },
+            workspaceKey: this.workspaceKey(), matchRevision: workspace.matchRevision, name: basename(this.filePath(file)), format, trigger,
+        };
+        this.aiPending.set(context);
+        this.aiFeedback.set(null);
+        try {
+            const result: ReceiptAiPreviewResult = await window.receiptmatch.reanalyzeReceipt(context.request);
+            if (!this.currentAiWorkspace(context) || this.aiPending() !== context) {
+                return;
+            }
+            if (result.status === 'ready') {
+                this.aiReview.set({ context, result });
+            } else {
+                this.finishAiRequest(context, result.status === 'cancelled' ? 'AI analysis cancelled.' : result.error, result.status === 'failed');
+            }
+        } catch {
+            this.finishAiRequest(context, 'AI analysis could not be completed. Try again.', true);
+        } finally {
+            if (this.aiPending() === context) {
+                this.aiPending.set(null);
+            }
+        }
+    }
+
+    async applyAiReview(): Promise<void> {
+        const review: ReceiptAnalysisReview | null = this.aiReview();
+        if (!review || this.aiApplying() || this.state().busy || review.result.blockingConflict || (review.result.conflicts.length > 0 && !this.acknowledgeAiConflicts())) {
+            return;
+        }
+        this.aiApplying.set(true);
+        this.aiApplyError.set(null);
+        try {
+            const result: OriginalAdoptionResult = await window.receiptmatch.acceptReceiptAnalysis({
+                token: review.result.token, loadRevision: review.context.request.loadRevision, acknowledgeConflicts: this.acknowledgeAiConflicts(),
+            });
+            if (!this.currentAiWorkspace(review.context) || this.aiReview() !== review) {
+                return;
+            }
+            if (result.status === 'adopted') {
+                this.clearAiReview();
+                this.finishAiRequest(review.context, 'AI analysis applied.', false, true);
+            } else {
+                this.aiApplyError.set(result.error);
+            }
+        } catch {
+            if (this.aiReview() === review) {
+                this.aiApplyError.set('The AI analysis could not be applied. Try again.');
+            }
+        } finally {
+            if (this.aiReview() === review) {
+                this.aiApplying.set(false);
+            }
+        }
+    }
+
+    discardAiReview(event?: Event): void {
+        event?.preventDefault();
+        const review: ReceiptAnalysisReview | null = this.aiReview();
+        if (review && !this.aiApplying()) {
+            this.clearAiReview();
+            this.finishAiRequest(review.context, 'AI analysis discarded.', false, true);
+        }
+    }
+
+    private clearAiReview(): void {
+        this.aiDialog()?.nativeElement.close();
+        this.aiReview.set(null);
+        this.aiApplying.set(false);
+        this.aiApplyError.set(null);
+        this.aiEvidenceOpen.set(false);
+        this.acknowledgeAiConflicts.set(false);
+    }
+
+    private currentAiWorkspace(context: ReceiptAnalysisContext): boolean {
+        return !this.destroyed.destroyed && this.workspaceKey() === context.workspaceKey;
+    }
+
+    private finishAiRequest(context: ReceiptAnalysisContext, message: string, error: boolean, restoreFocus: boolean = false): void {
+        if (!this.currentAiWorkspace(context)) {
+            return;
+        }
+        const feedback: ReceiptAnalysisFeedback = { context, message, error };
+        this.aiFeedback.set(feedback);
+        requestAnimationFrame((): void => {
+            if (this.currentAiWorkspace(context) && this.aiFeedback() === feedback && this.active() && (restoreFocus || document.activeElement === document.body)) {
+                if (context.trigger.isConnected && !context.trigger.disabled) {
+                    context.trigger.focus();
+                } else {
+                    this.documentsHeading()?.nativeElement.focus();
+                }
+            }
+        });
+    }
+
     private billedTotal(file: DocumentFileResult): string | null {
         return file.status === 'imported' ? formatDocumentTotal(file.record.result) : null;
     }
@@ -521,8 +759,8 @@ export class DocumentImports {
     }
 
     progressText(): string {
-        const current: { cancelling: boolean; progress: DocumentImportProgress | null; } | null = this.state().documentImport;
-        if (!current) {
+        const current: WorkspaceState['documentImport'] = this.state().documentImport;
+        if (!current || current.localAi) {
             return '';
         }
         if (current.cancelling) {
@@ -537,8 +775,7 @@ export class DocumentImports {
         }
         const phases: { loading: string; text: string; rendering: string; ocr: string; 'page-complete': string; } = { loading: 'Opening document', text: 'Reading embedded text', rendering: 'Preparing page image', ocr: 'Reading with local OCR', 'page-complete': 'Page read' };
         const extraction: ExtractionProgress | null = progress.extraction;
-        const page: string = extraction?.pageNumber && extraction.pageCount ? ` · Page ${extraction.pageNumber} of ${extraction.pageCount}` : '';
         const filename: string = progress.filePath ? ` · ${basename(progress.filePath)}` : '';
-        return (extraction ? phases[extraction.phase] : 'Analyzing file') + filename + page;
+        return (extraction ? phases[extraction.phase] : 'Analyzing file') + filename + pageProgress(extraction);
     }
 }

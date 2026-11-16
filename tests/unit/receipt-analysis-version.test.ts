@@ -86,6 +86,25 @@ test('requires renewed approval for changed amount or reference eligibility, and
     assert.ok(eligibility.changes.some((change: ReceiptVersionPlan['changes'][number]): boolean => change.label === 'Matching evidence'));
 });
 
+test('keeps fields from unpaired invoice sections with their respective current and proposed sections', (): void => {
+    const previous: StoredSupportingDocument = retainedDocument('fixtures');
+    const proposed: SupportingDocument = modelProposal(previous, 'EUR 48.75');
+    proposed.sections[0].references[0].candidates = ['DIFFERENT-INVOICE'];
+    previous.result.sections[0].amounts.push({ ...billedTotal(previous.result), id: 'unrecognized-tax', role: 'tax', label: 'Tax', candidates: [] });
+    const { changes, conflicts }: ReceiptVersionPlan = prepareReceiptAnalysisVersion(previous, proposed, []);
+    const sections: ReceiptVersionPlan['changes'] = changes.filter((change: ReceiptVersionPlan['changes'][number]): boolean => change.kind === 'section');
+    assert.equal(sections.length, 2);
+    assert.equal(sections[0].before, sections[1].after);
+    const totals: ReceiptVersionPlan['changes'] = changes.filter((change: ReceiptVersionPlan['changes'][number]): boolean => change.label === 'Billed total');
+    assert.equal(totals.length, 2);
+    assert.equal(totals[0].section, sections[0].before);
+    assert.equal(totals[0].after, null);
+    assert.equal(totals[1].section, sections[1].after);
+    assert.equal(totals[1].before, null);
+    assert.ok(changes.some((change: ReceiptVersionPlan['changes'][number]): boolean => change.label === 'Tax' && change.section === sections[0].before && change.unrecognized === true));
+    assert.ok(conflicts.some((conflict: string): boolean => conflict.includes('could not be matched')));
+});
+
 test('blocks adoption when a manually corrected total has a conflicting currency or ambiguous candidates', (): void => {
     const previous: StoredSupportingDocument = retainedDocument('fixtures');
     const correction: DocumentCorrection = amountCorrection(previous);

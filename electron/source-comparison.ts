@@ -2,13 +2,13 @@ import type { ImportIssue, SourceEvidence } from "../src/shared/bank-import.js";
 import type { DocumentIssue } from "../src/shared/supporting-document.js";
 import { formatAmountEntry } from '../src/shared/amount-entry.js';
 import type { TransactionCandidate, UnresolvedDraft } from '../src/shared/bank-import.js';
-import type { OriginalAnalysisComparison } from '../src/shared/original-preview.js';
+import type { ReceiptAiChange } from '../src/shared/receipt-ai.js';
 import { bankTransactionIds, statementAccountKey } from '../src/shared/statement-overlaps.js';
 import type { DocumentSection } from '../src/shared/supporting-document.js';
 import type { StoredSupportingDocument } from '../src/shared/workspace-documents.js';
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
 
-type Change = OriginalAnalysisComparison['changes'][number];
+type Change = ReceiptAiChange;
 type BankRow = TransactionCandidate | UnresolvedDraft;
 interface Amount { coefficient: string; scale: number; currency: string | null }
 type SectionField = DocumentSection['amounts'][number] | DocumentSection['dates'][number] | DocumentSection['merchants'][number] |
@@ -45,7 +45,7 @@ function byKey<T>(values: readonly T[], key: (item: T) => string | null): Map<st
 }
 
 interface Differences {
-	add(label: string, before: string | null, after: string | null): void;
+	add(label: string, before: string | null, after: string | null, details?: Pick<Change, 'kind' | 'section' | 'unrecognized'>): void;
 	result(): Change[];
 }
 
@@ -53,15 +53,15 @@ function differences(): Differences {
 	const changes: Change[] = [];
 	let omitted: number = 0;
 	return {
-		add(label: string, before: string | null, after: string | null): void {
+		add(label: string, before: string | null, after: string | null, details?: Pick<Change, 'kind' | 'section' | 'unrecognized'>): void {
 			if (changes.length >= 79) {
 				omitted++; return;
 			}
-			changes.push({ label: shorten(label), before: before === null ? null : shorten(before), after: after === null ? null : shorten(after) });
+			changes.push({ label: shorten(label), before: before === null ? null : shorten(before), after: after === null ? null : shorten(after), ...details });
 		},
-		result(): { label: string; before: string | null; after: string | null; }[] {
+		result(): Change[] {
 			if (omitted) {
-				changes.push({ label: 'Additional differences', before: null, after: String(omitted) });
+				changes.push({ label: 'Additional differences', before: null, after: String(omitted), kind: 'omitted' });
 			}
 			return changes;
 		},
@@ -272,12 +272,22 @@ function singletonCorresponds(before: DocumentSection, after: DocumentSection): 
 	return sharesMerchant(before, after).shared;
 }
 
+const comparisonRoleNames: Partial<Record<SectionField['role'], string>> = {
+	invoice: 'Invoice reference', receipt: 'Receipt reference', order: 'Order reference', settlement: 'Billing currency',
+	issue: 'Issue date', due: 'Due date', merchant: 'Merchant', unknown: 'Unclassified field'
+};
+
 function displayRole(field: SectionField): string {
-	return field.role.replaceAll('-', ' ').replace(/^./, (char: string): string => char.toUpperCase());
+	return comparisonRoleNames[field.role] ?? field.role.replaceAll('-', ' ').replace(/^./, (char: string): string => char.toUpperCase());
 }
 
 function displayField(field: SectionField): string {
 	return field.candidates.length ? field.candidates.map((value: string | { coefficient: string; scale: number; currency: string | null; }): string => typeof value === 'string' ? compact(value) : showMoney(value)).join(' / ') : 'No value recognized';
+}
+
+function addOneSidedField(diff: Differences, field: SectionField, removed: boolean, section?: string): void {
+	const value: string = displayField(field);
+	diff.add(displayRole(field), removed ? value : null, removed ? null : value, { section, unrecognized: field.candidates.length ? undefined : true });
 }
 
 function pairDocumentSections(before: DocumentSection[], after: DocumentSection[], sections: Map<string, string>, used: Set<string>): void {
@@ -321,13 +331,13 @@ function compareFieldRoles(removed: SectionField[], added: SectionField[], diff:
 			newRoles.delete(role);
 		} else {
 			for (const entry of entries) {
-				diff.add(displayRole(entry), displayField(entry), null);
+				addOneSidedField(diff, entry, true);
 			}
 		}
 	}
 	for (const entries of newRoles.values()) {
 		for (const entry of entries) {
-			diff.add(displayRole(entry), null, displayField(entry));
+			addOneSidedField(diff, entry, false);
 		}
 	}
 }
@@ -372,7 +382,7 @@ export function compareDocuments(old: DocumentAnalysis | null, next: DocumentAna
 		(record?.result.issues ?? []).map((issue: DocumentIssue): string => issue.code).sort().join(', ');
 	const beforeIssues: string = documentIssues(old), afterIssues: string = documentIssues(next);
 	if (beforeIssues !== afterIssues) {
-		diff.add('Document analysis warnings', beforeIssues || null, afterIssues || null);
+		diff.add('Document analysis warnings', beforeIssues || null, afterIssues || null, { kind: 'warnings' });
 	}
 	pairDocumentSections(before, after, sections, used);
 	const afterById: Map<string, DocumentSection> = new Map(after.map((section: DocumentSection): [string, DocumentSection] => [section.sectionId, section]));
@@ -380,9 +390,10 @@ export function compareDocuments(old: DocumentAnalysis | null, next: DocumentAna
 	for (const [index, previous] of before.entries()) {
 		const candidate: DocumentSection | undefined = afterById.get(sections.get(previous.sectionId) ?? '');
 		if (!candidate) {
-			diff.add('Removed document section', 'Section ' + (index + 1) + ' · ' + previous.kind, null);
+			const section: string = 'Section ' + (index + 1) + ' · ' + previous.kind.replaceAll('-', ' ');
+			diff.add('Removed document section', section, null, { kind: 'section' });
 			for (const field of fields(previous)) {
-				diff.add(displayRole(field), displayField(field), null);
+				addOneSidedField(diff, field, true, section);
 			}
 			continue;
 		}
@@ -390,9 +401,10 @@ export function compareDocuments(old: DocumentAnalysis | null, next: DocumentAna
 	}
 	for (const [index, section] of after.entries()) {
 		if (!used.has(section.sectionId)) {
-		diff.add('Added document section', null, 'Section ' + (index + 1) + ' · ' + section.kind);
+			const heading: string = 'Section ' + (index + 1) + ' · ' + section.kind.replaceAll('-', ' ');
+			diff.add('Added document section', null, heading, { kind: 'section' });
 		for (const field of fields(section)) {
-			diff.add(displayRole(field), null, displayField(field));
+			addOneSidedField(diff, field, false, heading);
 		}
 	}
 	}

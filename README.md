@@ -33,6 +33,8 @@ A phone photo of a receipt or a scanned invoice often has no text you can search
 
 On first import, ReceiptMatch reads embedded PDF text directly and uses Standard OCR for scans and photos. Open **Settings → Document recognition** to download optional local AI models and set your preferred model.
 
+To review a receipt with your preferred local AI model, open **Sources → Supporting documents** and choose **Reanalyze with AI** in the receipt’s **Actions** column. Review the proposed changes and confirm them to update the receipt. Save the workspace to keep the new analysis.
+
 | Option | When to use it |
 | --- | --- |
 | **Standard OCR** | Built-in text recognition you can use right away. |

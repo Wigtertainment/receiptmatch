@@ -383,12 +383,12 @@ export class WorkspaceSession {
     this.importController = controller;
     this.busy = true;
     const progress: DocumentImportProgress = { phase: 'extracting', filePath: source.filePath, completedFiles: 0, extraction: null };
-    this.documentImport = { cancelling: false, progress };
+    this.documentImport = { cancelling: false, progress, localAi: true };
     try {
       this.publish();
       const result: ReceiptAiResult = await reanalyzeReceipt(source, this.receiptAi, { signal: controller.signal, onProgress: (extraction: ExtractionProgress): void => {
         if (this.importController === controller && !controller.signal.aborted) {
-          this.documentImport = { cancelling: false, progress: { ...progress, extraction } };
+          this.documentImport = { cancelling: false, progress: { ...progress, extraction }, localAi: true };
           this.publish();
         }
       } });

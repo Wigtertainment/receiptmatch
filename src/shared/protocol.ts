@@ -73,7 +73,7 @@ export interface WorkspaceState {
   statementImport: { cancelling: boolean; progress: ExtractionProgress | null; localAi?: true } | null;
   statementFallback?: StatementFallbackState;
   importOutcome: ImportOutcome | null;
-  documentImport: { cancelling: boolean; progress: DocumentImportProgress | null } | null;
+  documentImport: { cancelling: boolean; progress: DocumentImportProgress | null; localAi?: true } | null;
   documentOutcome: { status: 'finished' | 'cancelled' | 'failed'; importId: string | null; issues: ImportIssue[] } | null;
 }
 export interface WorkspaceBridge {

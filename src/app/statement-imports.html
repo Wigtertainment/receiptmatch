@@ -61,7 +61,12 @@
 				<p class="file-location">{{ fallback.fileName }}</p>
 				<p>PaddleOCR-VL 1.6 runs on your device. You can review its suggestions before importing.</p>
 				<div class="statement-ai-actions">
-					<wig-button #aiOfferAction label="Try with local AI" (click)="workspaceCommand.emit({ type: 'try-statement-ai', token: fallback.token })" [disabled]="state().busy" />
+					<wig-button
+						#aiOfferAction
+						label="Try with local AI"
+						(click)="workspaceCommand.emit({ type: 'try-statement-ai', token: fallback.token })"
+						[disabled]="state().busy"
+					/>
 					<wig-button
 						label="Discard statement"
 						severity="secondary"
