@@ -1,6 +1,7 @@
 import type { BankImportInput, ImportIssue, ImportPage } from "./bank-import.js";
 import { z } from 'zod';
 import { bankImportInputSchema, importIssueSchema } from './bank-import.js';
+import { nuExtractDeviceSchema } from './local-ocr-settings.js';
 
 export const PDF_EXTRACTION_VERSION: "pdfjs-6.5.438+tesseract-7.0.0-eng-1.0.0+document-2" = 'pdfjs-6.5.438+tesseract-7.0.0-eng-1.0.0+document-2';
 // Fixed execution guards, not supported-workload or performance promises.
@@ -28,12 +29,14 @@ type ExtractionProgressSchemaType = z.ZodObject<{
 	pageCount: z.ZodNullable<z.ZodNumber>;
 	completedPages: z.ZodNumber;
 }, z.core.$strict>;
-export const extractionProgressSchema: ExtractionProgressSchemaType = z.strictObject({
+const rendererProgressSchema: ExtractionProgressSchemaType = z.strictObject({
     phase: z.enum(['loading', 'text', 'rendering', 'ocr', 'page-complete']),
     pageNumber: z.number().int().min(1).max(PDF_EXTRACTION_LIMITS.pages).nullable(),
     pageCount: z.number().int().min(1).max(PDF_EXTRACTION_LIMITS.pages).nullable(),
     completedPages: z.number().int().min(0).max(PDF_EXTRACTION_LIMITS.pages)
 });
+export const extractionProgressSchema: z.ZodObject<ExtractionProgressSchemaType['shape'] & { device: z.ZodOptional<typeof nuExtractDeviceSchema> }, z.core.$strict> =
+    rendererProgressSchema.extend({ device: nuExtractDeviceSchema.optional() });
 type ExtractionResultSchemaType = z.ZodDiscriminatedUnion<[
 	z.ZodObject<{
 		status: z.ZodLiteral<"complete">;
@@ -254,7 +257,7 @@ type ExtractionEventSchemaType = z.ZodObject<{
 	event: z.ZodDiscriminatedUnion<[
 		z.ZodObject<{
 			type: z.ZodLiteral<"progress">;
-			progress: typeof extractionProgressSchema;
+			progress: typeof rendererProgressSchema;
 		}, z.core.$strict>,
 		z.ZodObject<{
 			type: z.ZodLiteral<"result">;
@@ -265,7 +268,7 @@ type ExtractionEventSchemaType = z.ZodObject<{
 export const extractionEventSchema: ExtractionEventSchemaType = z.strictObject({
     jobId: z.uuid(),
     event: z.discriminatedUnion('type', [
-        z.strictObject({ type: z.literal('progress'), progress: extractionProgressSchema }),
+        z.strictObject({ type: z.literal('progress'), progress: rendererProgressSchema }),
         z.strictObject({ type: z.literal('result'), result: extractionResultSchema })
     ])
 });

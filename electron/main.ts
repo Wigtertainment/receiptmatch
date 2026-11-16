@@ -32,7 +32,8 @@ import { NuExtractSettings } from './nuextract-settings.js';
 import { localOcrRequestSchema } from '../src/shared/local-ocr-settings.js';
 import type { ZodSafeParseResult } from 'zod';
 import type { ExtractionOptions } from './extraction/host.js';
-import { reanalyzeNuExtractReceipt, type ReceiptAiSource } from './documents/nuextract-receipt.js';
+import type { NuExtractRuntimeFiles } from './extraction/nuextract-runtime.js';
+import { reanalyzeNuExtractReceipt, type NuExtractReceiptDependencies, type ReceiptAiSource } from './documents/nuextract-receipt.js';
 import { receiptAiDiscardRequestSchema, receiptAiRequestSchema, type ReceiptAiPreviewResult, type ReceiptAiRequest, type ReceiptAiResult } from '../src/shared/receipt-ai.js';
 
 // Load the same module instance as other main-process consumers of the extraction API.
@@ -96,6 +97,11 @@ async function launch(): Promise<void> {
     path.join(runtimes, 'llama', process.platform === 'win32' ? 'llama-server.exe' : 'llama-server'),
     path.join(__dirname, 'extraction', 'nuextract-probe.png'));
   await nuExtract.resetLegacySelection().catch((): undefined => undefined);
+  const localRecognition: NuExtractReceiptDependencies = {
+    runtimeFiles: (signal?: AbortSignal): ReturnType<NuExtractSettings['runtimeFiles']> => nuExtract.runtimeFiles(signal),
+    start: (files: NuExtractRuntimeFiles, signal?: AbortSignal): ReturnType<NuExtractSettings['startRuntime']> => nuExtract.startRuntime(files, signal),
+    render: renderDocumentImages
+  };
   const previews: OriginalPreviewWindows = new OriginalPreviewWindows(process.argv.includes('--hidden'), windowIcon);
   let previewLoadRevision: number | undefined;
   const publish: (state: WorkspaceState) => void = (state: WorkspaceState): void => {
@@ -139,10 +145,8 @@ async function launch(): Promise<void> {
       return selected.canceled ? null : selected.filePaths[0] ?? null;
     },
     extract: extractPdfBytes,
-    propose: (bytes: Uint8Array, input: BankImportInput, options: ExtractionOptions): Promise<StatementProposalExtraction> => proposeNuExtractStatement(bytes, input, {
-      runtimeFiles: (): ReturnType<NuExtractSettings['runtimeFiles']> => nuExtract.runtimeFiles(),
-      render: renderDocumentImages
-    }, options)
+    propose: (bytes: Uint8Array, input: BankImportInput, options: ExtractionOptions): Promise<StatementProposalExtraction> =>
+      proposeNuExtractStatement(bytes, input, localRecognition, options)
   }), new FolderDocumentImportService({
     choose: async (): Promise<string | null> => {
       const selected: Electron.OpenDialogReturnValue = await dialog.showOpenDialog(window, { title: 'Analyze supporting document folder', properties: ['openDirectory'] });
@@ -150,10 +154,7 @@ async function launch(): Promise<void> {
     },
     extract: extractDocumentBytes
   }), extractDocumentBytes, path.join(userData, 'transaction-ignore-rules'), {
-    analyze: (source: ReceiptAiSource, options?: ExtractionOptions): Promise<ReceiptAiResult> => reanalyzeNuExtractReceipt(source, {
-      runtimeFiles: (): ReturnType<NuExtractSettings['runtimeFiles']> => nuExtract.runtimeFiles(),
-      render: renderDocumentImages
-    }, options)
+    analyze: (source: ReceiptAiSource, options?: ExtractionOptions): Promise<ReceiptAiResult> => reanalyzeNuExtractReceipt(source, localRecognition, options)
   });
   const authorized: (event: Electron.IpcMainInvokeEvent) => boolean = (event: Electron.IpcMainInvokeEvent): boolean => event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && event.senderFrame.url === appUrl;
   const exportSettingsFile: string = path.join(app.getPath('userData'), 'export-settings.json');

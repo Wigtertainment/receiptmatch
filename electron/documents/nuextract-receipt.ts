@@ -5,7 +5,7 @@ import { NUEXTRACT_RECEIPT_VERSION, type ReceiptAiChange, type ReceiptAiResult }
 import { supportingDocumentSchema, type DocumentSection, type SupportingDocument } from '../../src/shared/supporting-document.js';
 import type { DocumentFormat } from '../../src/shared/workspace-documents.js';
 import type { DocumentImagesResult, ExtractionOptions } from '../extraction/host.js';
-import { NuExtractRuntime, type NuExtractRequest, type NuExtractRuntimeFiles } from '../extraction/nuextract-runtime.js';
+import { NuExtractGpuCheckCancelledError, NuExtractGpuUnavailableError, NuExtractRuntime, type NuExtractRequest, type NuExtractRuntimeFiles } from '../extraction/nuextract-runtime.js';
 import { assertSourceNotCancelled, readSourceSnapshot, SourceReadError } from '../import/source.js';
 import { normalizeReference } from '../matching.js';
 import { compareDocuments } from '../source-comparison.js';
@@ -25,7 +25,7 @@ interface ReceiptRuntime {
 }
 
 export interface NuExtractReceiptDependencies {
-    runtimeFiles(): Promise<NuExtractRuntimeFiles | undefined>;
+    runtimeFiles(signal?: AbortSignal): Promise<NuExtractRuntimeFiles | undefined>;
     render(bytes: Uint8Array, sourceId: string, format: DocumentFormat, options?: ExtractionOptions): Promise<DocumentImagesResult>;
     start?: (files: NuExtractRuntimeFiles, signal?: AbortSignal) => Promise<ReceiptRuntime>;
 }
@@ -280,11 +280,12 @@ function planSource(source: ReceiptAiSource): BankImportInput | undefined {
         (source.sourceId === undefined || input.source.sourceId === source.sourceId) ? input : undefined;
 }
 
-async function extractModelResult(files: NuExtractRuntimeFiles, images: Uint8Array[], signal: AbortSignal | undefined,
+async function extractModelResult(files: NuExtractRuntimeFiles, images: Uint8Array[], options: ExtractionOptions,
     start: NonNullable<NuExtractReceiptDependencies['start']>): Promise<Record<string, unknown>> {
-    const runtime: ReceiptRuntime = await start(files, signal);
+    const runtime: ReceiptRuntime = await start(files, options.signal);
     try {
-        return await runtime.extract({ images, template, instructions }, signal);
+        options.onProgress?.({ phase: 'ocr', pageNumber: null, pageCount: images.length, completedPages: 0, device: files.gpuDevice ? 'gpu' : 'cpu' });
+        return await runtime.extract({ images, template, instructions }, options.signal);
     } finally {
         await runtime.close();
     }
@@ -297,13 +298,13 @@ export async function reanalyzeNuExtractReceipt(source: ReceiptAiSource, depende
         if (!input || !source.previous) {
             return { status: 'failed', error: 'Run standard recognition successfully before comparing this receipt with NuExtract3.' };
         }
-        const files: NuExtractRuntimeFiles | undefined = await dependencies.runtimeFiles();
-        if (!files) {
-            return { status: 'failed', error: 'Download NuExtract3 and select a compatible device under Settings → Document recognition.' };
-        }
         const bytes: Uint8Array = await readSourceSnapshot(source.filePath, originalSourceExtensions[source.format], options.signal);
         if (createHash('sha256').update(bytes).digest('hex') !== source.sha256) {
             throw new SourceReadError('source-changed', 'The original receipt changed. Restore or relink it and try again.');
+        }
+        const files: NuExtractRuntimeFiles | undefined = await dependencies.runtimeFiles(options.signal);
+        if (!files) {
+            return { status: 'failed', error: 'Download NuExtract3 and select a compatible device under Settings → Document recognition.' };
         }
         const rasters: DocumentImagesResult = await dependencies.render(bytes, input.source.sourceId, source.format, options);
         assertSourceNotCancelled(options.signal);
@@ -319,13 +320,14 @@ export async function reanalyzeNuExtractReceipt(source: ReceiptAiSource, depende
         options.onProgress?.({ phase: 'ocr', pageNumber: null, pageCount: rasters.images.length, completedPages: 0 });
         const start: NonNullable<NuExtractReceiptDependencies['start']> = dependencies.start ??
             ((model: NuExtractRuntimeFiles, signal?: AbortSignal): Promise<NuExtractRuntime> => NuExtractRuntime.start(model, signal));
-        const result: Record<string, unknown> = await extractModelResult(files, rasters.images, options.signal, start);
+        const result: Record<string, unknown> = await extractModelResult(files, rasters.images, options, start);
         assertSourceNotCancelled(options.signal);
-        return reviewNuExtractResult(source.previous, result);
+        return { ...reviewNuExtractResult(source.previous, result), device: files.gpuDevice ? 'gpu' : 'cpu' };
     } catch (error: unknown) {
-        if (options.signal?.aborted || (error instanceof SourceReadError && error.code === 'cancelled')) {
+        if (options.signal?.aborted || error instanceof NuExtractGpuCheckCancelledError || (error instanceof SourceReadError && error.code === 'cancelled')) {
             return { status: 'cancelled' };
         }
-        return { status: 'failed', error: error instanceof SourceReadError ? error.message : 'NuExtract3 could not complete the analysis. Check the original receipt and device settings, then try again.' };
+        return { status: 'failed', error: error instanceof SourceReadError || error instanceof NuExtractGpuUnavailableError
+            ? error.message : 'NuExtract3 could not complete the analysis. Check the original receipt and device settings, then try again.' };
     }
 }
