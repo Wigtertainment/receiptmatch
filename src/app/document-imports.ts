@@ -611,7 +611,9 @@ export class DocumentImports {
         if (!active) {
             return 'Checking NuExtract3 availability…';
         }
-        return active.cancelling ? 'Cancelling AI analysis…' : 'Analyzing with NuExtract3' + (pageProgress(active.progress?.extraction) || '…');
+        const device: 'cpu' | 'gpu' | undefined = active.progress?.extraction?.device;
+        return active.cancelling ? 'Cancelling AI analysis…' :
+            'Analyzing with NuExtract3' + (device ? ' on ' + device.toUpperCase() : '') + (pageProgress(active.progress?.extraction) || '…');
     }
 
     async activateAiRow(reportId: string, fileIndex: number, event: MouseEvent): Promise<void> {
@@ -674,7 +676,7 @@ export class DocumentImports {
         if (nuExtract.busy) {
             return { status: 'failed', error: 'Wait for the NuExtract3 operation in Settings to finish, then try again.' };
         }
-        if (nuExtract.device === 'gpu' ? nuExtract.gpu !== 'available' : !nuExtract.cpuAvailable) {
+        if (nuExtract.device === 'cpu' && !nuExtract.cpuAvailable) {
             return { status: 'failed', error: 'Choose an available device for NuExtract3 under Settings → Document recognition.' };
         }
         return window.receiptmatch.reanalyzeReceipt(context.request);

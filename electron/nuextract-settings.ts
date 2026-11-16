@@ -2,14 +2,25 @@ import { constants, type Dirent, type Stats } from 'node:fs';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { access, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { z } from 'zod';
 import { nuExtractDeviceSchema, type NuExtractDevice, type NuExtractDownload, type NuExtractSettingsStatus } from '../src/shared/local-ocr-settings.js';
-import { listNuExtractVulkanDevices, NuExtractRuntime, type NuExtractRuntimeFiles } from './extraction/nuextract-runtime.js';
+import { listNuExtractVulkanDevices, NuExtractGpuCheckCancelledError, NuExtractGpuUnavailableError, NuExtractRuntime, type NuExtractRuntimeFiles } from './extraction/nuextract-runtime.js';
 import { NUEXTRACT_ASSETS, type ModelAsset } from './local-ocr-assets.js';
 import { downloadModelAssets } from './local-ocr-transfer.js';
 import { installVulkanRuntime, supportsVulkanRuntime, vulkanRuntimeDownloadBytes, vulkanRuntimeExecutable } from './local-ocr-vulkan.js';
 
 const modelDownloadBytes: number = NUEXTRACT_ASSETS.reduce((total: number, asset: ModelAsset): number => total + asset.bytes, 0);
 const modelDirectory: string = 'nuextract3-' + NUEXTRACT_ASSETS[0].sha256.slice(0, 16);
+type PreferenceFile = 'selection.json' | 'nuextract-device.json' | 'nuextract-gpu-check.json';
+const gpuCheckFile: PreferenceFile = 'nuextract-gpu-check.json';
+const modelFingerprint: string = NUEXTRACT_ASSETS.map(({ sha256 }: ModelAsset): string => sha256).join(':');
+const savedGpuCheckSchema: z.ZodType<SavedGpuCheck> = z.strictObject({ runtime: z.string(), model: z.string(), device: z.string().regex(/^Vulkan\d{1,3}$/) });
+
+interface SavedGpuCheck {
+    runtime: string;
+    model: string;
+    device: string;
+}
 
 interface Operation {
     controller: AbortController;
@@ -69,22 +80,25 @@ export class NuExtractSettings {
 
     constructor(private readonly root: string, private readonly cpuExecutable: string, private readonly probeImage: string) {}
 
-    async resetLegacySelection(): Promise<void> {
-        let previous: unknown;
+    private async readPreference(name: PreferenceFile): Promise<unknown> {
         try {
-            previous = JSON.parse(await readFile(path.join(this.root, 'selection.json'), 'utf8'));
+            return JSON.parse(await readFile(path.join(this.root, name), 'utf8')) as unknown;
         } catch (error: unknown) {
             if (error instanceof SyntaxError || (error as NodeJS.ErrnoException).code === 'ENOENT') {
-                return;
+                return undefined;
             }
             throw error;
         }
+    }
+
+    async resetLegacySelection(): Promise<void> {
+        const previous: unknown = await this.readPreference('selection.json');
         if (previous === 'pp-ocrv6-medium' || previous === 'paddleocr-vl-1.6') {
             await this.writePreference('selection.json', 'standard');
         }
     }
 
-    private async writePreference(name: 'selection.json' | 'nuextract-device.json', value: 'standard' | NuExtractDevice, signal?: AbortSignal): Promise<void> {
+    private async writePreference(name: PreferenceFile, value: 'standard' | NuExtractDevice | SavedGpuCheck, signal?: AbortSignal): Promise<void> {
         await mkdir(this.root, { recursive: true });
         const staging: string = path.join(this.root, '.nuextract-setting-' + randomUUID());
         try {
@@ -118,14 +132,17 @@ export class NuExtractSettings {
     }
 
     private async readDevice(): Promise<NuExtractDevice> {
-        try {
-            const value: unknown = JSON.parse(await readFile(path.join(this.root, 'nuextract-device.json'), 'utf8'));
-            return nuExtractDeviceSchema.safeParse(value).data ?? 'cpu';
-        } catch (error: unknown) {
-            if (error instanceof SyntaxError || (error as NodeJS.ErrnoException).code === 'ENOENT') {
-                return 'cpu';
-            }
-            throw error;
+        return nuExtractDeviceSchema.safeParse(await this.readPreference('nuextract-device.json')).data ?? 'cpu';
+    }
+
+    private async restoreGpuCheck(executable: string): Promise<void> {
+        if (this.gpuCheck?.executable === executable) {
+            return;
+        }
+        const saved: SavedGpuCheck | undefined = savedGpuCheckSchema.safeParse(await this.readPreference(gpuCheckFile)).data;
+        if (saved?.runtime === path.relative(this.root, executable) && saved.model === modelFingerprint &&
+            !this.operation?.checkingGpu && this.gpuCheck?.executable !== executable) {
+            this.gpuCheck = { executable, device: saved.device };
         }
     }
 
@@ -133,18 +150,55 @@ export class NuExtractSettings {
         return { executable, gpuDevice, model: path.join(directory, NUEXTRACT_ASSETS[0].file), projector: path.join(directory, NUEXTRACT_ASSETS[1].file) };
     }
 
-    async runtimeFiles(): Promise<NuExtractRuntimeFiles | undefined> {
+    async runtimeFiles(signal?: AbortSignal): Promise<NuExtractRuntimeFiles | undefined> {
         const [directory, preferred, executable]: [string | undefined, NuExtractDevice, string | undefined] = await Promise.all([
             this.installedDirectory(), this.readDevice(), vulkanRuntimeExecutable(this.root)
         ]);
+        signal?.throwIfAborted();
         if (!directory || this.operation) {
             return undefined;
         }
+        if (preferred === 'cpu') {
+            return await runtimeIssue(this.cpuExecutable) ? undefined : this.modelFiles(this.cpuExecutable, directory);
+        }
+        if (!executable) {
+            throw new NuExtractGpuUnavailableError(supportsVulkanRuntime()
+                ? 'GPU is selected. Download the Vulkan runtime in Settings → Document recognition, or select CPU.'
+                : 'GPU acceleration is unavailable on this platform. Select CPU in Settings → Document recognition.');
+        }
+        await this.restoreGpuCheck(executable);
+        signal?.throwIfAborted();
+        if (this.operation) {
+            return undefined;
+        }
+        if (this.gpuStatus(executable) !== 'available') {
+            await this.checkGpu(signal).catch((error: unknown): never => {
+                if (error instanceof Error && error.name === 'AbortError') {
+                    throw new NuExtractGpuCheckCancelledError();
+                }
+                throw error;
+            });
+        }
+        signal?.throwIfAborted();
         const checked: GpuCheck | undefined = this.gpuCheck;
-        if (preferred === 'gpu' && executable && checked?.executable === executable && checked.device) {
+        if (checked?.executable === executable && checked.device) {
             return this.modelFiles(executable, directory, checked.device);
         }
-        return await runtimeIssue(this.cpuExecutable) ? undefined : this.modelFiles(this.cpuExecutable, directory);
+        throw new NuExtractGpuUnavailableError('NuExtract3 could not use the selected Vulkan GPU. Retry the analysis or select CPU in Settings → Document recognition.');
+    }
+
+    async startRuntime(files: NuExtractRuntimeFiles, signal?: AbortSignal): Promise<NuExtractRuntime> {
+        try {
+            return await NuExtractRuntime.start(files, signal);
+        } catch (error: unknown) {
+            if (files.gpuDevice && !signal?.aborted && this.gpuCheck?.executable === files.executable && this.gpuCheck.device === files.gpuDevice) {
+                const issue: string = 'NuExtract3 could not start on the selected Vulkan GPU.';
+                this.gpuCheck = { executable: files.executable, issue };
+                await rm(path.join(this.root, gpuCheckFile), { force: true });
+                throw new NuExtractGpuUnavailableError(issue + ' Retry the analysis or select CPU in Settings → Document recognition.');
+            }
+            throw error;
+        }
     }
 
     private gpuStatus(executable: string | undefined): NuExtractSettingsStatus['gpu'] {
@@ -168,12 +222,16 @@ export class NuExtractSettings {
         const [directory, cpuIssue, executable, preferred]: [string | undefined, string | undefined, string | undefined, NuExtractDevice] = await Promise.all([
             this.installedDirectory(), runtimeIssue(this.cpuExecutable), vulkanRuntimeExecutable(this.root), this.readDevice()
         ]);
+        if (directory && executable && !operation?.checkingGpu) {
+            await this.restoreGpuCheck(executable);
+        }
         if (operation !== this.operation) {
             return this.status();
         }
         const gpu: NuExtractSettingsStatus['gpu'] = this.gpuStatus(executable);
         const download: NuExtractDownload | null | undefined = operation?.download;
-        return { installed: directory !== undefined, cpuAvailable: cpuIssue === undefined, cpuIssue, device: gpu === 'available' ? preferred : 'cpu',
+        const effectiveDevice: NuExtractDevice | null = directory && (preferred === 'gpu' ? gpu === 'available' : cpuIssue === undefined) ? preferred : null;
+        return { installed: directory !== undefined, cpuAvailable: cpuIssue === undefined, cpuIssue, device: preferred, effectiveDevice,
             modelDownloadBytes, vulkanDownloadBytes: vulkanRuntimeDownloadBytes, gpu, gpuIssue: gpu === 'unavailable' ? this.gpuCheck?.issue : undefined,
             download: download ? { ...download } : null, busy: operation !== undefined, failedDownload: this.failedDownload };
     }
@@ -254,23 +312,25 @@ export class NuExtractSettings {
         }
     }
 
-    checkGpu(): Promise<void> {
-        return this.run(async (parent: AbortSignal): Promise<void> => {
+    checkGpu(requestSignal?: AbortSignal): Promise<void> {
+        return this.run(async (operationSignal: AbortSignal): Promise<void> => {
+            const parent: AbortSignal = requestSignal ? AbortSignal.any([operationSignal, requestSignal]) : operationSignal;
+            parent.throwIfAborted();
             const executable: string | undefined = await vulkanRuntimeExecutable(this.root);
             const directory: string | undefined = await this.installedDirectory();
             if (!executable || !directory) {
                 throw new Error('Download NuExtract3 and its Vulkan runtime first.');
             }
             const signal: AbortSignal = AbortSignal.any([parent, AbortSignal.timeout(90_000)]);
-            this.gpuCheck = undefined;
             const image: Buffer = await readFile(this.probeImage);
+            let compatibleDevice: string | undefined;
             try {
                 const devices: string[] = await listNuExtractVulkanDevices(executable, signal);
                 for (const device of devices) {
                     if (await this.probeDevice(executable, directory, device, image, signal).catch((): false => false)) {
                         signal.throwIfAborted();
-                        this.gpuCheck = { executable, device };
-                        return;
+                        compatibleDevice = device;
+                        break;
                     }
                     signal.throwIfAborted();
                 }
@@ -280,14 +340,21 @@ export class NuExtractSettings {
                     throw error;
                 }
             }
-            this.gpuCheck = { executable, issue: 'NuExtract3 could not process the compatibility sample on a Vulkan GPU.' };
+            parent.throwIfAborted();
+            if (compatibleDevice) {
+                await this.writePreference(gpuCheckFile, { runtime: path.relative(this.root, executable), model: modelFingerprint, device: compatibleDevice }, signal);
+                this.gpuCheck = { executable, device: compatibleDevice };
+            } else {
+                this.gpuCheck = { executable, issue: 'NuExtract3 could not process the compatibility sample on a Vulkan GPU.' };
+                await rm(path.join(this.root, gpuCheckFile), { force: true });
+            }
         }, null, true);
     }
 
     selectDevice(device: NuExtractDevice): Promise<void> {
         return this.run(async (signal: AbortSignal): Promise<void> => {
-            if (device === 'gpu' && this.gpuStatus(await vulkanRuntimeExecutable(this.root)) !== 'available') {
-                throw new Error('Check GPU compatibility before selecting it.');
+            if (device === 'gpu' && !supportsVulkanRuntime()) {
+                throw new Error('GPU acceleration is unavailable on this platform.');
             }
             await this.writePreference('nuextract-device.json', device, signal);
         });

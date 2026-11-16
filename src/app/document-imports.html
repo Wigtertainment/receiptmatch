@@ -191,7 +191,7 @@
 			<header class="receipt-ai-header">
 				<h3 id="receipt-ai-heading" tabindex="-1" autofocus>Review AI receipt analysis</h3>
 				<p class="receipt-ai-file">{{ review.context.name }}</p>
-				<p class="muted">Analyzed with NuExtract3</p>
+				<p class="muted">Analyzed with NuExtract3{{ review.result.device ? ' on ' + review.result.device.toUpperCase() : '' }}</p>
 			</header>
 			<div class="receipt-ai-content" role="region" aria-label="Analysis comparison" tabindex="0">
 				@for (group of summary.groups; track group.label) {

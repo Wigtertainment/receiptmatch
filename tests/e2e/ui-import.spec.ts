@@ -898,15 +898,16 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		} finally {
 			await restoreHook();
 		}
-		await openFile(precisionFile);
-		await transactions().waitFor();
+		await openFile(precisionFile, 'Presentation-only exact values');
+		await expect(transactions().locator('.row-description').first()).toHaveText(payload);
 		await hook('workspace:bank-imports', 'delay-one');
 		try {
 			await openFile(workspaceFile);
 			await waitHeld();
+			await expect(page.getByText('Loading statement details…', { exact: true })).toBeVisible();
 			assert.equal(await transactions().count(), 0);
 			await openFile(precisionFile, 'Presentation-only exact values');
-			await transactions().waitFor();
+			await expect(transactions().locator('.row-description').first()).toHaveText(payload);
 			await releaseHook();
 			assert.equal(await page.getByLabel('Workspace name', { exact: true }).inputValue(), 'Presentation-only exact values');
 			assert.equal((await transactions().locator('.row-description').first().textContent())?.trim(), payload);

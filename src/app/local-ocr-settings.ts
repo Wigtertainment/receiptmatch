@@ -13,7 +13,7 @@ const changeErrors: Record<SettingsChange['type'], string> = {
 const gpuMessages: Record<LocalOcrStatus['gpu'], string> = {
 	unsupported: 'GPU acceleration is unavailable on this platform.',
 	'download-required': 'Install the Vulkan runtime to check GPU compatibility.',
-	unchecked: 'Check GPU compatibility before selecting GPU.',
+	unchecked: 'ReceiptMatch checks a selected GPU automatically before AI analysis.',
 	checking: 'Checking GPU compatibility…',
 	available: 'GPU available.',
 	unavailable: 'The GPU check did not pass.'
@@ -61,6 +61,13 @@ export class LocalOcrSettings {
 
 	gpuMessage(status: LocalOcrStatus): string {
 		return status.gpuIssue ?? gpuMessages[status.gpu];
+	}
+
+	effectiveDevice(status: LocalOcrStatus): string {
+		if (status.effectiveDevice) {
+			return status.effectiveDevice.toUpperCase();
+		}
+		return status.device === 'gpu' && (status.gpu === 'unchecked' || status.gpu === 'checking') ? 'Pending GPU check' : 'Unavailable';
 	}
 
 	async refresh(): Promise<void> {

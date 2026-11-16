@@ -14,6 +14,9 @@ export interface NuExtractRuntimeFiles {
 	gpuDevice?: string;
 }
 
+export class NuExtractGpuUnavailableError extends Error {}
+export class NuExtractGpuCheckCancelledError extends Error {}
+
 export interface NuExtractRequest {
 	images: readonly Uint8Array[];
 	template: Readonly<Record<string, unknown>>;
