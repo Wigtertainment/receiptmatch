@@ -35,11 +35,11 @@
 						<p id="nuextract-device-hint">
 							CPU processing usually takes much longer than on a compatible GPU. Depending on the document, analysis can take several minutes.
 						</p>
-						<div role="group" aria-label="NuExtract3 processing device" aria-describedby="nuextract-device-hint">
+						<div class="ocr-device-options" role="group" aria-label="NuExtract3 processing device" aria-describedby="nuextract-device-status nuextract-device-hint">
 							<button
 								type="button"
 								class="button-secondary compact"
-								[disabled]="busy() || !model.cpuAvailable"
+								[disabled]="busy()"
 								[attr.aria-pressed]="model.device === 'cpu'"
 								(click)="change({ type: 'select-nuextract-device', device: 'cpu' }, $event)"
 							>
@@ -48,12 +48,20 @@
 							<button
 								type="button"
 								class="button-secondary compact"
-								[disabled]="busy() || model.gpu !== 'available'"
+								[disabled]="busy() || model.gpu === 'unsupported'"
 								[attr.aria-pressed]="model.device === 'gpu'"
 								(click)="change({ type: 'select-nuextract-device', device: 'gpu' }, $event)"
 							>
 								GPU
 							</button>
+						</div>
+						<div id="nuextract-device-status" role="status">
+							<p>
+								Selected device · <strong>{{ model.device.toUpperCase() }}</strong>
+							</p>
+							<p>
+								Effective device · <strong>{{ effectiveDevice(model) }}</strong>
+							</p>
 						</div>
 						@if (!model.download) {
 							<p id="nuextract-gpu-status" role="status">{{ gpuMessage(model) }}</p>

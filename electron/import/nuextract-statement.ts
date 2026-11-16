@@ -2,15 +2,16 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { BANK_IMPORT_LIMITS, bankImportInputSchema, importIssue, type BankImportInput, type BankImportResult, type ImportIssue } from '../../src/shared/bank-import.js';
 import { RECEIPT_RASTER_LIMITS } from '../../src/shared/pdf-extraction.js';
+import type { NuExtractDevice } from '../../src/shared/local-ocr-settings.js';
 import type { ExtractionOptions, renderDocumentImages } from '../extraction/host.js';
-import { NuExtractRuntime, type NuExtractRuntimeFiles } from '../extraction/nuextract-runtime.js';
+import { NuExtractGpuCheckCancelledError, NuExtractGpuUnavailableError, NuExtractRuntime, type NuExtractRuntimeFiles } from '../extraction/nuextract-runtime.js';
 import { proposeStatementTransactions } from './statement-table.js';
 
 export type StatementProposalExtraction = { status: 'proposed'; result: BankImportResult } |
     { status: 'failed' | 'cancelled' | 'unavailable'; issues: ImportIssue[] };
 
 interface StatementRecognitionDependencies {
-    runtimeFiles(): Promise<NuExtractRuntimeFiles | undefined>;
+    runtimeFiles(signal?: AbortSignal): Promise<NuExtractRuntimeFiles | undefined>;
     render: typeof renderDocumentImages;
     start?: (files: NuExtractRuntimeFiles, signal?: AbortSignal) => Promise<Pick<NuExtractRuntime, 'extract' | 'close'>>;
 }
@@ -44,20 +45,21 @@ function readTable(output: Record<string, unknown>): string[][] | undefined {
 async function recognizePages(files: NuExtractRuntimeFiles, images: Uint8Array[], input: BankImportInput, options: ExtractionOptions,
     start: NonNullable<StatementRecognitionDependencies['start']>): Promise<Map<number, string[][]>> {
     const runtime: Pick<NuExtractRuntime, 'extract' | 'close'> = await start(files, options.signal);
+    const device: NuExtractDevice = files.gpuDevice ? 'gpu' : 'cpu';
     const tables: Map<number, string[][]> = new Map();
     try {
         for (const [index, image] of images.entries()) {
             const page: BankImportInput['pages'][number] = input.pages[index];
             options.signal?.throwIfAborted();
             if (page.status === 'complete' && page.spans.length) {
-                options.onProgress?.({ phase: 'ocr', pageNumber: page.pageNumber, pageCount: images.length, completedPages: index });
+                options.onProgress?.({ phase: 'ocr', pageNumber: page.pageNumber, pageCount: images.length, completedPages: index, device });
                 const table: string[][] | undefined = readTable(await runtime.extract({ images: [image], template, instructions, maxTokens: 4096, jsonObject: true }, options.signal));
                 options.signal?.throwIfAborted();
                 if (table) {
                     tables.set(page.pageNumber, table);
                 }
             }
-            options.onProgress?.({ phase: 'page-complete', pageNumber: page.pageNumber, pageCount: images.length, completedPages: index + 1 });
+            options.onProgress?.({ phase: 'page-complete', pageNumber: page.pageNumber, pageCount: images.length, completedPages: index + 1, device });
         }
         return tables;
     } finally {
@@ -76,23 +78,33 @@ export async function proposeNuExtractStatement(bytes: Uint8Array, input: BankIm
     if (source.pages.length > RECEIPT_RASTER_LIMITS.pages) {
         return { status: 'failed', issues: [importIssue('page-limit', `NuExtract3 can review up to ${RECEIPT_RASTER_LIMITS.pages} statement pages at a time.`)] };
     }
-    const files: NuExtractRuntimeFiles | undefined = await dependencies.runtimeFiles();
-    options.signal?.throwIfAborted();
-    if (!files) {
-        return { status: 'unavailable', issues: [importIssue('local-model-unavailable', 'Download NuExtract3 and select a compatible device under Settings → Document recognition.')] };
+    try {
+        const files: NuExtractRuntimeFiles | undefined = await dependencies.runtimeFiles(options.signal);
+        options.signal?.throwIfAborted();
+        if (!files) {
+            return { status: 'unavailable', issues: [importIssue('local-model-unavailable', 'Download NuExtract3 and select a compatible device under Settings → Document recognition.')] };
+        }
+        const rendered: Awaited<ReturnType<typeof renderDocumentImages>> = await dependencies.render(bytes, source.source.sourceId, 'pdf', options);
+        options.signal?.throwIfAborted();
+        if (rendered.status !== 'complete') {
+            return rendered;
+        }
+        if (rendered.images.length !== source.pages.length) {
+            return { status: 'failed', issues: [importIssue('invalid-provenance', 'The rendered pages do not match the original statement analysis.')] };
+        }
+        const start: NonNullable<StatementRecognitionDependencies['start']> = dependencies.start ??
+            ((model: NuExtractRuntimeFiles, signal?: AbortSignal): Promise<NuExtractRuntime> => NuExtractRuntime.start(model, signal));
+        const tables: Map<number, string[][]> = await recognizePages(files, rendered.images, source, options, start);
+        options.signal?.throwIfAborted();
+        const result: BankImportResult = proposeStatementTransactions(source, tables);
+        return result.status === 'complete' || result.status === 'partial' ? { status: 'proposed', result } : { status: 'failed', issues: result.issues };
+    } catch (error: unknown) {
+        if (error instanceof NuExtractGpuCheckCancelledError) {
+            return { status: 'cancelled', issues: [] };
+        }
+        if (error instanceof NuExtractGpuUnavailableError) {
+            return { status: 'unavailable', issues: [importIssue('local-gpu-unavailable', error.message)] };
+        }
+        throw error;
     }
-    const rendered: Awaited<ReturnType<typeof renderDocumentImages>> = await dependencies.render(bytes, source.source.sourceId, 'pdf', options);
-    options.signal?.throwIfAborted();
-    if (rendered.status !== 'complete') {
-        return rendered;
-    }
-    if (rendered.images.length !== source.pages.length) {
-        return { status: 'failed', issues: [importIssue('invalid-provenance', 'The rendered pages do not match the original statement analysis.')] };
-    }
-    const start: NonNullable<StatementRecognitionDependencies['start']> = dependencies.start ??
-        ((model: NuExtractRuntimeFiles, signal?: AbortSignal): Promise<NuExtractRuntime> => NuExtractRuntime.start(model, signal));
-    const tables: Map<number, string[][]> = await recognizePages(files, rendered.images, source, options, start);
-    options.signal?.throwIfAborted();
-    const result: BankImportResult = proposeStatementTransactions(source, tables);
-    return result.status === 'complete' || result.status === 'partial' ? { status: 'proposed', result } : { status: 'failed', issues: result.issues };
 }

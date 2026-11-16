@@ -32,6 +32,7 @@ export interface NuExtractSettingsStatus {
     cpuAvailable: boolean;
     cpuIssue?: string;
     device: NuExtractDevice;
+    effectiveDevice: NuExtractDevice | null;
     modelDownloadBytes: number;
     vulkanDownloadBytes: number;
     gpu: 'unsupported' | 'download-required' | 'unchecked' | 'checking' | 'available' | 'unavailable';

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { SupportingDocument } from './supporting-document.js';
 import { originalAdoptionRequestSchema } from './original-preview.js';
+import type { NuExtractDevice } from './local-ocr-settings.js';
 
 export const NUEXTRACT_RECEIPT_VERSION: string = 'pdfjs-6.5.438+nuextract3-q4-k-m+receipt-1';
 
@@ -43,7 +44,7 @@ export interface ReceiptAiChange {
     section?: string;
     unrecognized?: true;
 }
-export type ReceiptAiResult = { status: 'ready'; model: 'nuextract3'; analysis: SupportingDocument; proposals?: ReceiptAiProposal[];
+export type ReceiptAiResult = { status: 'ready'; model: 'nuextract3'; device?: NuExtractDevice; analysis: SupportingDocument; proposals?: ReceiptAiProposal[];
     changes: ReceiptAiChange[]; conflicts: string[] }
     | { status: 'cancelled' } | { status: 'failed'; error: string };
 export type ReceiptAiPreviewResult = (Extract<ReceiptAiResult, { status: 'ready' }> & { token: string; blockingConflict?: string }) | Exclude<ReceiptAiResult, { status: 'ready' }>;

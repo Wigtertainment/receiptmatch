@@ -11,6 +11,9 @@
 		<div class="import-progress" data-testid="import-progress" role="status" aria-live="polite">
 			<div>
 				<p>{{ progressText() }}</p>
+				@if (active.localAi && active.progress?.device; as device) {
+					<p class="muted">NuExtract3 is using {{ device.toUpperCase() }}.</p>
+				}
 				@if (active.progress?.pageCount) {
 					<p class="muted">{{ active.progress!.completedPages }} of {{ active.progress!.pageCount }} pages completed</p>
 				}

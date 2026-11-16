@@ -462,7 +462,7 @@ export class WorkspaceSession {
     const { documentId, filePath, format, sha256, sourceId }: ReceiptAnalysisSource = source;
     this.pendingReceiptAnalysis = { token, request, source: { documentId, filePath, format, sha256, sourceId },
       plan: { ...plan, changes, conflicts, blockingConflict }, matchRevision: this.matchRevision };
-    return structuredClone({ status: 'ready', model: result.model, token, analysis: plan.analysis, changes, conflicts, blockingConflict });
+    return structuredClone({ status: 'ready', model: result.model, device: result.device, token, analysis: plan.analysis, changes, conflicts, blockingConflict });
   }
 
   discardReceiptAnalysis(request: ReceiptAiDiscardRequest): void {

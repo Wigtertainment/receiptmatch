@@ -83,6 +83,8 @@ label { font-size: 12px; font-weight: 600; display: block; margin-bottom: 10px; 
 .ocr-download label { margin: 0; }
 .ocr-download progress { width: 100%; accent-color: var(--action); }
 .ocr-download button { justify-self: start; }
+.ocr-device-options { display: flex; gap: 8px; flex-wrap: wrap; }
+.ocr-device-options button.button-secondary[aria-pressed="true"] { background: var(--action); border-color: var(--action); color: white; }
 .ocr-settings .ocr-feedback { margin: 12px 18px; }
 .export-documents-panel { margin-bottom: 16px; padding: 18px; }
 .export-documents-panel p { margin: 8px 0 0; font-size: 13px; }
