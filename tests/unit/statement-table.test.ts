@@ -67,6 +67,23 @@ test('keeps source rows open when the model swaps columns, omits entries or inve
     assert.ok(result.issues.some((issue: BankImportResult['issues'][number]): boolean => issue.code === 'unverified-table-coverage' && issue.pageId === 'page-1'));
 });
 
+test('requires corroboration of the full description when the source wraps across lines', (): void => {
+    const input: BankImportInput = inputOf();
+    input.pages[0].spans.push(...evidenceRow(['', 'Invoice 5017'], 198));
+    const incomplete: BankImportResult = proposeStatementTransactions(input, new Map([[1, [columns, ...bookings]]]));
+    assert.equal(incomplete.status, 'partial');
+    assert.equal(incomplete.transactions.length, 2);
+    assert.equal(incomplete.unresolvedDrafts[0].description?.value, 'Linden Handel Invoice 5017');
+    assert.equal(incomplete.unresolvedDrafts[0].accountAmount, null);
+
+    const completeRows: string[][] = bookings.map((row: string[]): string[] => [...row]);
+    completeRows[0][1] += ' Invoice 5017';
+    const complete: BankImportResult = proposeStatementTransactions(input, new Map([[1, [columns, ...completeRows]]]));
+    assert.equal(complete.status, 'complete');
+    assert.equal(complete.transactions[0].description.value, 'Linden Handel Invoice 5017');
+    assert.equal(complete.transactions[0].description.evidence.length, 2);
+});
+
 test('retains independently grounded duplicate-looking rows only with matching table coverage', (): void => {
     const original: BankImportInput = inputOf([bookings[0], bookings[0]]);
     const unsatisfied: BankImportResult = proposeStatementTransactions(original, new Map([[1, [columns, bookings[0]]]]));
@@ -141,6 +158,24 @@ test('does not combine pages that explicitly identify different accounts in the 
     assert.equal(result.status, 'failed');
     assert.equal(result.issues[0].code, 'multiple-statement-accounts');
     assert.deepEqual(result.transactions, []);
+});
+
+test('rejects conflicting account metadata on a cover page without a recognized table', (): void => {
+    const input: BankImportInput = inputOf(bookings, columns, 'Account currency: EUR');
+    const original: ImportPage = input.pages[0];
+    const continued: ImportPage = { ...original, pageId: 'page-3', pageNumber: 3, spans: original.spans.filter((source: PositionedSpan): boolean => !source.text.startsWith('Account currency:')) };
+    const cover: ImportPage = { ...original, pageId: 'page-2', pageNumber: 2, spans: [span('Account currency: USD', 40, 40, 120)] };
+    input.pages.push(cover, continued);
+    const tables: Map<number, Row[]> = new Map([[1, [columns, ...bookings]], [3, [columns, ...bookings]]]);
+    const currencies: BankImportResult = proposeStatementTransactions(input, tables);
+    assert.equal(currencies.issues[0].code, 'unverified-account-currency');
+    assert.deepEqual(currencies.transactions, []);
+
+    original.spans.push(span('Account number: 111', 40, 100, 110));
+    cover.spans = [span('Account number: 222', 40, 40, 110)];
+    const accounts: BankImportResult = proposeStatementTransactions(input, tables);
+    assert.equal(accounts.issues[0].code, 'multiple-statement-accounts');
+    assert.deepEqual(accounts.transactions, []);
 });
 
 test('keeps an apparent amount unresolved when its source span crosses into the balance column', (): void => {

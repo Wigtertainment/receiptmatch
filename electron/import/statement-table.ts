@@ -153,6 +153,26 @@ function looksLikeBooking(row: readonly string[], columns: Columns): boolean {
         (!!details && /\d/u.test(columnValue(row, columns, 'balance')));
 }
 
+function bookingRows(lines: Line[], header: Header): SourceRow[] {
+    const description: number = header.columns.description!;
+    const bookings: SourceRow[] = [];
+    let previous: SourceRow | undefined;
+    for (const row of sourceRows(lines, header)) {
+        if (looksLikeBooking(row.values, header.columns)) {
+            bookings.push(row);
+            previous = row;
+        } else if (previous && previous.values[description] && row.values[description] && !balanceSummary.test(row.values[description]) &&
+            row.values.every((value: string, index: number): boolean => index === description || value === '')) {
+            previous.cells[description].push(...row.cells[description]);
+            previous.values[description] = textOf(previous.cells[description]);
+            previous.crossesColumn ||= row.crossesColumn;
+        } else {
+            previous = undefined;
+        }
+    }
+    return bookings;
+}
+
 function key(row: readonly string[], columns: Columns): string {
     return JSON.stringify(roles.map((role: ColumnRole): string => columnValue(row, columns, role)));
 }
@@ -230,7 +250,9 @@ function amountOf(page: ImportPage, row: SourceRow, header: Header, currency: st
 }
 
 function metadataLines({ header, lines }: StatementPage): Line[] {
-    return header ? lines.slice(0, lines.indexOf(header.line)) : [];
+    const boundary: number = header ? lines.indexOf(header.line) : lines.findIndex((line: Line): boolean =>
+        dateLike.test(line.spans[0].text.trim()) || classifyHeader(line.spans.map((span: PositionedSpan): string => span.text)) !== null);
+    return boundary < 0 ? lines : lines.slice(0, boundary);
 }
 
 function hasConflictingAccounts(pages: StatementPage[]): boolean {
@@ -301,7 +323,7 @@ function appendPage(result: Proposal, { page, lines, table, header }: StatementP
         result.issues.push(pageIssue(page, 'unverified-table-page', 'No transaction table could be verified against the original page.'));
         return;
     }
-    const rows: SourceRow[] = sourceRows(lines, header).filter((row: SourceRow): boolean => looksLikeBooking(row.values, header.columns));
+    const rows: SourceRow[] = bookingRows(lines, header);
     const modelRows: (readonly string[])[] = table.slice(header.index + 1).filter((row: readonly string[]): boolean => looksLikeBooking(row, header.columns));
     const modelCounts: Map<string, number> = rowCounts(modelRows.filter((row: readonly string[]): boolean => row.length === header.cells.length), header.columns);
     const sourceCounts: Map<string, number> = rowCounts(rows.map((row: SourceRow): string[] => row.values), header.columns);
