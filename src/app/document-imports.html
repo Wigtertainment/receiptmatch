@@ -324,11 +324,15 @@
 						[analysis]="file.record.result"
 						[format]="file.record.format"
 						[documentId]="file.record.id"
+						[documentName]="basename(file.record.filePath)"
+						[loadRevision]="state().workspace?.loadRevision"
+						[fieldReviews]="state().workspace?.documentFieldReviews ?? []"
 						[busy]="state().busy || !detailsCurrent()"
 						[workspaceError]="state().error"
 						[original]="row.original"
 						[corrections]="correctionsByDocument().get(file.record.id) ?? null"
 						(correction)="correctField($event)"
+						(confirmation)="confirmField($event)"
 					/>
 				} @else if (file.status === 'skipped') {
 					<p>Matching file content is already in this workspace.</p>

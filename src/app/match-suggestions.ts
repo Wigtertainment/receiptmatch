@@ -15,6 +15,7 @@ import { DocumentAnalysis } from './document-imports.js';
 import { OriginalPreviewButton } from './original-preview-button.js';
 import { ButtonPressed } from './button-pressed.js';
 import type { Money } from '../shared/money.js';
+import type { DocumentFieldReviewTarget } from '../shared/document-field-reviews.js';
 
 type MatchStatus = MatchSummary['status'];
 type Filter = 'all' | MatchStatus;
@@ -92,7 +93,7 @@ export class MatchSuggestions {
 	private readonly filterState: WritableSignal<{ filter: Filter; loadRevision: number; } | null> = signal<{ filter: Filter; loadRevision: number } | null>(null);
 	private readonly summaryRequest: WritableSignal<{ revision: number; loadRevision: number; rows: MatchSummary[] | null; } | null> = signal<{ revision: number; loadRevision: number; rows: MatchSummary[] | null } | null>(null);
 	private readonly detailRequest: WritableSignal<{ revision: number; transactionId: string; value: MatchDetails | null; } | null> = signal<{ revision: number; transactionId: string; value: MatchDetails | null } | null>(null);
-	private readonly documentRequest: WritableSignal<{ key: string; documents: ReviewDocument[] | null; } | null> = signal<{ key: string; documents: ReviewDocument[] | null } | null>(null);
+	private readonly documentRequest: WritableSignal<{ key: string; loadRevision: number; documents: ReviewDocument[] | null; } | null> = signal<{ key: string; loadRevision: number; documents: ReviewDocument[] | null } | null>(null);
 	private readonly documentRetry: WritableSignal<number> = signal(0);
 	private readonly documentKey: Signal<string> = computed((): string => {
 		const workspace: WorkspaceView = this.workspace();
@@ -193,9 +194,14 @@ export class MatchSuggestions {
 		if (draft?.loadRevision === this.workspace().loadRevision && draft.transactionId === this.selectedRow()?.transactionId) {
 			return draft.id;
 		}
-		return this.assignedDocument()?.id ?? '';
+		const review: MatchReview | undefined = this.selectedRow()?.review;
+		return review?.status === 'assigned' ? review.documentId : '';
 	});
-	readonly selectedDocument: Signal<ReviewDocument | undefined> = computed((): ReviewDocument | undefined => this.documents()?.find((item: ReviewDocument): boolean => item.id === this.selectedDocumentId()));
+	readonly selectedDocument: Signal<ReviewDocument | undefined> = computed((): ReviewDocument | undefined => {
+		const cached: { key: string; loadRevision: number; documents: ReviewDocument[] | null; } | null = this.documentRequest();
+		const documents: ReviewDocument[] | null = this.documents() ?? (cached?.loadRevision === this.workspace().loadRevision ? cached.documents : null);
+		return documents?.find((item: ReviewDocument): boolean => item.id === this.selectedDocumentId());
+	});
 	private readonly candidateTransactionId: Signal<string | null> = computed((): string | null => {
 		const row: MatchSummary | null = this.selectedRow();
 		return row?.candidateCount ? row.transactionId : null;
@@ -282,7 +288,7 @@ export class MatchSuggestions {
 			const { documentImports, loadRevision, matchRevision, supersededDocuments }: WorkspaceView = untracked(this.workspace);
 			const reportIds: string[] = documentImports.map((report: DocumentImportSummary): string => report.id);
 			if (!reportIds.length) {
-				this.documentRequest.set({ key, documents: [] }); return;
+				this.documentRequest.set({ key, loadRevision, documents: [] }); return;
 			}
 			let current: boolean = true;
 			onCleanup((): void => {
@@ -290,7 +296,7 @@ export class MatchSuggestions {
 			});
 			const update: (documents: ReviewDocument[] | null) => void = (documents: ReviewDocument[] | null): void => {
 				if (current && this.active() && this.documentKey() === key) {
-					this.documentRequest.set({ key, documents });
+					this.documentRequest.set({ key, loadRevision, documents });
 				}
 			};
 			void window.receiptmatch.documentSnapshot({ loadRevision, revision: matchRevision }).then((snapshot: DocumentSnapshot | null): void => {
@@ -524,6 +530,26 @@ export class MatchSuggestions {
 					document.getElementById('match-review-heading')?.focus();
 				}
 			});
+		}
+	}
+
+	async confirmField(value: DocumentFieldReviewTarget & { confirmed: boolean }): Promise<void> {
+		const transactionId: string | undefined = this.selectedRow()?.transactionId;
+		if (this.reviewDisabled() || !this.documents() || !transactionId || value.documentId !== this.selectedDocumentId()) {
+			return;
+		}
+		const { loadRevision, matchRevision }: WorkspaceView = this.workspace();
+		this.pending.set(true);
+		this.reviewFeedback.set(null);
+		try {
+			const result: WorkspaceState = await window.receiptmatch.command({ ...value, type: 'set-document-field-confirmed', revision: matchRevision });
+			if (result.error) {
+				this.reviewFeedback.set({ loadRevision, transactionId, message: result.error });
+			}
+		} catch {
+			this.reviewFeedback.set({ loadRevision, transactionId, message: 'The field confirmation could not be recorded. Please try again.' });
+		} finally {
+			this.pending.set(false);
 		}
 	}
 

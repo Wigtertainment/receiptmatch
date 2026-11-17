@@ -2,6 +2,7 @@ import type { DocumentIssue, DocumentSection } from "../../src/shared/supporting
 import type { ImportIssue, SourceEvidence } from "../../src/shared/bank-import.js";
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
 import { applyDocumentFieldCorrections, type DocumentCorrection } from '../../src/shared/document-corrections.js';
+import { applyDocumentFieldReviews, type DocumentFieldReview } from '../../src/shared/document-field-reviews.js';
 import type { SupportingDocument } from '../../src/shared/supporting-document.js';
 import type { StoredDocumentImport } from '../../src/shared/workspace-documents.js';
 import { evaluateStoredReceipt, withGenericIssueDate } from './interpret.js';
@@ -51,7 +52,7 @@ export class WorkspaceDocumentState {
 	readonly effective: StoredDocumentImport[];
 	readonly hasAutomaticChanges: boolean;
 
-	constructor(readonly imports: StoredDocumentImport[], readonly corrections: ReadonlyMap<string, DocumentCorrection>, readonly versions: readonly ReceiptAnalysisVersion[] = []) {
+	constructor(readonly imports: StoredDocumentImport[], readonly corrections: ReadonlyMap<string, DocumentCorrection>, readonly versions: readonly ReceiptAnalysisVersion[] = [], readonly reviews: ReadonlyMap<string, DocumentFieldReview> = new Map()) {
 		this.analyzed = projectReceiptAnalyses(imports, versions);
 		const byDocument: Map<string, DocumentCorrection[]> = new Map<string, DocumentCorrection[]>();
 		for (const correction of corrections.values()) {
@@ -76,6 +77,6 @@ export class WorkspaceDocumentState {
 			return records.some((run: StoredDocumentImport, index: number): boolean => run !== this.analyzed[index]) ? records : this.analyzed;
 		};
 		this.correctionBase = project('correctionBase');
-		this.effective = project('effective');
+		this.effective = applyDocumentFieldReviews(project('effective'), reviews);
 	}
 }

@@ -79,7 +79,15 @@
 	</div>
 }
 
-<h4 class="document-fields-heading">{{ fieldHeading() }}</h4>
+<div class="document-fields-toolbar">
+	<h4 class="document-fields-heading">{{ fieldHeading() }}</h4>
+	@if (documentId(); as id) {
+		@if (loadRevision() !== undefined) {
+			<app-original-preview-button kind="document" [sourceId]="id" [sourceName]="documentName()" [loadRevision]="loadRevision()" />
+		}
+	}
+</div>
+<p class="sr-only" role="status" aria-atomic="true">{{ confirmationFeedback() }}</p>
 @if (!hasFields()) {
 	<p class="muted">No recognized fields were retained.</p>
 }
@@ -99,6 +107,7 @@
 			</details>
 		}
 		@for (field of section.fields; track field.id) {
+			@let confirmation = confirmationStates().get(field.id);
 			<details class="document-field" (toggle)="toggleDetail(field.id, $event)">
 				<summary class="field-summary">
 					<span class="field-overview">
@@ -108,7 +117,8 @@
 					<span class="field-statuses">
 						@if (field.correction?.corrected) {
 							<span class="source-status">Corrected</span>
-						} @else if (field.confirmedByUser) {
+						}
+						@if (field.confirmedByUser || confirmation?.confirmed) {
 							<span class="source-status">Confirmed by you</span>
 						}
 						@if (!field.correction?.corrected && field.values.length > 1) {
@@ -120,6 +130,22 @@
 				</summary>
 				@if (openDetails().has(field.id)) {
 					<div class="field-body">
+						@if (confirmation && !field.confirmedByUser) {
+							<div class="field-confirmation">
+								@if (confirmation.confirmed || !confirmation.issue) {
+									<wig-button
+										#confirmationButton
+										[label]="confirmation.confirmed ? 'Withdraw confirmation' : 'Confirm value'"
+										severity="secondary"
+										[disabled]="busy()"
+										(click)="confirmField(section.id, field.id, !confirmation.confirmed, confirmationButton)"
+									/>
+								}
+								<p class="field-confirmation-help">
+									{{ confirmation.confirmed ? 'You confirmed this field against the original document.' : confirmation.issue || 'Compare this value with the original document before confirming.' }}
+								</p>
+							</div>
+						}
 						@if (field.issues.length) {
 							<div class="field-review">
 								<h6>{{ field.correction?.corrected ? 'Original extraction notes' : 'Why this needs review' }}</h6>

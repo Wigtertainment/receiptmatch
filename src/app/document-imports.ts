@@ -13,6 +13,7 @@ import {
     documentCorrectionKey, type DocumentCorrection, type DocumentCorrectionTarget, type DocumentCorrectionValue
 } from '../shared/document-corrections.js';
 import { sameMoneyValue } from '../shared/money.js';
+import { documentFieldConfirmationIssue, isDocumentFieldConfirmed, type DocumentFieldReview, type DocumentFieldReviewTarget } from '../shared/document-field-reviews.js';
 import type { NuExtractSettingsStatus } from '../shared/local-ocr-settings.js';
 import type { OriginalAdoptionResult } from '../shared/original-preview.js';
 import type { DocumentImportSummary, DocumentSnapshot, OriginalDocumentFields, WorkspaceCommand, WorkspaceState, WorkspaceView } from '../shared/protocol.js';
@@ -72,6 +73,7 @@ interface FieldView {
     id: string; role: string; label: string; values: string[]; evidence: SourceEvidence[]; issues: DocumentIssue[];
     reviewNeeded: boolean; originalValues?: string[]; correction?: FieldCorrectionView; confirmedByUser?: true;
 }
+interface FieldConfirmationView { confirmed: boolean; issue: string | null; }
 
 @Component({
     selector: 'app-document-source-page', standalone: true, imports: [WigButtonComponent],
@@ -121,7 +123,7 @@ class DocumentSourcePage {
 
 @Component({
     selector: 'app-document-analysis', standalone: true,
-    imports: [DocumentSourcePage, NgTemplateOutlet, WigButtonComponent, WigAlertComponent, WigInputComponent, InputLength],
+    imports: [DocumentSourcePage, OriginalPreviewButton, NgTemplateOutlet, WigButtonComponent, WigAlertComponent, WigInputComponent, InputLength],
     templateUrl: './document-analysis.html'
 })
 export class DocumentAnalysis {
@@ -129,10 +131,40 @@ export class DocumentAnalysis {
     readonly fieldHeading: InputSignal<string> = input('Extracted fields');
     readonly format: InputSignal<"png" | "pdf" | "jpeg" | null> = input<DocumentFormat | null>(null);
     readonly documentId: InputSignal<string | null> = input<string | null>(null);
+    readonly documentName: InputSignal<string> = input('Document');
+    readonly loadRevision: InputSignal<number | undefined> = input<number>();
+    readonly fieldReviews: InputSignal<readonly DocumentFieldReview[]> = input<readonly DocumentFieldReview[]>([]);
+    readonly confirmation: OutputEmitterRef<DocumentFieldReviewTarget & { confirmed: boolean; }> = output<DocumentFieldReviewTarget & { confirmed: boolean }>();
+    private readonly requestedConfirmation: WritableSignal<{ documentId: string; fieldId: string; confirmed: boolean; } | null> = signal<{ documentId: string; fieldId: string; confirmed: boolean } | null>(null);
+    private readonly confirmationTrigger: WritableSignal<HTMLElement | null> = signal<HTMLElement | null>(null);
+    readonly confirmationFeedback: Signal<string> = computed((): string => {
+        const requested: { documentId: string; fieldId: string; confirmed: boolean; } | null = this.requestedConfirmation();
+        if (requested?.documentId !== this.documentId() || this.busy() || this.confirmationStates().get(requested.fieldId)?.confirmed !== requested.confirmed) {
+            return '';
+        }
+        return requested.confirmed ? 'Field value confirmed.' : 'Field confirmation withdrawn.';
+    });
+    readonly confirmationStates: Signal<ReadonlyMap<string, FieldConfirmationView>> = computed((): ReadonlyMap<string, FieldConfirmationView> => {
+        const analysis: SupportingDocument = this.analysis();
+        const documentId: string | null = this.documentId();
+        const states: Map<string, FieldConfirmationView> = new Map<string, FieldConfirmationView>();
+        if (documentId) {
+            for (const section of analysis.sections) {
+                for (const field of [...section.amounts, ...section.dates, ...section.merchants, ...section.references, ...section.currencies]) {
+                    const target: DocumentFieldReviewTarget = { documentId, sectionId: section.sectionId, fieldId: field.id };
+                    const confirmed: boolean = isDocumentFieldConfirmed(analysis, target, this.fieldReviews());
+                    const issue: string | null = documentFieldConfirmationIssue(analysis, section.sectionId, field.id);
+                    states.set(field.id, { confirmed, issue });
+                }
+            }
+        }
+        return states;
+    });
     readonly busy: InputSignal<boolean> = input(false);
     readonly workspaceError: InputSignal<string | null> = input<string | null>(null);
     readonly original: InputSignal<OriginalDocumentFields | null> = input<OriginalDocumentFields | null>(null);
     readonly corrections: InputSignal<ReadonlyMap<string, DocumentCorrection> | null> = input<ReadonlyMap<string, DocumentCorrection> | null>(null);
+    readonly correctionsEnabled: InputSignal<boolean> = input(true);
     readonly correction: OutputEmitterRef<DocumentCorrectionTarget & { change: DocumentCorrectionValue; }> = output<DocumentCorrectionTarget & { change: DocumentCorrectionValue }>();
     readonly sourceOpen: WritableSignal<boolean> = signal(false);
     readonly openDetails: WritableSignal<ReadonlySet<string>> = signal<ReadonlySet<string>>(new Set());
@@ -209,7 +241,7 @@ export class DocumentAnalysis {
             const originalDates: Map<string, { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }> = new Map(original.dates.map((value: { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): [string, { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }] => [value.id, value]));
             const declared: string[] = [...new Set(section.currencies.filter((value: { role: "unknown" | "informational-fx" | "settlement"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => value.role === 'settlement').flatMap((value: { role: "unknown" | "informational-fx" | "settlement"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): string[] => value.candidates))];
             const editable: (fieldId: string | null, kind: DocumentCorrectionValue["kind"], role: string, inputValue?: string, currency?: string) => FieldCorrectionView | undefined = (fieldId: string | null, kind: DocumentCorrectionValue['kind'], role: string, inputValue: string = '', currency: string = ''): FieldCorrectionView | undefined => {
-                if (!documentId) {
+                if (!documentId || !this.correctionsEnabled()) {
                     return undefined;
                 }
                 const target: { documentId: string; sectionId: string; fieldId: string | null; } = { documentId, sectionId: section.sectionId, fieldId };
@@ -218,7 +250,7 @@ export class DocumentAnalysis {
             };
             const missingFields: FieldCorrectionView[] = [];
             const missing: Set<string> | undefined = missingBySection.get(section.sectionId);
-            if (documentId && missing && section.kind !== 'unknown') {
+            if (documentId && this.correctionsEnabled() && missing && section.kind !== 'unknown') {
                 const totalRole: "billed-total" | "credit-note-component" = section.kind === 'credit-note' ? 'credit-note-component' : 'billed-total';
                 if (missing.has('billed-total') && !original.amounts.some((value: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => value.role === totalRole)) {
                     missingFields.push(editable(null, 'amount', amountRoles[totalRole], '', declared.length === 1 ? declared[0] : '')!);
@@ -285,6 +317,29 @@ export class DocumentAnalysis {
 
     toggleSource(event: Event): void {
         this.sourceOpen.set(expanded(event));
+    }
+
+    constructor() {
+        afterRenderEffect((): void => {
+            const trigger: HTMLElement | null = this.confirmationTrigger();
+            if (!trigger || this.busy() || (!this.confirmationFeedback() && !this.workspaceError())) {
+                return;
+            }
+            this.confirmationTrigger.set(null);
+            if (trigger.isConnected && (document.activeElement === document.body || document.activeElement === trigger)) {
+                trigger.focus();
+            }
+        });
+    }
+
+    confirmField(sectionId: string, fieldId: string, confirmed: boolean, trigger: WigButtonComponent): void {
+        const documentId: string | null = this.documentId();
+        const state: FieldConfirmationView | undefined = this.confirmationStates().get(fieldId);
+        if (documentId && !this.busy() && state && (!confirmed || !state.issue)) {
+            this.requestedConfirmation.set({ documentId, fieldId, confirmed });
+            this.confirmationTrigger.set(trigger.nativeButton);
+            this.confirmation.emit({ documentId, sectionId, fieldId, confirmed });
+        }
     }
 
     correctedValue(change: DocumentCorrectionValue): string {
@@ -749,6 +804,13 @@ export class DocumentImports {
         const workspace: WorkspaceView | null = this.state().workspace;
         if (workspace && !this.state().busy && this.detailsCurrent()) {
             this.workspaceCommand.emit({ ...value, type: 'correct-document-field', revision: workspace.matchRevision });
+        }
+    }
+
+    confirmField(value: DocumentFieldReviewTarget & { confirmed: boolean }): void {
+        const workspace: WorkspaceView | null = this.state().workspace;
+        if (workspace && !this.state().busy && this.detailsCurrent()) {
+            this.workspaceCommand.emit({ ...value, type: 'set-document-field-confirmed', revision: workspace.matchRevision });
         }
     }
 

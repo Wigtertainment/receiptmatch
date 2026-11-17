@@ -248,7 +248,18 @@
 										[value]="null"
 									>
 										<ng-template wigTemplate="preview">
-											<app-document-analysis [analysis]="document.record.result" [format]="document.record.format" fieldHeading="Document fields" />
+											<app-document-analysis
+												[analysis]="document.record.result"
+												[format]="document.record.format"
+												[documentId]="document.id"
+												[documentName]="document.name"
+												[fieldReviews]="workspace().documentFieldReviews ?? []"
+												[correctionsEnabled]="false"
+												[busy]="reviewDisabled() || !documents()"
+												[workspaceError]="reviewError()"
+												fieldHeading="Document fields"
+												(confirmation)="confirmField($event)"
+											/>
 										</ng-template>
 									</wig-accordion>
 								}
