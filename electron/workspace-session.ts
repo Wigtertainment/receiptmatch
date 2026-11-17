@@ -23,7 +23,8 @@ import { originalSourceExtensions, type OriginalAdoptionRequest, type OriginalAd
   type OriginalRelinkResult } from '../src/shared/original-preview.js';
 import type { OriginalSource } from './original-preview.js';
 import { storedBankImportSchema, type StoredBankImport } from '../src/shared/workspace-import.js';
-import { createWorkspace, isSourceRelocationPath, loadWorkspace, newMetadata, saveWorkspace, validateSourceReplacements, type SavedWorkspace, type WorkspaceMetadata } from './store.js';
+import { createWorkspace, isSourceRelocationPath, loadWorkspace, newMetadata, saveWorkspace, validateSourceReplacements, withoutRemovedSourceSkips,
+  type SavedWorkspace, type WorkspaceMetadata } from './store.js';
 import type { BankImportAttempt, BankImportOptions, BankImportService, StatementFallback, StatementFallbackResult } from './import/service.js';
 import { readSourceSnapshot } from './import/source.js';
 import type { DocumentImportService } from './documents/service.js';
@@ -45,6 +46,7 @@ import { duplicatePairKey, excludeDuplicateTransactions, excludeTransactions, se
 import { activeStatements, activeSupportingDocuments } from '../src/shared/source-replacements.js';
 import { analyzeSource, type AnalyzedSource, type ReplacementExtraction } from './source-analysis.js';
 import { prepareAdoption, supportingDocumentSource } from './source-adoption.js';
+import { prepareStatementRemoval } from './statement-removal.js';
 import { readTransactionIgnoreRules, setTransactionIgnoreRule, transactionIgnoreRuleKey, transactionsIgnoredByRules } from './transaction-ignore-rules.js';
 import type { $ZodIssue } from 'zod/v4/core';
 
@@ -165,11 +167,19 @@ export class WorkspaceSession {
     private readonly ignoreRulesDirectory?: string, private readonly receiptAi?: ReceiptAiDependencies) {}
 
   state(): WorkspaceState {
-    const imports: BankImportSummary[] = this.effectiveImports.map((record: StoredBankImport): BankImportSummary => ({
-      id: record.id, filePath: record.filePath, bankId: record.result.adapter?.bankId ?? null,
-      status: record.result.status === 'complete' ? 'complete' as const : 'partial' as const,
-      transactions: record.result.transactions.length, drafts: record.result.unresolvedDrafts.length, issues: record.result.issues.length
+    const predecessors: Map<string, string> = new Map(this.importRecords.flatMap((record: StoredBankImport): [string, string][] => {
+      const target: string | undefined = this.sourceReplacements.get(record.result.sourceProvenance!.sourceId);
+      return target ? [[target, record.id]] : [];
     }));
+    const imports: BankImportSummary[] = this.effectiveImports.map((record: StoredBankImport): BankImportSummary => {
+      const replacesStatementId: string | undefined = predecessors.get(record.result.sourceProvenance!.sourceId);
+      return {
+        id: record.id, filePath: record.filePath, bankId: record.result.adapter?.bankId ?? null,
+        status: record.result.status === 'complete' ? 'complete' : 'partial',
+        transactions: record.result.transactions.length, drafts: record.result.unresolvedDrafts.length, issues: record.result.issues.length,
+        ...(replacesStatementId ? { replacesStatementId } : {})
+      };
+    });
     const sameImports: boolean = this.saved?.imports.length === this.importRecords.length && this.importRecords.every((record: StoredBankImport, index: number): boolean => record.id === this.saved!.imports[index].id);
     const sameDocuments: boolean = this.saved?.documentImports.length === this.documentRecords.length && this.documentRecords.every((record: StoredDocumentImport, index: number): boolean => record.id === this.saved!.documentImports[index].id);
     const matchReviewCounts: MatchReviewCounts = { open: 0, assigned: 0, 'completed-without-document': 0 };
@@ -723,8 +733,16 @@ export class WorkspaceSession {
     }
   }
 
+  private removedSavedStatements(): StoredBankImport[] {
+    const retained: Set<string> = new Set(this.importRecords.map((record: StoredBankImport): string => record.id));
+    return this.saved?.imports.filter((record: StoredBankImport): boolean => !retained.has(record.id)) ?? [];
+  }
+
   private sources(): WorkspaceSource[] {
     const sources: Map<string, WorkspaceSource> = new Map((this.saved?.sources ?? []).map((source: WorkspaceSource): [string, WorkspaceSource] => [source.id, source]));
+    for (const record of this.removedSavedStatements()) {
+      sources.delete(record.result.sourceProvenance!.sourceId);
+    }
     for (const record of this.importRecords) {
       const source: { sourceId: string; sha256: string; extractionRunId: string; extractionVersion: string; pages: { pageId: string; pageNumber: number; width: number; height: number; }[]; } = record.result.sourceProvenance!;
       sources.set(source.sourceId, { id: source.sourceId, filePath: record.filePath, sha256: source.sha256 });
@@ -756,9 +774,11 @@ export class WorkspaceSession {
       throw new Error('Enter a workspace name before saving.');
     }
     if (this.saved) {
+      const removed: Set<string> = new Set(this.removedSavedStatements().map((record: StoredBankImport): string => record.id));
       this.saved = await saveWorkspace(
       this.saved, this.metadata, this.importRecords, this.documentRecords, this.matchDecisions, this.bankCorrections, this.documentCorrections,
-      this.reviewApprovals, this.duplicateDecisions, this.sourceRelocations, this.sourceReplacements, this.archivedSourceReviews, this.ignoredTransactions, this.receiptAnalysisVersions
+      this.reviewApprovals, this.duplicateDecisions, this.sourceRelocations, this.sourceReplacements, this.archivedSourceReviews, this.ignoredTransactions,
+      this.receiptAnalysisVersions, removed
     );
     } else {
       const destination: string | null = await this.dialogs.save(this.metadata.name);
@@ -915,6 +935,52 @@ export class WorkspaceSession {
     this.matches = matches;
     this.matchRevision++;
     this.importOutcome = { status: 'imported', importId: record.id, issues: structuredClone(record.result.issues) };
+  }
+
+  private removeStatement({ importId, revision }: Extract<WorkspaceCommand, { type: 'remove-statement' }>): void {
+    if (!this.metadata || revision !== this.matchRevision) {
+      throw new Error('The workspace has changed. Select the statement again before removing it.');
+    }
+    const removed: StoredBankImport | undefined = this.importRecords.find((record: StoredBankImport): boolean => record.id === importId);
+    if (!removed) {
+      throw new Error('The selected statement is no longer in the workspace.');
+    }
+    const sourceId: string = removed.result.sourceProvenance!.sourceId;
+    const rows: Set<string> = new Set([
+      ...removed.transactions.map((row: StoredBankImport['transactions'][number]): string => row.transactionId),
+      ...removed.drafts.map((row: StoredBankImport['drafts'][number]): string => row.draftId)
+    ]);
+    const effective: StoredBankImport[] = this.effectiveImports.filter((record: StoredBankImport): boolean => record.id !== importId);
+    const documents: StoredDocumentImport[] = this.documents().effective;
+    const plan: ReturnType<typeof prepareStatementRemoval> = prepareStatementRemoval(sourceId, rows, effective, documents, {
+      sourceReplacements: this.sourceReplacements, archivedSourceReviews: this.archivedSourceReviews, duplicateDecisions: this.duplicateDecisions,
+      matchDecisions: this.matchDecisions, reviewApprovals: this.reviewApprovals
+    });
+    const matches: TransactionMatch[] = suggestWorkspaceMatches(plan.active, this.activeDocuments(documents));
+    const documentRecords: StoredDocumentImport[] = withoutRemovedSourceSkips(this.documentRecords, new Set([sourceId]));
+
+    this.importRecords = this.importRecords.filter((record: StoredBankImport): boolean => record.id !== importId);
+    this.effectiveImports = effective;
+    this.documentRecords = documentRecords;
+    this.documentView = null;
+    this.sourceRelocations.delete(sourceId);
+    for (const rowId of rows) {
+      this.bankCorrections.delete(rowId);
+      this.ignoredTransactions.delete(rowId);
+    }
+    this.sourceReplacements = plan.sourceReplacements;
+    this.archivedSourceReviews = plan.archivedSourceReviews;
+    this.duplicateDecisions = plan.duplicateDecisions;
+    this.matchDecisions = plan.matchDecisions;
+    this.reviewApprovals = plan.reviewApprovals;
+    this.matches = matches;
+    this.pendingAnalysis = null;
+    this.pendingReceiptAnalysis = null;
+    if (this.importOutcome?.importId === importId) {
+      this.importOutcome = null;
+    }
+    this.loadRevision++;
+    this.matchRevision++;
   }
 
   private documentIdentities(): string[] {
@@ -1407,6 +1473,7 @@ export class WorkspaceSession {
       case 'correct-bank-row': this.correctBankRow(command); break;
       case 'correct-document-field': this.correctDocumentField(command); break;
       case 'import-statement': return this.importStatement();
+      case 'remove-statement': this.removeStatement(command); break;
       case 'try-statement-ai': return this.tryStatementAi();
       case 'confirm-statement-ai': return this.confirmStatementAi();
       case 'discard-statement-ai': this.discardStatementAi(); break;

@@ -1,7 +1,7 @@
 import type { BankCorrection } from "./shared/bank-corrections.js";
 import type { BankImportResult } from "./shared/bank-import.js";
 import { NgTemplateOutlet } from '@angular/common';
-import { Component, DestroyRef, afterRenderEffect, computed, effect, inject, input, output, signal, untracked, viewChild, type ElementRef, type WritableSignal,
+import { Component, DestroyRef, Injector, afterNextRender, afterRenderEffect, computed, effect, inject, input, output, signal, untracked, viewChild, type ElementRef, type WritableSignal,
     type OutputEmitterRef, type Signal, type InputSignal } from '@angular/core';
 import { type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDrawerComponent, WigDropdownComponent, WigInputComponent, WigTableComponent,
     WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
@@ -22,6 +22,7 @@ import type { ZodSafeParseResult } from 'zod';
 type ImportRow = TransactionCandidate | UnresolvedDraft;
 type RowSourceRecord = Pick<StoredBankImport, 'filePath' | 'result'>;
 type BookingAction = 'correction' | 'source';
+interface StatementRemoval { importId: string; revision: number; fileName: string; predecessorName?: string; }
 type DuplicateAction = Extract<WorkspaceCommand, { type: 'set-duplicate-decision' }>['decision'];
 type ExclusionAction = Extract<DuplicateAction, 'keep-first' | 'keep-second'>;
 type BookingLocation = Pick<StatementOverlap, 'statementId' | 'filePath' | 'transactionId' | 'transactionNumber'>;
@@ -117,6 +118,7 @@ class RowSource {
 export class StatementImports {
     readonly state: InputSignal<WorkspaceState> = input.required<WorkspaceState>();
     readonly workspaceCommand: OutputEmitterRef<WorkspaceCommand> = output<WorkspaceCommand>();
+    private readonly injector: Injector = inject(Injector);
     private readonly importAction: Signal<WigButtonComponent | undefined> = viewChild<WigButtonComponent>('importAction');
     private readonly cancelImportAction: Signal<WigButtonComponent | undefined> = viewChild<WigButtonComponent>('cancelImportAction');
     private readonly aiOfferAction: Signal<WigButtonComponent | undefined> = viewChild<WigButtonComponent>('aiOfferAction');
@@ -126,6 +128,7 @@ export class StatementImports {
     readonly loading: WritableSignal<boolean> = signal(false);
     readonly detailsError: WritableSignal<string | null> = signal<string | null>(null);
     readonly selectedId: WritableSignal<string | null> = signal<string | null>(null);
+    readonly removal: WritableSignal<StatementRemoval | null> = signal<StatementRemoval | null>(null);
     readonly selected: Signal<StoredBankImport | null> = computed((): StoredBankImport | null => this.records().find((record: StoredBankImport): boolean => record.id === this.selectedId()) ?? null);
     readonly statementInfo: { id: string; header: string; template: string; }[] = [{ id: 'statement', header: 'Statement details', template: 'statement' }];
     readonly corrections: Signal<Map<string, BankCorrection>> = computed((): Map<string, BankCorrection> => new Map((this.state().workspace?.bankCorrections ?? []).map((correction: BankCorrection): [string, BankCorrection] => [correction.rowId, correction])));
@@ -345,6 +348,13 @@ export class StatementImports {
         this.recordsKey = key; this.records.set([]); this.detailsError.set(null); this.expandedOverlapRows.set(new Set()); this.exclusion.set(null);
         const ids: string[] = value.workspace?.imports.map((record: BankImportSummary): string => record.id) ?? [];
         const previous: { workspaceId: string; loadRevision: number; ids: string[]; } | null = this.recordsSnapshot; const workspace: WorkspaceView | null = value.workspace;
+        if (previous && previous.workspaceId === workspace?.id && previousSelection && previous.ids.includes(previousSelection) && !ids.includes(previousSelection)) {
+            requestAnimationFrame((): void => {
+                if (!this.disposed && generation === this.generation && !this.state().busy) {
+                    this.importAction()?.nativeButton.focus();
+                }
+            });
+        }
         const appended: boolean | null = previous && previous.workspaceId === workspace?.id && previous.loadRevision === workspace.loadRevision &&
             ids.length > previous.ids.length && previous.ids.every((id: string, index: number): boolean => id === ids[index]);
         const outcomeId: string | null = value.importOutcome?.status === 'imported' ? value.importOutcome.importId : null;
@@ -382,6 +392,33 @@ export class StatementImports {
     select(id: string | null): void {
         if (this.records().some((record: StoredBankImport): boolean => record.id === id)) {
             this.bookingAction.set(null); this.expandedOverlapRows.set(new Set()); this.exclusion.set(null); this.selectedId.set(id);
+        }
+    }
+
+    requestStatementRemoval(id: string, dialog: HTMLDialogElement, cancel: WigButtonComponent): void {
+        const { workspace, busy }: WorkspaceState = this.state();
+        const statement: BankImportSummary | undefined = workspace?.imports.find((record: BankImportSummary): boolean => record.id === id);
+        if (!workspace || !statement || busy || dialog.open || this.selectedId() !== id) {
+            return;
+        }
+        const predecessor: BankImportSummary | undefined = workspace.supersededStatements.includes(id) ? undefined :
+            workspace.imports.find((record: BankImportSummary): boolean => record.id === statement.replacesStatementId);
+        const requested: StatementRemoval = { importId: id, revision: workspace.matchRevision, fileName: filename(statement.filePath),
+            ...(predecessor ? { predecessorName: filename(predecessor.filePath) } : {}) };
+        this.removal.set(requested);
+        afterNextRender({ write: (): void => {
+            if (this.removal() === requested && dialog.isConnected && !dialog.open) {
+                dialog.showModal();
+                cancel.nativeButton.focus();
+            }
+        } }, { injector: this.injector });
+    }
+
+    confirmStatementRemoval(dialog: HTMLDialogElement): void {
+        const removal: StatementRemoval | null = this.removal();
+        if (dialog.open && removal && !this.state().busy) {
+            dialog.close();
+            this.workspaceCommand.emit({ type: 'remove-statement', importId: removal.importId, revision: removal.revision });
         }
     }
 

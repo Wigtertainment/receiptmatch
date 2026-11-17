@@ -7,6 +7,32 @@
 		</div>
 		<wig-button #importAction label="Import statement" (click)="workspaceCommand.emit({ type: 'import-statement' })" [disabled]="state().busy" />
 	</div>
+	<dialog
+		#removalDialog
+		class="statement-removal-dialog"
+		aria-labelledby="statement-removal-heading"
+		aria-describedby="statement-removal-description"
+		(close)="!removalDialog.open && removal.set(null)"
+	>
+		<h3 id="statement-removal-heading">Remove statement?</h3>
+		<div id="statement-removal-description">
+			@if (removal(); as requested) {
+				<p>
+					This removes <strong>{{ requested.fileName }}</strong> and its bookings, unresolved rows, and assignments from the workspace.
+				</p>
+				@if (requested.predecessorName) {
+					<p>
+						The previous analysis of <strong>{{ requested.predecessorName }}</strong> will become active again.
+					</p>
+				}
+				<p>Save the workspace to make the removal permanent.</p>
+			}
+		</div>
+		<div class="bank-correction-actions">
+			<wig-button #cancelRemovalAction label="Cancel" severity="secondary" (click)="removalDialog.close()" />
+			<wig-button label="Remove statement" severity="danger" [disabled]="state().busy" (click)="confirmStatementRemoval(removalDialog)" />
+		</div>
+	</dialog>
 	@if (state().statementImport; as active) {
 		<div class="import-progress" data-testid="import-progress" role="status" aria-live="polite">
 			<div>
@@ -200,6 +226,13 @@
 						[sourceId]="record.id"
 						[sourceName]="filename(record.filePath)"
 						[loadRevision]="state().workspace?.loadRevision"
+					/>
+					<wig-button
+						label="Remove statement"
+						severity="secondary"
+						[text]="true"
+						[disabled]="state().busy"
+						(click)="requestStatementRemoval(record.id, removalDialog, cancelRemovalAction)"
 					/>
 				</div>
 				<wig-accordion class="source-location" [items]="statementInfo" [value]="null">

@@ -494,6 +494,7 @@ export type BankImportRunResult =
 export interface BankImportSummary {
     id: string;
     filePath: string;
+    replacesStatementId?: string;
     bankId: string | null;
     status: 'complete' | 'partial';
     transactions: number;

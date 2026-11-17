@@ -453,16 +453,19 @@ function validateDocumentImports(db: Database.Database, imports: StoredDocumentI
 }
 
 function validateAppend(
-  db: Database.Database, previous: StoredBankImport[], requested: StoredBankImport[], previousDocuments: StoredDocumentImport[], requestedDocuments: StoredDocumentImport[]
+  db: Database.Database, previous: StoredBankImport[], requested: StoredBankImport[], previousDocuments: StoredDocumentImport[], requestedDocuments: StoredDocumentImport[],
+  removedSources: ReadonlySet<string> = new Set()
 ): void {
-  if (requested.length < previous.length || previous.some((record: StoredBankImport, index: number): boolean => JSON.stringify(record) !== JSON.stringify(requested[index]))) {
+  const kept: StoredBankImport[] = previous.filter((record: StoredBankImport): boolean => !removedSources.has(record.result.sourceProvenance!.sourceId));
+  if (requested.length < kept.length || kept.some((record: StoredBankImport, index: number): boolean => JSON.stringify(record) !== JSON.stringify(requested[index]))) {
     throw new Error('Saved bank imports cannot be removed, reordered or rewritten.');
   }
   if (requestedDocuments.length < previousDocuments.length || previousDocuments.some((record: StoredDocumentImport, index: number): boolean => JSON.stringify(record) !== JSON.stringify(requestedDocuments[index]))) {
     throw new Error('Saved document imports cannot be removed, reordered or rewritten.');
   }
   const identities: Set<string> = new Set(entityIdentities(db).keys());
-  const sources: WorkspaceSource[] = sourceCatalog(db); const hashes: Set<string> = new Set(sources.flatMap((source: WorkspaceSource): string[] => source.sha256 === null ? [] : [source.sha256]));
+  const sources: WorkspaceSource[] = sourceCatalog(db).filter((source: WorkspaceSource): boolean => !removedSources.has(source.id));
+  const hashes: Set<string> = new Set(sources.flatMap((source: WorkspaceSource): string[] => source.sha256 === null ? [] : [source.sha256]));
   const available: Map<string, string | null> = new Map(sources.map((source: WorkspaceSource): [string, string | null] => [source.id, source.sha256]));
   for (const record of previous) {
     for (const [id] of importIdentities(record)) {
@@ -481,7 +484,7 @@ function validateAppend(
     }
     identities.add(key);
   };
-  for (const record of requested.slice(previous.length)) {
+  for (const record of requested.slice(kept.length)) {
     for (const [id] of importIdentities(record)) {
       claim(id);
     }
@@ -493,6 +496,90 @@ function validateAppend(
     available.set(record.result.sourceProvenance!.sourceId, hash);
   }
   validateAppendedDocuments(requestedDocuments.slice(previousDocuments.length), claim, available, hashes);
+}
+
+export function withoutRemovedSourceSkips(records: StoredDocumentImport[], removedSources: ReadonlySet<string>): StoredDocumentImport[] {
+  if (!removedSources.size) {
+    return records;
+  }
+  return records.map((record: StoredDocumentImport): StoredDocumentImport => {
+    const files: StoredDocumentImport['files'] = record.files.filter((file: StoredDocumentImport['files'][number]): boolean =>
+      file.status !== 'skipped' || !removedSources.has(file.existingSourceId));
+    return files.length === record.files.length ? record : { ...record, files };
+  });
+}
+
+function removeSourceReplacementReferences(
+  db: Database.Database, existing: Pick<SavedWorkspace, 'sourceReplacements' | 'archivedSourceReviews'>,
+  removedSources: ReadonlySet<string>, removedRows: ReadonlySet<string>
+): void {
+  const removeArchivedSource: Database.Statement = db.prepare('DELETE FROM source_replacement_reviews WHERE source_id=?');
+  const removeReplacement: Database.Statement = db.prepare('DELETE FROM source_replacements WHERE source_id=?');
+  for (const [sourceId, replacementId] of existing.sourceReplacements) {
+    if (removedSources.has(sourceId) || removedSources.has(replacementId)) {
+      removeArchivedSource.run(sourceId);
+      removeReplacement.run(sourceId);
+      existing.archivedSourceReviews.delete(sourceId);
+      existing.sourceReplacements.delete(sourceId);
+    }
+  }
+  for (const [sourceId, reviews] of existing.archivedSourceReviews) {
+    for (const transactionId of reviews.keys()) {
+      if (removedRows.has(transactionId)) {
+        reviews.delete(transactionId);
+      }
+    }
+    if (!reviews.size) {
+      existing.archivedSourceReviews.delete(sourceId);
+    }
+  }
+}
+
+function removeBankImports(
+  db: Database.Database, existing: Omit<SavedWorkspace, 'filePath' | 'fingerprint'>, removed: StoredBankImport[],
+  removedSources: ReadonlySet<string>, removedRows: ReadonlySet<string>, previousDocuments: StoredDocumentImport[]
+): void {
+  removeSourceReplacementReferences(db, existing, removedSources, removedRows);
+  // Delete foreign-key dependents before removing the statements and their sources.
+  const statementIds: string = 'SELECT id FROM statements WHERE source_id=@sourceId';
+  const transactionIds: string = `SELECT id FROM transactions WHERE statement_id IN (${statementIds})`;
+  const removeDependents: Database.Statement[] = [
+    ...['match_results', 'match_reviews', 'match_approval_state', 'ignored_transactions', 'associations', 'source_replacement_reviews'].map(
+      (table: string): string => `DELETE FROM ${table} WHERE transaction_id IN (${transactionIds})`
+    ),
+    `DELETE FROM duplicate_decisions WHERE first_id IN (${transactionIds}) OR second_id IN (${transactionIds})`,
+    `DELETE FROM transactions WHERE statement_id IN (${statementIds})`,
+    'DELETE FROM statements WHERE source_id=@sourceId',
+    'DELETE FROM source_relocations WHERE source_id=@sourceId'
+  ].map((sql: string): Database.Statement => db.prepare(sql));
+  const removeCorrection: Database.Statement = db.prepare('DELETE FROM bank_corrections WHERE row_id=?');
+  for (const rowId of removedRows) {
+    removeCorrection.run(rowId);
+    existing.bankCorrections.delete(rowId);
+    existing.reviewApprovals.delete(rowId);
+  }
+
+  const updateDocument: Database.Statement = db.prepare('UPDATE document_imports SET record_json=? WHERE id=?');
+  for (const [index, record] of previousDocuments.entries()) {
+    if (record !== existing.documentImports[index]) {
+      updateDocument.run(JSON.stringify(record), record.id);
+    }
+  }
+
+  const removeAccount: Database.Statement = db.prepare('DELETE FROM accounts WHERE id=?');
+  const removeImport: Database.Statement = db.prepare('DELETE FROM bank_imports WHERE id=?');
+  const removeSource: Database.Statement = db.prepare('DELETE FROM sources WHERE id=?');
+  for (const record of removed) {
+    const sourceId: string = record.result.sourceProvenance!.sourceId;
+    for (const remove of removeDependents) {
+      remove.run({ sourceId });
+    }
+    for (const account of record.accounts) {
+      removeAccount.run(account.accountId);
+    }
+    removeImport.run(record.id);
+    removeSource.run(sourceId);
+  }
 }
 
 function validateAppendedDocuments(
@@ -1281,7 +1368,8 @@ export async function saveWorkspace(
   documentEdits: ReadonlyMap<string, DocumentCorrection> = current.documentCorrections, approvalEdits?: ReadonlyMap<string, ReviewApprovalState>,
   duplicateEdits: ReadonlyMap<string, DuplicateDecision> = current.duplicateDecisions, relocationEdits: ReadonlyMap<string, string> = current.sourceRelocations,
   replacementEdits: ReadonlyMap<string, string> = current.sourceReplacements, archivedSourceReviewEdits: ArchivedSourceReviews = current.archivedSourceReviews,
-  ignoredEdits: ReadonlySet<string> = current.ignoredTransactions, receiptAnalysisEdits: readonly ReceiptAnalysisVersion[] = current.receiptAnalysisVersions
+  ignoredEdits: ReadonlySet<string> = current.ignoredTransactions, receiptAnalysisEdits: readonly ReceiptAnalysisVersion[] = current.receiptAnalysisVersions,
+  removedBankImportIds: ReadonlySet<string> = new Set()
 ): Promise<SavedWorkspace> {
   const matchDecisions: Map<string, string | null> = new Map(decisions);
   const bankCorrections: Map<string, BankCorrection> = parseBankCorrections(corrections);
@@ -1290,8 +1378,19 @@ export async function saveWorkspace(
   if (recognized.metadata.id !== current.metadata.id || recognized.fingerprint !== current.fingerprint) {
     throw new Error('The workspace file changed outside ReceiptMatch. Reopen it before saving.');
   }
-  const changed: string[] = changedDecisionIds(recognized.matchDecisions, matchDecisions);
-  const reviewApprovals: Map<string, ReviewApprovalState> = parseReviewApprovals(approvalEdits ?? recognized.reviewApprovals);
+  const removed: StoredBankImport[] = recognized.imports.filter((record: StoredBankImport): boolean => removedBankImportIds.has(record.id));
+  if (removed.length !== removedBankImportIds.size) {
+    throw new Error('A bank import selected for removal is not saved in this workspace.');
+  }
+  const removedSources: Set<string> = new Set(removed.map((record: StoredBankImport): string => record.result.sourceProvenance!.sourceId));
+  const removedRows: Set<string> = new Set(removed.flatMap((record: StoredBankImport): string[] => [
+    ...record.transactions.map((row: StoredBankImport['transactions'][number]): string => row.transactionId),
+    ...record.drafts.map((row: StoredBankImport['drafts'][number]): string => row.draftId)
+  ]));
+  const changed: string[] = changedDecisionIds(recognized.matchDecisions, matchDecisions).filter((id: string): boolean => !removedRows.has(id));
+  const reviewApprovals: Map<string, ReviewApprovalState> = parseReviewApprovals(
+    approvalEdits ?? [...recognized.reviewApprovals].filter(([id]: [string, ReviewApprovalState]): boolean => !removedRows.has(id))
+  );
   if (!approvalEdits) {
     for (const id of changed) {
       reviewApprovals.set(id, advanceReviewRevision(reviewApprovals.get(id)));
@@ -1299,7 +1398,7 @@ export async function saveWorkspace(
   }
   const saved: { id: string; name: string; createdAt: string; savedAt: string | null; } = metadataSchema.parse({ ...metadata, savedAt: new Date().toISOString() });
   const retained: StoredBankImport[] = z.array(storedBankImportSchema).parse(imports);
-  const retainedDocuments: StoredDocumentImport[] = z.array(storedDocumentImportSchema).parse(documentImports);
+  const retainedDocuments: StoredDocumentImport[] = withoutRemovedSourceSkips(z.array(storedDocumentImportSchema).parse(documentImports), removedSources);
   const sourceRelocations: Map<string, string> = validateSourceRelocations(relocationEdits, retained, retainedDocuments);
   const sourceReplacements: Map<string, string> = validateSourceReplacements(replacementEdits, retained, retainedDocuments);
   const effective: StoredBankImport[] = applyBankCorrections(retained, bankCorrections);
@@ -1326,16 +1425,21 @@ export async function saveWorkspace(
       if (existing.metadata.id !== saved.id || currentFingerprint !== current.fingerprint) {
         throw new Error('The workspace file changed outside ReceiptMatch. Reopen it before saving.');
       }
-      validateAppend(db!, existing.imports, retained, existing.documentImports, retainedDocuments);
+      const previousDocuments: StoredDocumentImport[] = withoutRemovedSourceSkips(existing.documentImports, removedSources);
+      validateAppend(db!, existing.imports, retained, previousDocuments, retainedDocuments, removedSources);
       upgradeWorkspaceSchema(db!, existing.schemaVersion);
-      const newImports: StoredBankImport[] = retained.slice(existing.imports.length);
+      if (removed.length) {
+        removeBankImports(db!, existing, removed, removedSources, removedRows, previousDocuments);
+      }
+      const newImports: StoredBankImport[] = retained.slice(existing.imports.length - removed.length);
       const newDocumentImports: StoredDocumentImport[] = retainedDocuments.slice(existing.documentImports.length);
       appendImports(db!, newImports);
       appendDocumentImports(db!, newDocumentImports);
       const analysisAdded: boolean = appendReceiptAnalysisVersions(db!, existing.receiptAnalysisVersions, receiptAnalysisVersions);
       const bankCorrected: boolean = writeBankCorrections(db!, existing.bankCorrections, bankCorrections, effective);
       const documentCorrected: boolean = writeDocumentCorrections(db!, existing.documentCorrections, documentCorrections);
-      const evidenceChanged: number | boolean = analysisAdded || bankCorrected || documentCorrected || newImports.length || newDocumentImports.some((record: StoredDocumentImport): boolean => record.files.some((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): file is { status: "imported"; record: StoredSupportingDocument; } => file.status === 'imported'));
+      const evidenceChanged: number | boolean = removed.length || analysisAdded || bankCorrected || documentCorrected || newImports.length ||
+        newDocumentImports.some((record: StoredDocumentImport): boolean => record.files.some((file: StoredDocumentImport['files'][number]): boolean => file.status === 'imported'));
       const updated: TransactionMatch[] = evidenceChanged ? suggestWorkspaceMatches(effective, effectiveDocuments) : existing.matches;
       if (existing.schemaVersion < 4 || updated !== existing.matches) {
         writeMatches(db!, updated);
