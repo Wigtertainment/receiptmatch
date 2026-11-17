@@ -124,6 +124,14 @@ label { font-size: 12px; font-weight: 600; display: block; margin-bottom: 10px; 
 .statement-picker { margin: 12px 14px; }.statement-picker label { margin-bottom: 5px; }
 .statement-summary { margin: 0 14px; font-size: 13px; line-height: 1.55; }.statement-summary h3 { margin: 0; font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
 .statement-summary-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+.statement-removal-dialog {
+  box-sizing: border-box; width: min(28rem, calc(100vw - 2rem)); max-height: calc(100dvh - 2rem); overflow: auto;
+  border: 1px solid var(--outline); border-radius: 12px; padding: 20px; color: var(--ink); background: var(--surface); overflow-wrap: anywhere;
+}
+.statement-removal-dialog::backdrop { background: #172d2a80; }
+.statement-removal-dialog h3 { margin: 0; }
+.statement-removal-dialog p { margin: 10px 0; }
+.statement-removal-dialog .bank-correction-actions { justify-content: flex-end; }
 summary { cursor: pointer; border-radius: 3px; }.source-location { margin-top: 3px; font-size: 12px; }.source-location summary { display: list-item; width: fit-content; color: #1e665a; padding: 4px 0; }
 .source-location p { margin: 5px 0 0; }.account-list { margin: 7px 0 0; font-size: 12px; }.account-list > div { display: flex; gap: 4px 12px; flex-wrap: wrap; }.account-list dt { color: var(--muted); }.account-list dd { margin: 0; overflow-wrap: anywhere; }
 .statement-warnings { margin-top: 22px; padding: 15px 17px; border-left: 3px solid #a78a4a; background: #f1ebde; color: #594a31; font-size: 12px; line-height: 1.7; }
