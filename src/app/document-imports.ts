@@ -10,7 +10,7 @@ import { calendarDateSchema, type ImportIssue, type ImportPage, type PositionedS
 import { formatCalendarDate, formatMoney } from '../shared/display.js';
 import { formatDocumentTotal } from '../shared/document-display.js';
 import {
-    documentCorrectionKey, type DocumentCorrection, type DocumentCorrectionTarget, type DocumentCorrectionValue
+    documentCorrectionKey, documentCorrectionValueSchema, missingDocumentCorrectionFields, type DocumentCorrection, type DocumentCorrectionTarget, type DocumentCorrectionValue
 } from '../shared/document-corrections.js';
 import { sameMoneyValue } from '../shared/money.js';
 import { documentFieldConfirmationIssue, isDocumentFieldConfirmed, type DocumentFieldReview, type DocumentFieldReviewTarget } from '../shared/document-field-reviews.js';
@@ -64,11 +64,13 @@ interface FieldCorrectionView {
     target: DocumentCorrectionTarget;
     kind: DocumentCorrectionValue['kind'];
     role: string;
+    fieldRole?: string;
     inputValue: string;
     currency: string;
     key: string;
     corrected: DocumentCorrection | undefined;
 }
+interface FieldCorrectionEditor extends FieldCorrectionView { applied: boolean; }
 interface FieldView {
     id: string; role: string; label: string; values: string[]; evidence: SourceEvidence[]; issues: DocumentIssue[];
     reviewNeeded: boolean; originalValues?: string[]; correction?: FieldCorrectionView; confirmedByUser?: true;
@@ -169,13 +171,13 @@ export class DocumentAnalysis {
     readonly sourceOpen: WritableSignal<boolean> = signal(false);
     readonly openDetails: WritableSignal<ReadonlySet<string>> = signal<ReadonlySet<string>>(new Set());
     private readonly edit: WritableSignal<{ field: FieldCorrectionView; trigger: HTMLElement; originalRevision: number | undefined; } | null> = signal<{ field: FieldCorrectionView; trigger: HTMLElement; originalRevision: number | undefined } | null>(null);
-    readonly editing: Signal<{ inputValue: string; currency: string; applied: boolean; target: DocumentCorrectionTarget; kind: DocumentCorrectionValue["kind"]; role: string; key: string; corrected: DocumentCorrection | undefined; } | null> = computed((): { inputValue: string; currency: string; applied: boolean; target: DocumentCorrectionTarget; kind: DocumentCorrectionValue["kind"]; role: string; key: string; corrected: DocumentCorrection | undefined; } | null => {
+    readonly editing: Signal<FieldCorrectionEditor | null> = computed((): FieldCorrectionEditor | null => {
         const edit: { field: FieldCorrectionView; trigger: HTMLElement; originalRevision: number | undefined; } | null = this.edit();
         if (edit?.field.target.documentId !== this.documentId()) {
             return null;
         }
         const saved: DocumentCorrection | undefined = this.corrections()?.get(edit.field.key);
-        const change: { kind: "amount"; value: { coefficient: string; currency: string; scale: number; }; } | { kind: "date"; value: string; } | undefined = saved?.change;
+        const change: DocumentCorrectionValue | undefined = saved?.change;
         return {
             ...edit.field,
             inputValue: change?.kind === 'amount' ? formatAmountEntry(change.value) : change?.value ?? edit.field.inputValue,
@@ -234,19 +236,21 @@ export class DocumentAnalysis {
         };
         const documentId: string | null = this.documentId();
         const corrections: ReadonlyMap<string, DocumentCorrection> | null = this.corrections();
+        const canEdit: boolean = documentId !== null && this.correctionsEnabled();
         const originalSections: Map<string, DocumentSection> = new Map((this.original()?.sections ?? analysis.sections).map((section: DocumentSection): [string, DocumentSection] => [section.sectionId, section]));
         return analysis.sections.map((section: DocumentSection): { id: string; kind: string; evidence: SourceEvidence[]; pages: (number | "Unknown")[]; missingFields: FieldCorrectionView[]; fields: FieldView[]; } => {
             const original: DocumentSection = originalSections.get(section.sectionId)!;
             const originalAmounts: Map<string, { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }> = new Map(original.amounts.map((value: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): [string, { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }] => [value.id, value]));
             const originalDates: Map<string, { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }> = new Map(original.dates.map((value: { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): [string, { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }] => [value.id, value]));
             const declared: string[] = [...new Set(section.currencies.filter((value: { role: "unknown" | "informational-fx" | "settlement"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => value.role === 'settlement').flatMap((value: { role: "unknown" | "informational-fx" | "settlement"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): string[] => value.candidates))];
-            const editable: (fieldId: string | null, kind: DocumentCorrectionValue["kind"], role: string, inputValue?: string, currency?: string) => FieldCorrectionView | undefined = (fieldId: string | null, kind: DocumentCorrectionValue['kind'], role: string, inputValue: string = '', currency: string = ''): FieldCorrectionView | undefined => {
+            const editable: (fieldId: string | null, kind: DocumentCorrectionValue['kind'], role: string, inputValue?: string, currency?: string, fieldRole?: string) => FieldCorrectionView | undefined =
+                (fieldId: string | null, kind: DocumentCorrectionValue['kind'], role: string, inputValue: string = '', currency: string = '', fieldRole?: string): FieldCorrectionView | undefined => {
                 if (!documentId || !this.correctionsEnabled()) {
                     return undefined;
                 }
                 const target: { documentId: string; sectionId: string; fieldId: string | null; } = { documentId, sectionId: section.sectionId, fieldId };
-                const key: string = documentCorrectionKey(target, kind);
-                return { target, kind, role, inputValue, currency, key, corrected: corrections?.get(key) };
+                const key: string = documentCorrectionKey(target, kind, fieldRole);
+                return { target, kind, role, fieldRole, inputValue, currency, key, corrected: corrections?.get(key) };
             };
             const missingFields: FieldCorrectionView[] = [];
             const missing: Set<string> | undefined = missingBySection.get(section.sectionId);
@@ -259,6 +263,9 @@ export class DocumentAnalysis {
                     missingFields.push(editable(null, 'date', 'Issue date')!);
                 }
             }
+            const additional: FieldCorrectionView[] = canEdit ? missingDocumentCorrectionFields(original).map(
+                (slot: ReturnType<typeof missingDocumentCorrectionFields>[number]): FieldCorrectionView => editable(null, slot.kind, slot.label, '', '', slot.role)!) : [];
+            missingFields.push(...additional);
             return {
                 id: section.sectionId, kind: kinds[section.kind], evidence: section.evidence, pages: section.pageIds.map((pageId: string): number | "Unknown" => this.pageNumber(pageId)), missingFields,
                 fields: [
@@ -277,9 +284,18 @@ export class DocumentAnalysis {
                             previous ? editable(value.id, 'date', dateRoles[value.role], value.candidates.length === 1 ? value.candidates[0] : '') : undefined,
                             previous?.candidates.map((candidate: string): string => formatCalendarDate(candidate)));
                     }),
-                    ...section.merchants.map((value: { role: "merchant"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): FieldView => field(value, 'Merchant', value.candidates)),
-                    ...section.references.map((value: { role: "table" | "unknown" | "invoice" | "receipt" | "payment" | "order" | "customer" | "account" | "related-invoice"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): FieldView => field(value, referenceRoles[value.role], value.candidates)),
-                    ...section.currencies.map((value: { role: "unknown" | "informational-fx" | "settlement"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): FieldView => field(value, currencyRoles[value.role], value.candidates))
+                    ...section.merchants.filter((value: DocumentSection['merchants'][number]): boolean => !documentId || original.merchants.some((item: DocumentSection['merchants'][number]): boolean => item.id === value.id) || value.evidence.length > 0)
+                        .map((value: DocumentSection['merchants'][number]): FieldView => field(value, 'Merchant', value.candidates,
+                            editable(value.id, 'merchant', 'Merchant', value.candidates.length === 1 ? value.candidates[0] : ''),
+                            original.merchants.find((item: DocumentSection['merchants'][number]): boolean => item.id === value.id)?.candidates)),
+                    ...section.references.filter((value: DocumentSection['references'][number]): boolean => !documentId || original.references.some((item: DocumentSection['references'][number]): boolean => item.id === value.id) || value.evidence.length > 0)
+                        .map((value: DocumentSection['references'][number]): FieldView => field(value, referenceRoles[value.role], value.candidates,
+                            editable(value.id, 'reference', referenceRoles[value.role], value.candidates.length === 1 ? value.candidates[0] : '', '', value.role),
+                            original.references.find((item: DocumentSection['references'][number]): boolean => item.id === value.id)?.candidates)),
+                    ...section.currencies.filter((value: DocumentSection['currencies'][number]): boolean => !documentId || original.currencies.some((item: DocumentSection['currencies'][number]): boolean => item.id === value.id) || value.evidence.length > 0)
+                        .map((value: DocumentSection['currencies'][number]): FieldView => field(value, currencyRoles[value.role], value.candidates,
+                            editable(value.id, 'currency', currencyRoles[value.role], value.candidates.length === 1 ? value.candidates[0] : '', '', value.role),
+                            original.currencies.find((item: DocumentSection['currencies'][number]): boolean => item.id === value.id)?.candidates))
                 ]
             };
         });
@@ -343,7 +359,7 @@ export class DocumentAnalysis {
     }
 
     correctedValue(change: DocumentCorrectionValue): string {
-        return change.kind === 'amount' ? formatMoney(change.value) : formatCalendarDate(change.value);
+        return change.kind === 'amount' ? formatMoney(change.value) : change.kind === 'date' ? formatCalendarDate(change.value) : change.value;
     }
 
     startCorrection(field: FieldCorrectionView, trigger: WigButtonComponent): void {
@@ -371,36 +387,54 @@ export class DocumentAnalysis {
         }
     }
 
-    applyCorrection(form: HTMLFormElement, event?: Event): void {
-        event?.preventDefault();
-        const editing: { inputValue: string; currency: string; applied: boolean; target: DocumentCorrectionTarget; kind: DocumentCorrectionValue["kind"]; role: string; key: string; corrected: DocumentCorrection | undefined; } | null = this.editing();
-        if (!editing || this.busy()) {
-            return;
-        }
-        const fields: FormData = new FormData(form);
+    private parseCorrectionValue(editing: FieldCorrectionEditor, fields: FormData): DocumentCorrectionValue | null {
         const enteredValue: FormDataEntryValue | null = fields.get('value');
         const entered: string = typeof enteredValue === 'string' ? enteredValue.trim() : '';
-        let change: DocumentCorrectionValue;
         if (editing.kind === 'date') {
             const date: ZodSafeParseResult<string> = calendarDateSchema.safeParse(entered);
             if (!date.success) {
-                this.correctionError.set('Enter a valid date.'); return;
+                this.correctionError.set('Enter a valid date.'); return null;
             }
-            change = { kind: 'date', value: date.data };
-        } else {
-            const currencyValue: FormDataEntryValue | null = fields.get('currency');
-            const currency: string = typeof currencyValue === 'string' ? currencyValue.trim().toUpperCase() : '';
-            if (!/^[A-Z]{3}$/.test(currency)) {
-                this.correctionError.set('Enter a three-letter currency code, for example EUR.'); return;
-            }
-            const amount: { coefficient: string; currency: string; scale: number; } | null = parseAmountEntry(entered, currency);
-            if (!amount) {
-                this.correctionError.set(`Enter an amount without grouping separators, for example ${this.amountExample}.`); return;
-            }
-            change = { kind: 'amount', value: amount };
+            return { kind: 'date', value: date.data };
         }
-        const previous: { kind: "amount"; value: { coefficient: string; currency: string; scale: number; }; } | { kind: "date"; value: string; } | undefined = this.corrections()?.get(editing.key)?.change;
-        if ((change.kind === 'date' && previous?.kind === 'date' && change.value === previous.value) ||
+        if (editing.kind === 'amount') {
+            return this.parseAmountCorrection(entered, fields);
+        }
+        const value: string = editing.kind === 'currency' ? entered.toUpperCase() : entered;
+        const parsed: ZodSafeParseResult<DocumentCorrectionValue> = documentCorrectionValueSchema.safeParse({ kind: editing.kind, value,
+            ...(editing.kind === 'merchant' ? {} : { role: editing.fieldRole }) });
+        if (!parsed.success) {
+            this.correctionError.set(editing.kind === 'currency' ? 'Enter a three-letter currency code, for example EUR.' : 'Enter a value for this field.');
+            return null;
+        }
+        return parsed.data;
+    }
+
+    private parseAmountCorrection(entered: string, fields: FormData): DocumentCorrectionValue | null {
+        const currencyValue: FormDataEntryValue | null = fields.get('currency');
+        const currency: string = typeof currencyValue === 'string' ? currencyValue.trim().toUpperCase() : '';
+        if (!/^[A-Z]{3}$/.test(currency)) {
+            this.correctionError.set('Enter a three-letter currency code, for example EUR.'); return null;
+        }
+        const amount: { coefficient: string; currency: string; scale: number; } | null = parseAmountEntry(entered, currency);
+        if (!amount) {
+            this.correctionError.set(`Enter an amount without grouping separators, for example ${this.amountExample}.`); return null;
+        }
+        return { kind: 'amount', value: amount };
+    }
+
+    applyCorrection(form: HTMLFormElement, event?: Event): void {
+        event?.preventDefault();
+        const editing: FieldCorrectionEditor | null = this.editing();
+        if (!editing || this.busy()) {
+            return;
+        }
+        const change: DocumentCorrectionValue | null = this.parseCorrectionValue(editing, new FormData(form));
+        if (!change) {
+            return;
+        }
+        const previous: DocumentCorrectionValue | undefined = this.corrections()?.get(editing.key)?.change;
+        if ((change.kind !== 'amount' && previous?.kind === change.kind && change.value === previous.value) ||
             (change.kind === 'amount' && previous?.kind === 'amount' && sameMoneyValue(change.value, previous.value))) {
             this.correctionError.set('Enter a different value to update this correction.'); return;
         }
@@ -495,7 +529,7 @@ export class DocumentImports {
         const byDocument: Map<string, Map<string, DocumentCorrection>> = new Map<string, Map<string, DocumentCorrection>>();
         for (const correction of this.state().workspace?.documentCorrections ?? []) {
             const fields: Map<string, DocumentCorrection> = byDocument.get(correction.documentId) ?? new Map<string, DocumentCorrection>();
-            fields.set(documentCorrectionKey(correction, correction.change.kind), correction);
+            fields.set(documentCorrectionKey(correction, correction.change.kind, 'role' in correction.change ? correction.change.role : undefined), correction);
             byDocument.set(correction.documentId, fields);
         }
         return byDocument;

@@ -3,7 +3,7 @@ import type { ImportIssue, PositionedSpan } from "./bank-import.js";
 import { z } from "zod";
 import { importIssueSchema } from "./bank-import.js";
 import type { ExtractionProgress } from "./pdf-extraction.js";
-import { supportingDocumentSchema } from "./supporting-document.js";
+import { hasManualDocumentFields, supportingDocumentSchema } from "./supporting-document.js";
 
 // Fixed execution guards, not supported-workload or processing-time promises.
 export const DOCUMENT_IMPORT_LIMITS: { readonly files: 1000; readonly directories: 1000; readonly depth: 64; } = { files: 1000, directories: 1000, depth: 64 } as const;
@@ -294,6 +294,9 @@ export const storedSupportingDocumentSchema: StoredSupportingDocumentSchemaType 
 		result: supportingDocumentSchema,
 	})
 	.superRefine((record: z.output<StoredSupportingDocumentSchemaType>, ctx: z.RefinementCtx): void => {
+		if (hasManualDocumentFields(record.result)) {
+			ctx.addIssue({ code: "custom", message: "Original document manifests cannot contain manual correction markers." });
+		}
 		if (
 			!["complete", "partial"].includes(record.result.status) ||
 			!record.result.input ||
@@ -625,6 +628,9 @@ export const storedDocumentImportSchema: StoredDocumentImportSchemaType = z
 		directoryIssues: z.array(z.strictObject({ directoryPath: localPath, code: z.string().min(1).max(80), message: z.string().min(1).max(512) })).max(2000),
 	})
 	.superRefine((record: z.output<StoredDocumentImportSchemaType>, ctx: z.RefinementCtx): void => {
+		if (record.files.some((file: DocumentFileResult): boolean => file.status === "failed" && !!file.analysis && hasManualDocumentFields(file.analysis))) {
+			ctx.addIssue({ code: "custom", message: "Original document manifests cannot contain manual correction markers." });
+		}
 		const invalid: (message: string) => void = (message: string): void => ctx.addIssue({ code: "custom", message });
 		if (record.finishedAt < record.startedAt) {
 			invalid("A document import cannot finish before it starts.");

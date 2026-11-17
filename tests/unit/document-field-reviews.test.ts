@@ -5,7 +5,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { test } from 'vitest';
 import { WorkspaceSession, type WorkspaceDialogs } from '../../electron/workspace-session.js';
-import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, type SavedWorkspace } from '../../electron/store.js';
+import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERSION, type SavedWorkspace } from '../../electron/store.js';
 import { WorkspaceDocumentState } from '../../electron/documents/document-state.js';
 import { documentFieldConfirmationIssue, documentFieldReviewKey, documentFieldSignature, isDocumentFieldConfirmed, type DocumentFieldReview, type DocumentFieldReviewTarget } from '../../src/shared/document-field-reviews.js';
 import { documentRevisionIndex } from '../../src/shared/match-approvals.js';
@@ -150,7 +150,7 @@ test('version 13 opens unchanged and gains field reviews only on explicit save',
         assert.equal(previous.schemaVersion, 13);
         assert.equal(previous.documentFieldReviews.size, 0);
         const saved: SavedWorkspace = await saveWorkspace(previous, previous.metadata);
-        assert.equal(saved.schemaVersion, 14);
+        assert.equal(saved.schemaVersion, SCHEMA_VERSION);
         assert.equal((await loadWorkspace(file)).documentFieldReviews.size, 0);
     } finally {
         await rm(root, { recursive: true, force: true });

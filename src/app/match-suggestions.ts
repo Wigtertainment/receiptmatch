@@ -8,7 +8,7 @@ import { type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonCo
 import { formatCalendarDate, formatMoney } from '../shared/display.js';
 import { formatDocumentTotal } from '../shared/document-display.js';
 import type { MatchApprovalSelection } from '../shared/match-approvals.js';
-import type { WorkspaceState, DocumentSnapshot, DocumentImportSummary, WorkspaceView } from '../shared/protocol.js';
+import type { WorkspaceState, WorkspaceCommand, DocumentSnapshot, DocumentImportSummary, OriginalDocumentFields, WorkspaceView } from '../shared/protocol.js';
 import type { MatchCandidateView, MatchDetails, MatchReview, MatchSummary } from '../shared/workspace-matching.js';
 import type { StoredSupportingDocument } from '../shared/workspace-documents.js';
 import { DocumentAnalysis } from './document-imports.js';
@@ -16,10 +16,11 @@ import { OriginalPreviewButton } from './original-preview-button.js';
 import { ButtonPressed } from './button-pressed.js';
 import type { Money } from '../shared/money.js';
 import type { DocumentFieldReviewTarget } from '../shared/document-field-reviews.js';
+import { documentCorrectionKey, type DocumentCorrection, type DocumentCorrectionTarget, type DocumentCorrectionValue } from '../shared/document-corrections.js';
 
 type MatchStatus = MatchSummary['status'];
 type Filter = 'all' | MatchStatus;
-interface ReviewDocument { id: string; name: string; path: string; total: string | null; record: StoredSupportingDocument; }
+interface ReviewDocument { id: string; name: string; path: string; total: string | null; record: StoredSupportingDocument; original: OriginalDocumentFields | null; }
 
 @Component({
 	selector: 'app-match-suggestions', standalone: true, templateUrl: './match-suggestions.html',
@@ -163,6 +164,13 @@ export class MatchSuggestions {
 		return feedback?.loadRevision === this.workspace().loadRevision && feedback.transactionId === this.selectedRow()?.transactionId ? feedback.message : null;
 	});
 	readonly documents: Signal<ReviewDocument[] | null> = computed((): ReviewDocument[] | null => this.documentRequest()?.key === this.documentKey() ? this.documentRequest()!.documents : null);
+	readonly documentCorrections: Signal<ReadonlyMap<string, DocumentCorrection>> = computed((): ReadonlyMap<string, DocumentCorrection> => {
+		const documentId: string = this.selectedDocumentId();
+		return new Map((this.workspace().documentCorrections ?? []).filter((correction: DocumentCorrection): boolean => correction.documentId === documentId)
+			.map((correction: DocumentCorrection): [string, DocumentCorrection] => [
+				documentCorrectionKey(correction, correction.change.kind, 'role' in correction.change ? correction.change.role : undefined), correction,
+			]));
+	});
 	readonly documentsFailed: Signal<boolean> = computed((): boolean => this.documentRequest()?.key === this.documentKey() && this.documentRequest()?.documents === null);
 	readonly duplicateDocumentNames: Signal<Set<string>> = computed((): Set<string> => {
 		const seen: Set<string> = new Set<string>();
@@ -310,6 +318,7 @@ export class MatchSuggestions {
 				const archived: Set<string> = new Set(supersededDocuments);
 				const documents: ReviewDocument[] = records.flatMap((record: StoredDocumentImport): ReviewDocument[] => record.files.flatMap((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): ReviewDocument[] => file.status === 'imported' && !archived.has(file.record.id) ? [{
 					id: file.record.id, name: this.basename(file.record.filePath), path: file.record.filePath, total: formatDocumentTotal(file.record.result), record: file.record,
+					original: snapshot.originals[file.record.id] ?? null,
 				}] : []));
 				update(documents.sort((a: ReviewDocument, b: ReviewDocument): number => a.name.localeCompare(b.name) || a.path.localeCompare(b.path)));
 			}).catch((): void => update(null));
@@ -534,20 +543,28 @@ export class MatchSuggestions {
 	}
 
 	async confirmField(value: DocumentFieldReviewTarget & { confirmed: boolean }): Promise<void> {
+		await this.changeDocumentField({ ...value, type: 'set-document-field-confirmed', revision: this.workspace().matchRevision });
+	}
+
+	async correctField(value: DocumentCorrectionTarget & { change: DocumentCorrectionValue }): Promise<void> {
+		await this.changeDocumentField({ ...value, type: 'correct-document-field', revision: this.workspace().matchRevision });
+	}
+
+	private async changeDocumentField(command: Extract<WorkspaceCommand, { type: 'set-document-field-confirmed' | 'correct-document-field' }>): Promise<void> {
 		const transactionId: string | undefined = this.selectedRow()?.transactionId;
-		if (this.reviewDisabled() || !this.documents() || !transactionId || value.documentId !== this.selectedDocumentId()) {
+		if (this.reviewDisabled() || !this.documents() || !transactionId || command.documentId !== this.selectedDocumentId()) {
 			return;
 		}
-		const { loadRevision, matchRevision }: WorkspaceView = this.workspace();
+		const { loadRevision }: WorkspaceView = this.workspace();
 		this.pending.set(true);
 		this.reviewFeedback.set(null);
 		try {
-			const result: WorkspaceState = await window.receiptmatch.command({ ...value, type: 'set-document-field-confirmed', revision: matchRevision });
+			const result: WorkspaceState = await window.receiptmatch.command(command);
 			if (result.error) {
 				this.reviewFeedback.set({ loadRevision, transactionId, message: result.error });
 			}
 		} catch {
-			this.reviewFeedback.set({ loadRevision, transactionId, message: 'The field confirmation could not be recorded. Please try again.' });
+			this.reviewFeedback.set({ loadRevision, transactionId, message: 'The document field change could not be recorded. Please try again.' });
 		} finally {
 			this.pending.set(false);
 		}

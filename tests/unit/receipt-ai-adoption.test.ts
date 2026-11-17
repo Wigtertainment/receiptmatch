@@ -270,3 +270,19 @@ test('preserves an existing manual correction and approval while applying a veri
     assert.equal((await session.dispatch({ type: 'open' })).error, null);
     assert.equal(workspace(session).approvedDocumentCount, 1);
 });
+
+test('does not offer an AI reference suggestion over an explicit manual reference correction', async (context: TestContext): Promise<void> => {
+    const prepared: Fixture = await fixture(context, { selectable: true });
+    const { document, session }: Fixture = prepared;
+    const section: DocumentSection = document.result.sections[0];
+    const reference: DocumentSection['references'][number] = section.references[0];
+    assert.equal((await session.dispatch({ type: 'correct-document-field', revision: workspace(session).matchRevision, documentId: document.id, sectionId: section.sectionId,
+        fieldId: reference.id, change: { kind: 'reference', role: reference.role, value: 'MANUAL-2047' } })).error, null);
+    const staged: Ready = await preview(prepared);
+    assert.match(staged.proposals!.find((proposal: ReceiptAiProposal): boolean => proposal.field === 'reference')!.unavailable!, /manual correction/);
+    const result: OriginalAdoptionResult = await session.acceptReceiptAnalysis({ token: staged.token, loadRevision: workspace(session).loadRevision, acknowledgeConflicts: true, selectedFields: ['reference'] });
+    assert.equal(result.status, 'failed');
+    const view: WorkspaceView = workspace(session);
+    const snapshot: DocumentSnapshot = session.documentSnapshot({ loadRevision: view.loadRevision, revision: view.matchRevision })!;
+    assert.deepEqual(imported(snapshot.reports, document.id).result.sections[0].references[0].candidates, ['MANUAL-2047']);
+});

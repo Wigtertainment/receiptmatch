@@ -87,7 +87,10 @@ function sameDocumentCorrection(previous: DocumentCorrectionValue, change: Docum
   if (change.kind === 'amount') {
     return previous.kind === 'amount' && sameMoneyValue(previous.value, change.value);
   }
-  return previous.kind === 'date' && previous.value === change.value;
+  if (change.kind === 'date') {
+    return previous.kind === 'date' && previous.value === change.value;
+  }
+  return previous.kind === change.kind && previous.value === change.value && (!('role' in change) || ('role' in previous && previous.role === change.role));
 }
 
 type PendingStatementFallback = { stage: 'offer'; token: string; source: StatementFallback } | { stage: 'review'; token: string; record: StoredBankImport };
@@ -111,13 +114,14 @@ interface PendingReceiptAnalysis {
 }
 
 function preserveReceiptCorrection(proposal: ReceiptAiProposal, document: SupportingDocument, corrections: readonly DocumentCorrection[]): ReceiptAiProposal {
-  if (proposal.field === 'reference' || proposal.unavailable || !corrections.length) {
+  if (proposal.unavailable || !corrections.length) {
     return proposal;
   }
   const section: DocumentSection | undefined = document.sections.find((item: DocumentSection): boolean => item.sectionId === proposal.sectionId);
-  const kind: 'date' | 'amount' = proposal.field === 'issue-date' ? 'date' : 'amount';
+  const kind: 'date' | 'amount' | 'reference' = proposal.field === 'issue-date' ? 'date' : proposal.field === 'reference' ? 'reference' : 'amount';
   const fieldIds: string[] = kind === 'date'
     ? (section?.dates ?? []).filter((item: DocumentSection['dates'][number]): boolean => item.role === 'issue').map((item: DocumentSection['dates'][number]): string => item.id)
+    : kind === 'reference' ? (section?.references ?? []).filter((item: DocumentSection['references'][number]): boolean => ['invoice', 'receipt'].includes(item.role)).map((item: DocumentSection['references'][number]): string => item.id)
     : (section?.amounts ?? []).filter((item: DocumentSection['amounts'][number]): boolean => item.role === 'billed-total').map((item: DocumentSection['amounts'][number]): string => item.id);
   const maintained: boolean = corrections.some((correction: DocumentCorrection): boolean =>
     correction.sectionId === proposal.sectionId && correction.change.kind === kind && (correction.fieldId === null || fieldIds.includes(correction.fieldId)));
@@ -1390,7 +1394,7 @@ export class WorkspaceSession {
       throw new Error('This document is no longer active.');
     }
     const target: { documentId: string; sectionId: string; fieldId: string | null; } = { documentId, sectionId, fieldId };
-    const key: string = documentCorrectionKey(target, change.kind);
+    const key: string = documentCorrectionKey(target, change.kind, 'role' in change ? change.role : undefined);
     const previous: DocumentCorrection | undefined = this.documentCorrections.get(key);
     if (previous) {
       if (sameDocumentCorrection(previous.change, change)) {
@@ -1418,6 +1422,9 @@ export class WorkspaceSession {
   }
 
   private isOriginalDocumentValue(documentId: string, sectionId: string, fieldId: string, change: DocumentCorrectionValue): boolean {
+    if (change.kind !== 'amount' && change.kind !== 'date') {
+      return false;
+    }
     const analyzed: SupportingDocument | undefined = supportingDocumentSource(this.documents().analyzed, documentId)?.record.result;
     if (analyzed && !analyzed.issues.some((issue: DocumentIssue): boolean => issue.fieldId === fieldId)) {
       const section: DocumentSection | undefined = analyzed.sections.find((section: DocumentSection): boolean => section.sectionId === sectionId);

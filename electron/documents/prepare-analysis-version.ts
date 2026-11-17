@@ -54,6 +54,15 @@ function correctedField(correction: DocumentCorrection, before: DocumentSection,
     if (correction.change.kind === 'date') {
         return pairedCorrectionField(before.dates, after.dates, id, pairedId)?.id;
     }
+    if (correction.change.kind === 'merchant') {
+        return pairedCorrectionField(before.merchants, after.merchants, id, pairedId)?.id;
+    }
+    if (correction.change.kind === 'reference') {
+        return pairedCorrectionField(before.references, after.references, id, pairedId)?.id;
+    }
+    if (correction.change.kind === 'currency') {
+        return pairedCorrectionField(before.currencies, after.currencies, id, pairedId)?.id;
+    }
     const amount: AmountField | undefined = pairedCorrectionField(before.amounts, after.amounts, id, pairedId);
     return amount && amountCurrencyMatches(amount, after, correction.change.value.currency, amount.id === pairedId) ? amount.id : undefined;
 }

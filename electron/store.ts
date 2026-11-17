@@ -26,7 +26,7 @@ import { projectReceiptAnalyses, receiptAnalysisVersionSchema, type ReceiptAnaly
 export { moneySchema } from '../src/shared/money.js';
 
 export const APPLICATION_ID: 1380142420 = 0x52434d54;
-export const SCHEMA_VERSION: number = 14;
+export const SCHEMA_VERSION: number = 15;
 const metadataSchema: z.ZodObject<{ id: z.ZodUUID; name: z.ZodString; createdAt: z.ZodISODateTime; savedAt: z.ZodNullable<z.ZodISODateTime>; }, z.core.$strict> = z.strictObject({ id: z.uuid(), name: workspaceName.refine((value: string): boolean => value.trim().length > 0), createdAt: z.iso.datetime(), savedAt: z.iso.datetime().nullable() });
 export type WorkspaceMetadata = z.infer<typeof metadataSchema>;
 export interface SavedWorkspace {
@@ -879,7 +879,7 @@ function parseDocumentCorrections(entries: Iterable<readonly [string, unknown]>)
   for (const [key, value] of entries) {
     const correction: DocumentCorrection = documentCorrectionSchema.parse(value);
     const revisionKey: string = `${correction.documentId}:${correction.revision}`;
-    if (key !== documentCorrectionKey(correction, correction.change.kind) || result.has(key) || revisions.has(revisionKey)) {
+    if (key !== documentCorrectionKey(correction, correction.change.kind, 'role' in correction.change ? correction.change.role : undefined) || result.has(key) || revisions.has(revisionKey)) {
       throw new Error('Stored document correction identities or revisions are damaged.');
     }
     revisions.add(revisionKey);

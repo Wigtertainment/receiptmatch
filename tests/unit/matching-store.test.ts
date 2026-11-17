@@ -710,7 +710,7 @@ test('keeps both fields in review when a correction makes agreeing document tota
 	let file: ReturnType<typeof corrected> = corrected();
 	assert.equal(file.status, 'imported');
 	assert.deepEqual(file.record.result.issues.filter((issue: DocumentIssue): boolean => issue.code === 'conflicting-field').map((issue: DocumentIssue): string | null => issue.fieldId), [first.id, second.id]);
-	const secondCorrection: { fieldId: string; revision: number; change: { kind: "amount"; value: { coefficient: string; currency: string; scale: number; }; } | { kind: "date"; value: string; }; documentId: string; sectionId: string; } = { ...firstCorrection, fieldId: second.id, revision: 3 };
+	const secondCorrection: DocumentCorrection = { ...firstCorrection, fieldId: second.id, revision: 3 };
 	corrections.set(documentCorrectionKey(secondCorrection, 'amount'), secondCorrection);
 	file = corrected();
 	assert.equal(file.status, 'imported');

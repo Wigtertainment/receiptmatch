@@ -35,9 +35,22 @@
 					<p class="muted" [id]="editorId() + '-amount-hint'">Use {{ amountExample }} without grouping separators.</p>
 					<label [for]="editorId() + '-currency'">Currency</label>
 					<wig-input [inputId]="editorId() + '-currency'" name="currency" [appInputLength]="3" [value]="editor.currency" [disabled]="busy()" [required]="true" />
-				} @else {
+				} @else if (editor.kind === 'date') {
 					<label [for]="editorId() + '-date'">Date</label>
 					<input [id]="editorId() + '-date'" name="value" type="date" [value]="editor.inputValue" [disabled]="busy()" required />
+				} @else {
+					<label [for]="editorId() + '-value'">{{ editor.role }}</label>
+					<wig-input
+						[inputId]="editorId() + '-value'"
+						name="value"
+						[appInputLength]="editor.kind === 'currency' ? 3 : 16384"
+						[value]="editor.inputValue"
+						[disabled]="busy()"
+						[required]="true"
+					/>
+					@if (editor.kind === 'currency') {
+						<p class="muted">Use a three-letter currency code, for example EUR.</p>
+					}
 				}
 			</div>
 			@if (correctionError(); as error) {

@@ -254,11 +254,13 @@
 												[documentId]="document.id"
 												[documentName]="document.name"
 												[fieldReviews]="workspace().documentFieldReviews ?? []"
-												[correctionsEnabled]="false"
+												[corrections]="documentCorrections()"
+												[original]="document.original"
 												[busy]="reviewDisabled() || !documents()"
 												[workspaceError]="reviewError()"
 												fieldHeading="Document fields"
 												(confirmation)="confirmField($event)"
+												(correction)="correctField($event)"
 											/>
 										</ng-template>
 									</wig-accordion>
