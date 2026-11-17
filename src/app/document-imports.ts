@@ -16,7 +16,7 @@ import { sameMoneyValue } from '../shared/money.js';
 import type { NuExtractSettingsStatus } from '../shared/local-ocr-settings.js';
 import type { OriginalAdoptionResult } from '../shared/original-preview.js';
 import type { DocumentImportSummary, DocumentSnapshot, OriginalDocumentFields, WorkspaceCommand, WorkspaceState, WorkspaceView } from '../shared/protocol.js';
-import type { ReceiptAiChange, ReceiptAiPreviewResult, ReceiptAiRequest } from '../shared/receipt-ai.js';
+import type { ReceiptAiChange, ReceiptAiField, ReceiptAiPreviewResult, ReceiptAiProposal, ReceiptAiRequest } from '../shared/receipt-ai.js';
 import type { DocumentIssue, DocumentSection, SupportingDocument } from '../shared/supporting-document.js';
 import type { DocumentFileResult, DocumentFormat, DocumentImportProgress, StoredDocumentImport } from '../shared/workspace-documents.js';
 import type { ZodSafeParseResult } from 'zod';
@@ -31,53 +31,6 @@ function basename(path: string): string {
 
 function pageProgress(extraction?: ExtractionProgress | null): string {
     return extraction?.pageNumber && extraction.pageCount ? ` · Page ${extraction.pageNumber} of ${extraction.pageCount}` : '';
-}
-
-interface ReceiptChangeGroup {
-    label: 'Changed' | 'Added' | 'Removed';
-    changes: ReceiptAiChange[];
-}
-
-interface ReceiptChangeSummary {
-    groups: ReceiptChangeGroup[];
-    sections: { label: string; entries: { heading: string; fields: ReceiptAiChange[] }[] }[];
-    unverified: ReceiptAiChange[];
-    warnings?: { before: number; after: number };
-    matching?: string | null;
-    omitted?: string | null;
-}
-
-function summarizeReceiptChanges(changes: ReceiptAiChange[]): ReceiptChangeSummary {
-    const groups: ReceiptChangeSummary['groups'] = [{ label: 'Changed', changes: [] }, { label: 'Added', changes: [] }, { label: 'Removed', changes: [] }];
-    const sections: ReceiptChangeSummary['sections'] = [{ label: 'Current analysis', entries: [] }, { label: 'AI proposal', entries: [] }];
-    const summary: ReceiptChangeSummary = { groups, sections, unverified: [] };
-    for (const change of changes) {
-        if (change.unrecognized) {
-            summary.unverified.push(change);
-            continue;
-        }
-        const { kind, before, after, section }: ReceiptAiChange = change;
-        const side: ReceiptChangeSummary['sections'][number] = sections[after === null ? 0 : 1];
-        switch (kind) {
-            case 'warnings': summary.warnings = { before: before?.split(', ').length ?? 0, after: after?.split(', ').length ?? 0 }; break;
-            case 'matching': summary.matching = after; break;
-            case 'omitted': summary.omitted = after; break;
-            case 'section': side.entries.push({ heading: (after ?? before)!, fields: [] }); break;
-            default: addReceiptFieldChange(change, groups, side, section);
-        }
-    }
-    summary.groups = groups.filter((group: ReceiptChangeGroup): boolean => group.changes.length > 0);
-    summary.sections = sections.filter((side: ReceiptChangeSummary['sections'][number]): boolean => side.entries.length > 0);
-    return summary;
-}
-
-function addReceiptFieldChange(change: ReceiptAiChange, groups: ReceiptChangeGroup[], side: ReceiptChangeSummary['sections'][number], section?: string): void {
-    const { before, after }: ReceiptAiChange = change;
-    if (section) {
-        side.entries.find((entry: ReceiptChangeSummary['sections'][number]['entries'][number]): boolean => entry.heading === section)?.fields.push(change);
-    } else {
-        groups[before === null ? 1 : after === null ? 2 : 0].changes.push(change);
-    }
 }
 
 const numberFormat: Intl.NumberFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
@@ -117,7 +70,7 @@ interface FieldCorrectionView {
 }
 interface FieldView {
     id: string; role: string; label: string; values: string[]; evidence: SourceEvidence[]; issues: DocumentIssue[];
-    reviewNeeded: boolean; originalValues?: string[]; correction?: FieldCorrectionView;
+    reviewNeeded: boolean; originalValues?: string[]; correction?: FieldCorrectionView; confirmedByUser?: true;
 }
 
 @Component({
@@ -241,8 +194,9 @@ export class DocumentAnalysis {
                 missingBySection.set(issue.sectionId, missing);
             }
         }
-        const field: (source: { id: string; label: string; evidence: SourceEvidence[]; }, role: string, values: string[], correction?: FieldCorrectionView, originalValues?: string[]) => FieldView = (source: { id: string; label: string; evidence: SourceEvidence[] }, role: string, values: string[],
-            correction?: FieldCorrectionView, originalValues?: string[]): FieldView => {
+        type SourceField = Pick<FieldView, 'id' | 'label' | 'evidence' | 'confirmedByUser'>;
+        const field: (source: SourceField, role: string, values: string[], correction?: FieldCorrectionView, originalValues?: string[]) => FieldView =
+            (source: SourceField, role: string, values: string[], correction?: FieldCorrectionView, originalValues?: string[]): FieldView => {
             const issues: DocumentIssue[] = fieldIssues.get(source.id) ?? [];
             return { ...source, role, values, issues, reviewNeeded: issues.length > 0, correction, originalValues };
         };
@@ -403,7 +357,7 @@ export class DocumentAnalysis {
 interface DocumentFileRow { file: DocumentFileResult; total: string | null; original: OriginalDocumentFields | null; }
 interface ReportCache { workspaceKey: string; requestKey: string; records: Map<string, StoredDocumentImport>; originals: Record<string, OriginalDocumentFields>; }
 interface ReceiptAnalysisContext {
-    request: ReceiptAiRequest; workspaceKey: string; matchRevision: number; name: string; format: DocumentFormat; trigger: HTMLButtonElement;
+    request: ReceiptAiRequest; workspaceKey: string; matchRevision: number; name: string; format: DocumentFormat; documentId: string; trigger: HTMLButtonElement;
 }
 interface ReceiptAnalysisReview { context: ReceiptAnalysisContext; result: Extract<ReceiptAiPreviewResult, { status: 'ready' }>; }
 interface ReceiptAnalysisFeedback { context: ReceiptAnalysisContext; message: string; error: boolean; }
@@ -426,12 +380,25 @@ export class DocumentImports {
         return active?.localAi ? active : null;
     });
     readonly aiReview: WritableSignal<ReceiptAnalysisReview | null> = signal<ReceiptAnalysisReview | null>(null);
-    readonly aiChanges: Signal<ReceiptChangeSummary> = computed((): ReceiptChangeSummary => summarizeReceiptChanges(this.aiReview()?.result.changes ?? []));
+    readonly aiWarnings: Signal<{ before: number; after: number } | undefined> = computed((): { before: number; after: number } | undefined => {
+        const warning: ReceiptAiChange | undefined = this.aiReview()?.result.changes.find((change: ReceiptAiChange): boolean => change.kind === 'warnings');
+        return warning ? { before: warning.before?.split(', ').length ?? 0, after: warning.after?.split(', ').length ?? 0 } : undefined;
+    });
     readonly aiFeedback: WritableSignal<ReceiptAnalysisFeedback | null> = signal<ReceiptAnalysisFeedback | null>(null);
     readonly aiApplying: WritableSignal<boolean> = signal(false);
     readonly aiApplyError: WritableSignal<string | null> = signal<string | null>(null);
     readonly aiEvidenceOpen: WritableSignal<boolean> = signal(false);
     readonly acknowledgeAiConflicts: WritableSignal<boolean> = signal(false);
+    readonly aiSelectedFields: WritableSignal<ReceiptAiField[]> = signal<ReceiptAiField[]>([]);
+    readonly aiCurrency: WritableSignal<string> = signal('');
+    private readonly aiNeedsCurrency: Signal<boolean> = computed((): boolean =>
+        this.aiSelectedFields().includes('billed-total') && this.aiReview()?.result.proposals?.some((proposal: ReceiptAiProposal): boolean =>
+            proposal.field === 'billed-total' && proposal.needsCurrency === true) === true);
+    readonly aiCanApply: Signal<boolean> = computed((): boolean => {
+        const review: ReceiptAnalysisReview | null = this.aiReview();
+        return !!review && this.aiSelectedFields().length > 0 && !this.aiApplying() && !this.state().busy && !review.result.blockingConflict &&
+            (!review.result.conflicts.length || this.acknowledgeAiConflicts()) && (!this.aiNeedsCurrency() || /^[A-Z]{3}$/i.test(this.aiCurrency()));
+    });
     readonly workspaceKey: Signal<string> = computed((): string => {
         const workspace: WorkspaceView | null = this.state().workspace;
         return workspace ? JSON.stringify([workspace.id, workspace.loadRevision]) : '';
@@ -634,12 +601,12 @@ export class DocumentImports {
         const workspace: WorkspaceView | null = this.state().workspace;
         const file: DocumentFileResult | undefined = this.fileRows().get(reportId)?.[fileIndex]?.file;
         const format: DocumentFormat | null = file ? this.reanalysisFormat(file) : null;
-        if (!workspace || !file || !format || this.state().busy || this.aiPending() || this.aiReview() || !this.detailsCurrent()) {
+        if (!workspace || file?.status !== 'imported' || !format || this.state().busy || this.aiPending() || this.aiReview() || !this.detailsCurrent()) {
             return;
         }
         const context: ReceiptAnalysisContext = {
             request: { reportId, fileIndex, loadRevision: workspace.loadRevision },
-            workspaceKey: this.workspaceKey(), matchRevision: workspace.matchRevision, name: basename(this.filePath(file)), format, trigger,
+            workspaceKey: this.workspaceKey(), matchRevision: workspace.matchRevision, name: basename(this.filePath(file)), format, documentId: file.record.id, trigger,
         };
         this.aiPending.set(context);
         this.aiFeedback.set(null);
@@ -682,23 +649,38 @@ export class DocumentImports {
         return window.receiptmatch.reanalyzeReceipt(context.request);
     }
 
+    selectAiField(proposal: ReceiptAiProposal, selected: boolean): void {
+        if (!proposal.unavailable && !this.aiApplying()) {
+            const fields: ReceiptAiField[] = this.aiSelectedFields().filter((field: ReceiptAiField): boolean => field !== proposal.field);
+            this.aiSelectedFields.set(selected ? [...fields, proposal.field] : fields);
+            this.aiApplyError.set(null);
+        }
+    }
+
+    updateAiCurrency(value: string): void {
+        this.aiCurrency.set(value);
+        this.aiApplyError.set(null);
+    }
+
     async applyAiReview(): Promise<void> {
         const review: ReceiptAnalysisReview | null = this.aiReview();
-        if (!review || this.aiApplying() || this.state().busy || review.result.blockingConflict || (review.result.conflicts.length > 0 && !this.acknowledgeAiConflicts())) {
+        if (!review || !this.aiCanApply()) {
             return;
         }
+        const selectedFields: ReceiptAiField[] = this.aiSelectedFields();
         this.aiApplying.set(true);
         this.aiApplyError.set(null);
         try {
             const result: OriginalAdoptionResult = await window.receiptmatch.acceptReceiptAnalysis({
                 token: review.result.token, loadRevision: review.context.request.loadRevision, acknowledgeConflicts: this.acknowledgeAiConflicts(),
+                selectedFields, ...(this.aiNeedsCurrency() ? { currency: this.aiCurrency().toUpperCase() } : {}),
             });
             if (!this.currentAiWorkspace(review.context) || this.aiReview() !== review) {
                 return;
             }
             if (result.status === 'adopted') {
                 this.clearAiReview();
-                this.finishAiRequest(review.context, 'AI analysis applied.', false, true);
+                this.finishAiRequest(review.context, `Applied ${selectedFields.length} AI ${selectedFields.length === 1 ? 'suggestion' : 'suggestions'}.`, false, true);
             } else {
                 this.aiApplyError.set(result.error);
             }
@@ -734,6 +716,8 @@ export class DocumentImports {
         this.aiApplyError.set(null);
         this.aiEvidenceOpen.set(false);
         this.acknowledgeAiConflicts.set(false);
+        this.aiSelectedFields.set([]);
+        this.aiCurrency.set('');
     }
 
     private currentAiWorkspace(context: ReceiptAnalysisContext): boolean {

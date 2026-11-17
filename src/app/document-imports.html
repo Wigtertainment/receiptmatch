@@ -186,7 +186,7 @@
 		</div>
 	}
 	@if (aiReview(); as review) {
-		@let summary = aiChanges();
+		@let proposals = review.result.proposals ?? [];
 		<dialog #aiDialog class="receipt-ai-dialog" aria-labelledby="receipt-ai-heading" (cancel)="discardAiReview($event)">
 			<header class="receipt-ai-header">
 				<h3 id="receipt-ai-heading" tabindex="-1" autofocus>Review AI receipt analysis</h3>
@@ -194,97 +194,76 @@
 				<p class="muted">Analyzed with NuExtract3{{ review.result.device ? ' on ' + review.result.device.toUpperCase() : '' }}</p>
 			</header>
 			<div class="receipt-ai-content" role="region" aria-label="Analysis comparison" tabindex="0">
-				@for (group of summary.groups; track group.label) {
-					<section class="receipt-ai-group" [attr.aria-label]="group.label" [attr.data-change]="group.label">
-						<h4>
-							{{ group.label }} <span>{{ group.changes.length }}</span>
-						</h4>
-						<ul class="receipt-ai-changes">
-							@for (change of group.changes; track $index) {
-								<li>
-									<strong>{{ change.label }}</strong>
-									@if (group.label === 'Changed') {
-										<dl class="receipt-ai-values">
-											<div>
-												<dt>Current</dt>
-												<dd>{{ change.before }}</dd>
-											</div>
-											<div>
-												<dt>AI proposal</dt>
-												<dd>{{ change.after }}</dd>
-											</div>
-										</dl>
-									} @else {
-										<p>{{ change.after ?? change.before }}</p>
-									}
-								</li>
-							}
-						</ul>
-					</section>
-				}
-				@if (summary.sections.length; as sides) {
-					<section class="receipt-ai-group" aria-labelledby="receipt-ai-sections">
-						<h4 id="receipt-ai-sections">
-							{{ sides === 2 ? 'Sections to compare' : summary.sections[0].label === 'AI proposal' ? 'Added sections' : 'Removed sections' }}
-						</h4>
-						@if (sides === 2) {
-							<p class="muted">These sections could not be paired reliably. Compare the current and proposed values below.</p>
-						}
-						<div class="receipt-ai-sections" [class.receipt-ai-section-pair]="sides === 2">
-							@for (side of summary.sections; track side.label) {
-								<div>
-									<p class="receipt-ai-side">{{ side.label }}</p>
-									@for (section of side.entries; track section.heading) {
-										<details class="receipt-ai-section" [open]="side.entries.length === 1">
-											<summary>{{ section.heading }}</summary>
-											<dl>
-												@for (field of section.fields; track $index) {
-													<div>
-														<dt>{{ field.label }}</dt>
-														<dd>{{ field.after ?? field.before }}</dd>
-													</div>
-												} @empty {
-													<div>
-														<dt>Extracted fields</dt>
-														<dd>None listed</dd>
-													</div>
-												}
-											</dl>
-										</details>
-									}
-								</div>
-							}
+				@if (proposals.length) {
+					<section class="receipt-ai-group" aria-labelledby="receipt-ai-proposals">
+						<div class="receipt-ai-proposal-heading">
+							<h4 id="receipt-ai-proposals">Choose values to apply</h4>
+							<app-original-preview-button
+								kind="document"
+								[sourceId]="review.context.documentId"
+								[sourceName]="review.context.name"
+								[loadRevision]="review.context.request.loadRevision"
+							/>
 						</div>
-					</section>
-				} @else if (!summary.groups.length && !summary.omitted && !summary.unverified.length) {
-					<p class="receipt-ai-empty">No changes to extracted details were found.</p>
-				}
-				@if (summary.unverified.length) {
-					<section class="receipt-ai-group" aria-labelledby="receipt-ai-unverified">
-						<h4 id="receipt-ai-unverified">Unverified suggestions</h4>
-						<p class="muted">Check these values against the original document. Applying the analysis keeps the current values for these fields.</p>
-						<ul class="receipt-ai-changes">
-							@for (change of summary.unverified; track $index) {
+						<p class="muted">Check the original before selecting any suggested values that need your confirmation.</p>
+						<ul class="receipt-ai-proposals">
+							@for (proposal of proposals; track proposal.field) {
 								<li>
-									<strong>{{ change.label }}</strong>
-									<p>{{ change.after ?? change.before }}</p>
+									<label class="receipt-ai-proposal">
+										<input
+											#suggestion
+											type="checkbox"
+											[attr.aria-label]="'Select ' + proposal.label"
+											[attr.aria-describedby]="'receipt-ai-proposal-' + proposal.field"
+											[checked]="aiSelectedFields().includes(proposal.field)"
+											[disabled]="aiApplying() || !!proposal.unavailable"
+											(change)="selectAiField(proposal, suggestion.checked)"
+										/>
+										<span [id]="'receipt-ai-proposal-' + proposal.field">
+											<strong>{{ proposal.label }}</strong>
+											<span class="receipt-ai-proposal-values">
+												<span class="muted">Current · {{ proposal.before ?? 'No value' }}</span>
+												<span>Suggested · {{ proposal.value }}{{ proposal.currency ? ' ' + proposal.currency : '' }}</span>
+											</span>
+											@if (proposal.unavailable; as reason) {
+												<span class="receipt-ai-proposal-note">{{ reason }}</span>
+											} @else if (!proposal.verified) {
+												<span class="receipt-ai-proposal-note">Needs your confirmation</span>
+											}
+										</span>
+									</label>
+									@if (proposal.needsCurrency && aiSelectedFields().includes(proposal.field)) {
+										<div class="receipt-ai-currency">
+											<label for="receipt-ai-currency">Currency code for {{ proposal.label.toLowerCase() }}</label>
+											<input
+												#currency
+												id="receipt-ai-currency"
+												type="text"
+												maxlength="3"
+												pattern="[A-Za-z]{3}"
+												placeholder="EUR"
+												spellcheck="false"
+												autocomplete="off"
+												[value]="aiCurrency()"
+												[disabled]="aiApplying()"
+												(input)="updateAiCurrency(currency.value)"
+											/>
+										</div>
+									}
 								</li>
 							}
 						</ul>
 					</section>
+				} @else if (!review.result.blockingConflict) {
+					<p class="receipt-ai-empty">There are no suggested values to apply.</p>
 				}
-				@if (summary.omitted; as omitted) {
-					<p class="muted">{{ omitted }} additional differences are outside this preview. Open the AI analysis evidence to inspect the proposal.</p>
-				}
-				@if (summary.matching || review.result.conflicts.length || review.result.blockingConflict) {
+				@if (review.result.conflicts.length || review.result.blockingConflict) {
 					<section class="receipt-ai-conflicts" aria-labelledby="receipt-ai-impact">
 						<h4 id="receipt-ai-impact">{{ review.result.blockingConflict ? 'Changes cannot be applied' : 'Review before applying' }}</h4>
 						@if (review.result.blockingConflict; as conflict) {
 							<p>{{ conflict }}</p>
 						}
-						@if (summary.matching) {
-							<p>{{ summary.matching }}</p>
-						}
+
 						@for (conflict of review.result.conflicts; track $index) {
 							@if (conflict !== review.result.blockingConflict) {
 								<p>{{ conflict }}</p>
@@ -303,7 +282,7 @@
 				<details #aiEvidence class="receipt-ai-evidence" (toggle)="aiEvidenceOpen.set(aiEvidence.open)">
 					<summary>AI analysis evidence</summary>
 					@if (aiEvidenceOpen()) {
-						@if (summary.warnings; as warnings) {
+						@if (aiWarnings(); as warnings) {
 							<p class="muted">Recognition warnings · {{ warnings.before }} in the current analysis, {{ warnings.after }} in the proposal</p>
 						}
 						<app-document-analysis [analysis]="review.result.analysis" [format]="review.context.format" />
@@ -315,11 +294,12 @@
 					<p class="original-preview-error" role="alert">{{ error }}</p>
 				}
 				<div class="receipt-ai-actions">
+					<span class="muted receipt-ai-selection-count" role="status">{{ aiSelectedFields().length }} selected</span>
 					<wig-button label="Discard AI analysis" severity="secondary" [disabled]="aiApplying()" (click)="discardAiReview()" />
 					<wig-button
-						[label]="aiApplying() ? 'Applying…' : 'Apply AI analysis'"
+						[label]="aiApplying() ? 'Applying…' : 'Apply (' + aiSelectedFields().length + ')'"
 						[loading]="aiApplying()"
-						[disabled]="aiApplying() || state().busy || !!review.result.blockingConflict || (review.result.conflicts.length > 0 && !acknowledgeAiConflicts())"
+						[disabled]="!aiCanApply()"
 						(click)="applyAiReview()"
 					/>
 				</div>

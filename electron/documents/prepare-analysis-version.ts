@@ -151,12 +151,17 @@ function effectiveWithCorrections(analysis: SupportingDocument, corrections: rea
     }
 }
 
-export function prepareReceiptAnalysisVersion(previous: StoredSupportingDocument, proposed: SupportingDocument, corrections: readonly DocumentCorrection[]): ReceiptVersionPlan {
+export function prepareReceiptAnalysisVersion(previous: StoredSupportingDocument, proposed: SupportingDocument, corrections: readonly DocumentCorrection[],
+    sameAnalysis: boolean = false): ReceiptVersionPlan {
     const applicable: DocumentCorrection[] = corrections.filter((correction: DocumentCorrection): boolean => correction.documentId === previous.id);
-    const pairing: DocumentPairing = compareDocuments(previous, { result: proposed });
-    const aliases: Map<string, string> = new Map([...pairing.sections, ...pairing.fields].map(([before, after]: [string, string]): [string, string] => [after, before]));
-    const mapped: boolean = keepCorrectionIds(previous.result, proposed, applicable, pairing, aliases);
-    const analysis: SupportingDocument = rekey(proposed, aliases);
+    let analysis: SupportingDocument = proposed;
+    let mapped: boolean = true;
+    if (!sameAnalysis) {
+        const pairing: DocumentPairing = compareDocuments(previous, { result: proposed });
+        const aliases: Map<string, string> = new Map([...pairing.sections, ...pairing.fields].map(([before, after]: [string, string]): [string, string] => [after, before]));
+        mapped = keepCorrectionIds(previous.result, proposed, applicable, pairing, aliases);
+        analysis = rekey(proposed, aliases);
+    }
     const afterWithCorrections: SupportingDocument | undefined = mapped ? effectiveWithCorrections(analysis, applicable) : undefined;
     const before: SupportingDocument = new SupportingDocumentState(previous.result, applicable).effective;
     const after: SupportingDocument = afterWithCorrections ?? new SupportingDocumentState(analysis).effective;
