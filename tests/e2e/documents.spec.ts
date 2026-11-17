@@ -279,7 +279,7 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 			.getByText(/EUR\s*73[.,]25|73[.,]25\s*EUR/)
 			.first()
 			.waitFor();
-		const totalSource: Locator = await openDetails(total, /^Source evidence/);
+		const totalSource: Locator = await openDetails(total, /^\s*Source evidence/);
 		await total
 			.getByText(/Page 1.*Embedded text/i)
 			.first()
