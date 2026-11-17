@@ -221,6 +221,11 @@
 						[class.source-status-warning]="archived || record.result.status === 'partial'"
 						>{{ archived ? 'Archived analysis' : record.result.status === 'partial' ? 'Partial import' : 'Complete import' }}</span
 					>
+					@if (record.result.adapter; as adapter) {
+						<span>Adapter · {{ adapter.bankId === 'revolut' ? 'Revolut' : adapter.bankId === 'airwallex' ? 'Airwallex' : adapter.bankId }}</span>
+					} @else if (record.result.localRecognition; as recognition) {
+						<span>Local AI · {{ recognition.model === 'nuextract3' ? 'NuExtract3' : 'PaddleOCR-VL 1.6' }}</span>
+					}
 					<app-original-preview-button
 						kind="statement"
 						[sourceId]="record.id"
@@ -237,11 +242,6 @@
 				</div>
 				<wig-accordion class="source-location" [items]="statementInfo" [value]="null">
 					<ng-template wigTemplate="statement">
-						@if (record.result.adapter; as adapter) {
-							<p>Bank · {{ adapter.bankId === 'revolut' ? 'Revolut' : adapter.bankId === 'airwallex' ? 'Airwallex' : adapter.bankId }}</p>
-						} @else if (record.result.localRecognition) {
-							<p>Recognition · {{ record.result.localRecognition.model === 'nuextract3' ? 'NuExtract3' : 'PaddleOCR-VL 1.6' }} (local AI)</p>
-						}
 						<p class="file-location">{{ record.filePath }}</p>
 						<dl class="account-list">
 							@for (account of record.result.accountSections; track account.sectionId) {

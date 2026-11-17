@@ -131,6 +131,7 @@ async function reviewAndConfirm(page: Page): Promise<string> {
 	assert.equal((await state(page)).workspace?.matchReviewCounts.open, 0);
 	await review.getByRole('button', { name: 'Confirm import', exact: true }).click();
 	await expect(page.getByTestId('import-outcome')).toContainText('Statement imported');
+	await expect(page.locator('.statement-summary-heading').getByText('Local AI · NuExtract3', { exact: true })).toBeVisible();
 	await expect(page.getByRole('button', { name: 'Import statement', exact: true })).toBeFocused();
 	const retained: StoredBankImport[] = await reports(page);
 	assert.equal(retained.length, 1);
@@ -220,11 +221,13 @@ test('reviews and confirms a local AI bank statement, then skips duplicates and 
 			assert.equal(retained[0].result.transactions.length, 4);
 			assert.equal(retained[0].result.unresolvedDrafts.length, 1);
 			await reopened.getByRole('button', { name: 'Sources', exact: true }).click();
-			for (const [index, bankId] of ['revolut', 'airwallex'].entries()) {
+			await expect(reopened.locator('.statement-summary-heading').getByText('Local AI · NuExtract3', { exact: true })).toBeVisible();
+			for (const [index, [bankId, label]] of [['revolut', 'Revolut'], ['airwallex', 'Airwallex']].entries()) {
 				await dialogs(restarted, path.resolve(`tests/fixtures/${bankId}-synthetic-scan.pdf`));
 				await reopened.getByRole('button', { name: 'Import statement', exact: true }).click();
 				await expect.poll(async (): Promise<string | undefined> => (await reports(reopened))[index + 1]?.result.adapter?.bankId, { timeout: 30_000 }).toBe(bankId);
 				await expect(reopened.getByTestId('import-outcome')).toContainText('Statement imported');
+				await expect(reopened.locator('.statement-summary-heading').getByText(`Adapter · ${label}`, { exact: true })).toBeVisible();
 				await expect(reopened.getByTestId('statement-ai-offer')).toHaveCount(0);
 			}
 		});
