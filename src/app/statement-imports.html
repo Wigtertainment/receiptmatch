@@ -36,6 +36,9 @@
 	@if (state().statementImport; as active) {
 		<div class="import-progress" data-testid="import-progress" role="status" aria-live="polite">
 			<div>
+				@if (reanalysis()?.pending(); as analysis) {
+					<p class="file-location">{{ analysis.name }}</p>
+				}
 				<p>{{ progressText() }}</p>
 				@if (active.localAi && active.progress?.device; as device) {
 					<p class="muted">NuExtract3 is using {{ device.toUpperCase() }}.</p>
@@ -44,7 +47,13 @@
 					<p class="muted">{{ active.progress!.completedPages }} of {{ active.progress!.pageCount }} pages completed</p>
 				}
 			</div>
-			<wig-button #cancelImportAction label="Cancel import" severity="secondary" (click)="workspaceCommand.emit({type:'cancel-import'})" [disabled]="active.cancelling" />
+			<wig-button
+				#cancelImportAction
+				[label]="reanalysis()?.pending() ? 'Cancel analysis' : 'Cancel import'"
+				severity="secondary"
+				(click)="workspaceCommand.emit({type:'cancel-import'})"
+				[disabled]="active.cancelling"
+			/>
 		</div>
 	}
 	@if (state().importOutcome; as outcome) {
@@ -235,9 +244,15 @@
 					<wig-button
 						label="Remove statement"
 						severity="secondary"
-						[text]="true"
 						[disabled]="state().busy"
 						(click)="requestStatementRemoval(record.id, removalDialog, cancelRemovalAction)"
+					/>
+					<app-statement-reanalysis
+						[state]="state()"
+						[record]="record"
+						[active]="active()"
+						(applied)="refreshAnalysis()"
+						(settingsRequested)="settingsRequested.emit()"
 					/>
 				</div>
 				<wig-accordion class="source-location" [items]="statementInfo" [value]="null">

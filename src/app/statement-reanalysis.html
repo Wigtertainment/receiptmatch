@@ -1,0 +1,136 @@
+<wig-button #trigger label="Analyze with local AI" severity="secondary" (click)="analyze()" [disabled]="state().busy || !!pending() || !!review() || archived()" />
+@if (archived()) {
+	<p class="analysis-feedback">Only the active statement can be analyzed again.</p>
+}
+@if (!review()) {
+	@if (pending() && !state().statementImport) {
+		<p class="analysis-feedback" role="status">Preparing local AI analysis…</p>
+	}
+	@if (error(); as message) {
+		<p class="analysis-feedback analysis-error" role="alert">{{ message }}</p>
+	}
+	@if (feedback(); as message) {
+		<p class="analysis-feedback" role="status">{{ message }}</p>
+	}
+	@if (needsSettings()) {
+		<wig-button label="Open recognition settings" severity="secondary" (click)="settingsRequested.emit()" />
+	}
+}
+<dialog #reviewDialog class="statement-analysis-dialog" aria-labelledby="statement-analysis-heading" (cancel)="discard($event)">
+	@if (review(); as review) {
+		<header class="analysis-dialog-header">
+			<p class="analysis-eyebrow">Local AI · NuExtract3</p>
+			<h2 #reviewHeading id="statement-analysis-heading" tabindex="-1">Review AI statement analysis</h2>
+			<p class="file-location">{{ review.context.name }}</p>
+			<p>Compare the full analysis before applying it. Your original statement and earlier analyses are kept.</p>
+			<app-original-preview-button
+				kind="statement"
+				[sourceId]="review.context.request.importId"
+				[sourceName]="review.context.name"
+				[loadRevision]="review.context.request.loadRevision"
+			/>
+		</header>
+		<div class="analysis-dialog-content">
+			<dl class="analysis-counts">
+				<div>
+					<dt>Transactions · current → suggested</dt>
+					<dd>{{ review.result.summary.beforeTransactions }} → {{ review.result.summary.afterTransactions }}</dd>
+				</div>
+				<div>
+					<dt>Unresolved drafts · current → suggested</dt>
+					<dd>{{ review.result.summary.beforeDrafts }} → {{ review.result.summary.afterDrafts }}</dd>
+				</div>
+			</dl>
+			@if (review.result.blockingConflict; as conflict) {
+				<p class="analysis-blocking" role="status">{{ conflict }}</p>
+			}
+			@if (review.result.conflicts.length) {
+				<aside class="statement-warnings" aria-labelledby="analysis-consequences-heading">
+					<h3 id="analysis-consequences-heading">Before you apply</h3>
+					<ul>
+						@for (conflict of review.result.conflicts; track $index) {
+							<li>{{ conflict }}</li>
+						}
+					</ul>
+				</aside>
+			}
+			<h3 #changesHeading tabindex="-1">Booking changes</h3>
+			<p class="analysis-change-counts">
+				{{ review.result.summary.changed }} changed · {{ review.result.summary.added }} added · {{ review.result.summary.removed }} removed ·
+				{{ review.result.summary.promoted }} resolved drafts · {{ review.result.summary.demoted }} now unresolved
+			</p>
+			<label class="analysis-checkbox">
+				<input type="checkbox" [checked]="includeUnchanged()" (change)="showUnchanged($any($event.target).checked)" />
+				<span>Show unchanged rows ({{ review.result.summary.unchanged }})</span>
+			</label>
+			@for (change of visibleChanges(); track $index) {
+				<article class="analysis-change" [attr.aria-label]="labels[change.kind] + ' booking ' + (page() * 20 + $index + 1)">
+					<h4>
+						<span class="analysis-change-kind" [class.analysis-change-warning]="change.kind === 'removed' || change.kind === 'demoted'">{{ labels[change.kind] }}</span>
+					</h4>
+					<div class="analysis-comparison">
+						<section aria-label="Current booking">
+							<h5>Current</h5>
+							<app-analysis-booking [item]="change.before" [result]="review.result.previous" />
+						</section>
+						<section aria-label="Suggested booking">
+							<h5>Suggested</h5>
+							<app-analysis-booking [item]="change.after" [result]="review.result.result" />
+						</section>
+					</div>
+				</article>
+			} @empty {
+				<p class="muted">No booking values have changed. You can include unchanged rows to inspect them.</p>
+			}
+			@if (pageCount() > 1) {
+				<nav class="analysis-pagination" aria-label="Booking changes pages">
+					<wig-button label="Previous" severity="secondary" [disabled]="page() === 0" (click)="changePage(page() - 1)" />
+					<p role="status">Page {{ page() + 1 }} of {{ pageCount() }}</p>
+					<wig-button label="Next" severity="secondary" [disabled]="page() + 1 >= pageCount()" (click)="changePage(page() + 1)" />
+				</nav>
+			}
+			@if (review.result.previous.issues.length || review.result.result.issues.length) {
+				<details class="analysis-warning-details">
+					<summary>Statement warnings · {{ review.result.previous.issues.length }} current → {{ review.result.result.issues.length }} suggested</summary>
+					<div class="analysis-comparison">
+						<section aria-label="Current warnings">
+							<h4>Current</h4>
+							<ul>
+								@for (issue of review.result.previous.issues; track $index) {
+									<li>{{ issue.message }}</li>
+								} @empty {
+									<li>No warnings.</li>
+								}
+							</ul>
+						</section>
+						<section aria-label="Suggested warnings">
+							<h4>Suggested</h4>
+							<ul>
+								@for (issue of review.result.result.issues; track $index) {
+									<li>{{ issue.message }}</li>
+								} @empty {
+									<li>No warnings.</li>
+								}
+							</ul>
+						</section>
+					</div>
+				</details>
+			}
+		</div>
+		<footer class="analysis-dialog-footer">
+			@if (review.result.conflicts.length && !review.result.blockingConflict) {
+				<label class="analysis-checkbox"
+					><input type="checkbox" [checked]="acknowledged()" (change)="acknowledged.set($any($event.target).checked)" [disabled]="applying()" /> I reviewed these changes
+					and understand that existing approvals may need review.</label
+				>
+			}
+			@if (error(); as message) {
+				<p class="analysis-error" role="alert">{{ message }}</p>
+			}
+			<div class="analysis-footer-actions">
+				<wig-button label="Discard analysis" severity="secondary" [disabled]="applying()" (click)="discard()" />
+				<wig-button [label]="applying() ? 'Applying…' : 'Apply analysis'" [disabled]="!canApply()" (click)="apply()" />
+			</div>
+		</footer>
+	}
+</dialog>
