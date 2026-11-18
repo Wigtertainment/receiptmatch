@@ -16,7 +16,10 @@ import type { ReceiptAiAcceptRequest, ReceiptAiChange, ReceiptAiDiscardRequest, 
 import { importIssue, type TransactionCandidate, type UnresolvedDraft } from '../src/shared/bank-import.js';
 import { bankCorrectionSchema, type BankCorrection } from '../src/shared/bank-corrections.js';
 import type { StatementAnalysisVersion } from '../src/shared/statement-analysis.js';
+import type { StatementAiAcceptRequest, StatementAiDiscardRequest, StatementAiPreviewResult, StatementAiRequest, StatementAiResult, StatementAiRow } from '../src/shared/statement-ai.js';
 import { projectCorrectedStatementAnalyses, projectStatementAnalyses } from './import/statement-analyses.js';
+import type { StatementAiService, StatementAiSource } from './import/reanalyze-statement.js';
+import { prepareStatementAnalysis, type StatementAnalysisPlan } from './import/prepare-statement-analysis.js';
 import { documentCorrectionKey, documentCorrectionSchema, type DocumentCorrection, type DocumentCorrectionValue } from '../src/shared/document-corrections.js';
 import { sameMoneyValue } from '../src/shared/money.js';
 import { advanceReviewRevision, currentMatchApprovals, documentRevisionIndex, sameApprovalSelection,
@@ -111,6 +114,34 @@ interface PendingReceiptAnalysis {
   proposals?: ReceiptAiProposal[];
 }
 
+interface PendingStatementAnalysis {
+  token: string;
+  request: StatementAiRequest;
+  matchRevision: number;
+  source: StatementAiSource;
+  plan: StatementAnalysisPlan;
+}
+
+type StatementProtectionState = Pick<SavedWorkspace, 'bankCorrections' | 'matchDecisions' | 'reviewApprovals' | 'ignoredTransactions' | 'duplicateDecisions' | 'archivedSourceReviews'>;
+
+function protectedStatementRows(state: StatementProtectionState): string[] {
+  return [...state.bankCorrections.keys(), ...state.matchDecisions.keys(), ...state.reviewApprovals.keys(), ...state.ignoredTransactions,
+    ...[...state.duplicateDecisions.values()].flatMap((decision: DuplicateDecision): string[] => [decision.firstId, decision.secondId]),
+    ...[...state.archivedSourceReviews.values()].flatMap((reviews: Map<string, string | null>): string[] => [...reviews.keys()])];
+}
+
+function statementPreviewRows(record: StoredBankImport): Map<string, StatementAiRow> {
+  const transactions: Map<string, string> = new Map(record.transactions.map((item: StoredBankImport['transactions'][number]): [string, string] => [item.rowId, item.transactionId]));
+  const drafts: Map<string, string> = new Map(record.drafts.map((item: StoredBankImport['drafts'][number]): [string, string] => [item.rowId, item.draftId]));
+  return new Map([...record.result.transactions.map((row: TransactionCandidate): [string, StatementAiRow] => {
+    const id: string = transactions.get(row.rowId)!;
+    return [id, { id, kind: 'transaction', row }];
+  }), ...record.result.unresolvedDrafts.map((row: UnresolvedDraft): [string, StatementAiRow] => {
+    const id: string = drafts.get(row.rowId)!;
+    return [id, { id, kind: 'draft', row }];
+  })]);
+}
+
 function preserveReceiptCorrection(proposal: ReceiptAiProposal, document: SupportingDocument, corrections: readonly DocumentCorrection[]): ReceiptAiProposal {
   if (proposal.field === 'reference' || proposal.unavailable || !corrections.length) {
     return proposal;
@@ -138,6 +169,7 @@ export class WorkspaceSession {
   private importRecords: StoredBankImport[] = [];
   private effectiveImports: StoredBankImport[] = [];
   private statementAnalysisVersions: StatementAnalysisVersion[] = [];
+  private pendingStatementAnalysis: PendingStatementAnalysis | null = null;
   private bankCorrections: Map<string, BankCorrection> = new Map<string, BankCorrection>();
   private documentRecords: StoredDocumentImport[] = [];
   private receiptAnalysisVersions: ReceiptAnalysisVersion[] = [];
@@ -167,7 +199,7 @@ export class WorkspaceSession {
   private matchRevision: number = 0;
   constructor(private readonly dialogs: WorkspaceDialogs, private readonly changed?: (state: WorkspaceState) => void, private readonly importService?: BankImportService,
     private readonly documentService?: DocumentImportService, private readonly extractReplacement?: ReplacementExtraction,
-    private readonly ignoreRulesDirectory?: string, private readonly receiptAi?: ReceiptAiDependencies) {}
+    private readonly ignoreRulesDirectory?: string, private readonly receiptAi?: ReceiptAiDependencies, private readonly statementAi?: StatementAiService) {}
 
   state(): WorkspaceState {
     const originalBankIds: Map<string, string> = originalStatementBankIds(this.importRecords);
@@ -390,6 +422,146 @@ export class WorkspaceSession {
       this.busy = false;
       this.publish();
     }
+  }
+
+  private statementAiSource(request: StatementAiRequest): StatementAiSource | null {
+    if (!this.metadata || request.loadRevision !== this.loadRevision) {
+      return null;
+    }
+    const original: StoredBankImport | undefined = this.importRecords.find((record: StoredBankImport): boolean => record.id === request.importId);
+    const sourceId: string | undefined = original?.result.sourceProvenance?.sourceId;
+    return original && sourceId && !this.sourceReplacements.has(sourceId)
+      ? { original, filePath: this.sourceRelocations.get(sourceId) ?? original.filePath } : null;
+  }
+
+  async reanalyzeStatement(request: StatementAiRequest): Promise<StatementAiPreviewResult> {
+    if (this.busy) {
+      return { status: 'failed', error: 'Finish the current workspace action before analyzing a statement.' };
+    }
+    const source: StatementAiSource | null = this.statementAiSource(request);
+    if (!source || !this.statementAi) {
+      return { status: 'failed', error: 'Choose an active statement with a verifiable original.' };
+    }
+    const controller: AbortController = new AbortController();
+    const matchRevision: number = this.matchRevision;
+    this.pendingStatementAnalysis = null;
+    this.importController = controller;
+    this.statementImport = { cancelling: false, progress: null, localAi: true };
+    this.busy = true;
+    try {
+      this.publish();
+      const result: StatementAiResult = await this.statementAi.analyze(structuredClone(source), this.statementProgress(controller, this.metadata!.id));
+      if (controller.signal.aborted) {
+        return { status: 'cancelled' };
+      }
+      if (request.loadRevision !== this.loadRevision || matchRevision !== this.matchRevision) {
+        return { status: 'failed', error: 'The workspace changed. Analyze the statement again.' };
+      }
+      return result.status === 'ready' ? this.prepareStatementPreview(request, source, result) : result;
+    } catch (error: unknown) {
+      return controller.signal.aborted ? { status: 'cancelled' } : { status: 'failed', error: message(error) };
+    } finally {
+      this.importController = null;
+      this.statementImport = null;
+      this.busy = false;
+      this.publish();
+    }
+  }
+
+  private statementProtections(): Set<string> {
+    const current: StatementProtectionState = { bankCorrections: this.bankCorrections, matchDecisions: this.matchDecisions, reviewApprovals: this.reviewApprovals,
+      ignoredTransactions: this.ignoredTransactions, duplicateDecisions: this.duplicateDecisions, archivedSourceReviews: this.archivedSourceReviews };
+    return new Set([...protectedStatementRows(current), ...(this.saved ? protectedStatementRows(this.saved) : [])]);
+  }
+
+  private prepareStatementPreview(request: StatementAiRequest, source: StatementAiSource, result: Extract<StatementAiResult, { status: 'ready' }>): StatementAiPreviewResult {
+    const current: StoredBankImport = projectStatementAnalyses(this.importRecords, this.statementAnalysisVersions).find((record: StoredBankImport): boolean => record.id === request.importId)!;
+    const plan: StatementAnalysisPlan = prepareStatementAnalysis(source.original, current, result.result, this.statementProtections());
+    const versions: StatementAnalysisVersion[] = [...this.statementAnalysisVersions, plan.version];
+    const proposed: StoredBankImport = projectCorrectedStatementAnalyses(this.importRecords, versions, this.bankCorrections).find((record: StoredBankImport): boolean => record.id === request.importId)!;
+    const previous: StoredBankImport = this.effectiveImports.find((record: StoredBankImport): boolean => record.id === request.importId)!;
+    const before: Map<string, StatementAiRow> = statementPreviewRows(previous);
+    const after: Map<string, StatementAiRow> = statementPreviewRows(proposed);
+    const conflicts: string[] = [...plan.conflicts];
+    if ([...this.currentApprovals().keys()].some((id: string): boolean => before.has(id))) {
+      conflicts.push('Approved matches for this statement will need review again.');
+    }
+    const token: string = randomUUID();
+    this.pendingStatementAnalysis = { token, request: { ...request }, source: structuredClone(source), plan: { ...plan, conflicts }, matchRevision: this.matchRevision };
+    return structuredClone({ ...result, token, previous: previous.result, result: proposed.result,
+      summary: { ...plan.summary, beforeTransactions: previous.transactions.length, beforeDrafts: previous.drafts.length,
+        afterTransactions: proposed.transactions.length, afterDrafts: proposed.drafts.length }, conflicts, blockingConflict: plan.blockingConflict,
+      changes: plan.changes.map((change: StatementAnalysisPlan['changes'][number]): StatementAnalysisPlan['changes'][number] => ({ ...change,
+        before: change.before ? before.get(change.before.id) ?? change.before : null, after: change.after ? after.get(change.after.id) ?? change.after : null })) });
+  }
+
+  discardStatementAnalysis(request: StatementAiDiscardRequest): void {
+    if (!this.busy && request.loadRevision === this.loadRevision && this.pendingStatementAnalysis?.token === request.token) {
+      this.pendingStatementAnalysis = null;
+    }
+  }
+
+  async acceptStatementAnalysis(request: StatementAiAcceptRequest): Promise<OriginalAdoptionResult> {
+    const pending: PendingStatementAnalysis | null = this.pendingStatementAnalysis;
+    if (this.busy || pending?.token !== request.token || request.loadRevision !== this.loadRevision || pending.matchRevision !== this.matchRevision) {
+      return { status: 'failed', error: 'The statement preview is no longer current. Analyze the statement again.' };
+    }
+    if (pending.plan.blockingConflict) {
+      return { status: 'failed', error: pending.plan.blockingConflict };
+    }
+    if (pending.plan.conflicts.length && !request.acknowledgeConflicts) {
+      return { status: 'failed', error: 'Review and acknowledge the changes before applying the statement analysis.' };
+    }
+    this.busy = true;
+    try {
+      this.publish();
+      if (!await this.statementAnalysisStillCurrent(pending)) {
+        this.pendingStatementAnalysis = null;
+        return { status: 'failed', error: 'The original statement changed or is no longer available. Analyze it again.' };
+      }
+      this.applyStatementAnalysis(pending);
+      this.pendingStatementAnalysis = null;
+      return { status: 'adopted' };
+    } catch (error: unknown) {
+      return { status: 'failed', error: message(error) };
+    } finally {
+      this.busy = false;
+      this.publish();
+    }
+  }
+
+  private async statementAnalysisStillCurrent(pending: PendingStatementAnalysis): Promise<boolean> {
+    const current: StatementAiSource | null = this.statementAiSource(pending.request);
+    if (current?.filePath !== pending.source.filePath || !isDeepStrictEqual(current.original, pending.source.original)) {
+      return false;
+    }
+    try {
+      const bytes: Uint8Array = await readSourceSnapshot(current.filePath, ['.pdf']);
+      return createHash('sha256').update(bytes).digest('hex') === current.original.result.sourceProvenance!.sha256;
+    } catch {
+      return false;
+    }
+  }
+
+  private applyStatementAnalysis(pending: PendingStatementAnalysis): void {
+    const version: StatementAnalysisVersion = { ...pending.plan.version, acceptedAt: new Date().toISOString() };
+    const versions: StatementAnalysisVersion[] = [...this.statementAnalysisVersions, version];
+    const effective: StoredBankImport[] = projectCorrectedStatementAnalyses(this.importRecords, versions, this.bankCorrections);
+    validateDuplicateDecisions([...this.duplicateDecisions.values()], effective, originalStatementBankIds(this.importRecords));
+    const matches: TransactionMatch[] = suggestWorkspaceMatches(this.activeImports(effective), this.activeDocuments());
+    const approvals: Map<string, ReviewApprovalState> = new Map(this.reviewApprovals);
+    const accepted: StoredBankImport = effective.find((record: StoredBankImport): boolean => record.id === version.importId)!;
+    const ids: Set<string> = new Set(accepted.transactions.map((row: StoredBankImport['transactions'][number]): string => row.transactionId));
+    for (const id of this.currentApprovals().keys()) {
+      if (ids.has(id)) {
+        approvals.set(id, advanceReviewRevision(approvals.get(id)));
+      }
+    }
+    this.statementAnalysisVersions = versions;
+    this.effectiveImports = effective;
+    this.matches = matches;
+    this.reviewApprovals = approvals;
+    this.matchRevision++;
   }
 
   private receiptAiSource(request: ReceiptAiRequest): ReceiptAnalysisSource | null {
@@ -988,6 +1160,7 @@ export class WorkspaceSession {
     this.matches = matches;
     this.pendingAnalysis = null;
     this.pendingReceiptAnalysis = null;
+    this.pendingStatementAnalysis = null;
     if (this.importOutcome?.importId === importId) {
       this.importOutcome = null;
     }
@@ -1506,6 +1679,7 @@ export class WorkspaceSession {
     this.metadata = newMetadata(); this.saved = null; this.importRecords = []; this.documentRecords = []; this.matches = []; this.matchDecisions.clear();
     this.receiptAnalysisVersions = []; this.pendingReceiptAnalysis = null;
     this.statementAnalysisVersions = [];
+    this.pendingStatementAnalysis = null;
     this.bankCorrections.clear(); this.effectiveImports = [];
     this.documentCorrections.clear(); this.documentView = null;
     this.reviewApprovals.clear(); this.ignoredTransactions.clear(); this.duplicateDecisions.clear(); this.sourceRelocations.clear();
@@ -1529,6 +1703,7 @@ export class WorkspaceSession {
     this.metadata = { ...loaded.metadata }; this.saved = loaded; this.importRecords = structuredClone(loaded.imports); this.documentRecords = structuredClone(loaded.documentImports);
     this.receiptAnalysisVersions = structuredClone(loaded.receiptAnalysisVersions); this.pendingReceiptAnalysis = null;
     this.statementAnalysisVersions = structuredClone(loaded.statementAnalysisVersions);
+    this.pendingStatementAnalysis = null;
     this.matchDecisions = new Map(loaded.matchDecisions);
     this.reviewApprovals = new Map(loaded.reviewApprovals);
     this.sourceRelocations = new Map(loaded.sourceRelocations);
