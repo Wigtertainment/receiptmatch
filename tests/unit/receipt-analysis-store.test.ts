@@ -44,7 +44,7 @@ test('migrates version 12 and reopens historical OCR and NuExtract analyses unde
     await createWorkspace(file, newMetadata(), [retainedBank(root)], [documentRun(root, [document])]);
     const oldDatabase: Database.Database = new Database(file);
     try {
-      oldDatabase.exec('DROP TABLE receipt_analysis_versions; PRAGMA user_version=12;');
+      oldDatabase.exec('DROP TABLE statement_analysis_versions; DROP TABLE receipt_analysis_versions; PRAGMA user_version=12;');
     } finally {
       oldDatabase.close();
     }

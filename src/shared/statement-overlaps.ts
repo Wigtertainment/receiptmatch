@@ -99,11 +99,15 @@ function conflictingReferences(row: IndexedRow, other: IndexedRow, basis: Statem
 }
 
 // These are review hints derived from imported bookings. The index stores each row once per kind of evidence.
-export function indexStatementOverlaps(records: readonly StoredBankImport[]): (statementId: string) => StatementOverlaps {
+export function originalStatementBankIds(originals: readonly StoredBankImport[]): Map<string, string> {
+	return new Map(originals.flatMap((record: StoredBankImport): [string, string][] => record.result.adapter ? [[record.id, record.result.adapter.bankId]] : []));
+}
+
+export function indexStatementOverlaps(records: readonly StoredBankImport[], originalBankIds: ReadonlyMap<string, string> = new Map()): (statementId: string) => StatementOverlaps {
 	const rows: Map<string, IndexedRow> = new Map<string, IndexedRow>();
 	const byKey: Map<string, StatementBuckets> = new Map<string, StatementBuckets>();
 	for (const record of records) {
-		const bank: string | undefined = record.result.adapter?.bankId;
+		const bank: string | undefined = record.result.adapter?.bankId ?? originalBankIds.get(record.id);
 		if (!bank) {
 			continue;
 		}

@@ -155,7 +155,9 @@ export class StatementImports {
     });
     private readonly overlapIndex: Signal<(statementId: string) => StatementOverlaps> = computed((): (statementId: string) => StatementOverlaps => {
         const archived: Set<string> = new Set(this.state().workspace?.supersededStatements);
-        return indexStatementOverlaps(this.effectiveRecords().filter((record: StoredBankImport): boolean => !archived.has(record.id)));
+        const originalBankIds: Map<string, string> = new Map((this.state().workspace?.imports ?? []).flatMap((record: BankImportSummary): [string, string][] =>
+            record.bankId ? [[record.id, record.bankId]] : []));
+        return indexStatementOverlaps(this.effectiveRecords().filter((record: StoredBankImport): boolean => !archived.has(record.id)), originalBankIds);
     });
     readonly overlaps: Signal<StatementOverlaps> = computed((): StatementOverlaps => this.overlapIndex()(this.selectedId() ?? ''));
     private readonly expandedOverlapRows: WritableSignal<ReadonlySet<string>> = signal<ReadonlySet<string>>(new Set());

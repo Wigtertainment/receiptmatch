@@ -14,7 +14,9 @@ import { ZodError, type ZodSafeParseResult } from 'zod';
 import type { DocumentSnapshot, DocumentSnapshotRequest, StatementFallbackState, WorkspaceCommand, WorkspaceState } from '../src/shared/protocol.js';
 import type { ReceiptAiAcceptRequest, ReceiptAiChange, ReceiptAiDiscardRequest, ReceiptAiPreviewResult, ReceiptAiProposal, ReceiptAiRequest, ReceiptAiResult } from '../src/shared/receipt-ai.js';
 import { importIssue, type TransactionCandidate, type UnresolvedDraft } from '../src/shared/bank-import.js';
-import { applyBankCorrections, bankCorrectionSchema, type BankCorrection } from '../src/shared/bank-corrections.js';
+import { bankCorrectionSchema, type BankCorrection } from '../src/shared/bank-corrections.js';
+import type { StatementAnalysisVersion } from '../src/shared/statement-analysis.js';
+import { projectCorrectedStatementAnalyses, projectStatementAnalyses } from './import/statement-analyses.js';
 import { documentCorrectionKey, documentCorrectionSchema, type DocumentCorrection, type DocumentCorrectionValue } from '../src/shared/document-corrections.js';
 import { sameMoneyValue } from '../src/shared/money.js';
 import { advanceReviewRevision, currentMatchApprovals, documentRevisionIndex, sameApprovalSelection,
@@ -41,7 +43,7 @@ import { evaluateReviewMatches } from './review-matching.js';
 import { approvedExportDocuments, copyApprovedDocuments, type ApprovedExportDocument } from './document-export.js';
 import { writeReconciliationExport } from './reconciliation-export.js';
 import type { DocumentExportReport, ReconciliationExportReport } from '../src/shared/document-export.js';
-import { indexStatementOverlaps } from '../src/shared/statement-overlaps.js';
+import { indexStatementOverlaps, originalStatementBankIds } from '../src/shared/statement-overlaps.js';
 import { duplicatePairKey, excludeDuplicateTransactions, excludeTransactions, secondaryDuplicateId, validateDuplicateDecisions, type DuplicateDecision } from '../src/shared/transaction-duplicates.js';
 import { activeStatements, activeSupportingDocuments } from '../src/shared/source-replacements.js';
 import { analyzeSource, type AnalyzedSource, type ReplacementExtraction } from './source-analysis.js';
@@ -135,6 +137,7 @@ export class WorkspaceSession {
   private approvalIssue: WorkspaceState['approvalIssue'];
   private importRecords: StoredBankImport[] = [];
   private effectiveImports: StoredBankImport[] = [];
+  private statementAnalysisVersions: StatementAnalysisVersion[] = [];
   private bankCorrections: Map<string, BankCorrection> = new Map<string, BankCorrection>();
   private documentRecords: StoredDocumentImport[] = [];
   private receiptAnalysisVersions: ReceiptAnalysisVersion[] = [];
@@ -167,6 +170,7 @@ export class WorkspaceSession {
     private readonly ignoreRulesDirectory?: string, private readonly receiptAi?: ReceiptAiDependencies) {}
 
   state(): WorkspaceState {
+    const originalBankIds: Map<string, string> = originalStatementBankIds(this.importRecords);
     const predecessors: Map<string, string> = new Map(this.importRecords.flatMap((record: StoredBankImport): [string, string][] => {
       const target: string | undefined = this.sourceReplacements.get(record.result.sourceProvenance!.sourceId);
       return target ? [[target, record.id]] : [];
@@ -174,7 +178,7 @@ export class WorkspaceSession {
     const imports: BankImportSummary[] = this.effectiveImports.map((record: StoredBankImport): BankImportSummary => {
       const replacesStatementId: string | undefined = predecessors.get(record.result.sourceProvenance!.sourceId);
       return {
-        id: record.id, filePath: record.filePath, bankId: record.result.adapter?.bankId ?? null,
+        id: record.id, filePath: record.filePath, bankId: record.result.adapter?.bankId ?? originalBankIds.get(record.id) ?? null,
         status: record.result.status === 'complete' ? 'complete' : 'partial',
         transactions: record.result.transactions.length, drafts: record.result.unresolvedDrafts.length, issues: record.result.issues.length,
         ...(replacesStatementId ? { replacesStatementId } : {})
@@ -205,6 +209,7 @@ export class WorkspaceSession {
           !isDeepStrictEqual(this.ignoredTransactions, this.saved.ignoredTransactions) || !isDeepStrictEqual(this.matchDecisions, this.saved.matchDecisions) || !isDeepStrictEqual(this.bankCorrections, this.saved.bankCorrections) ||
           !isDeepStrictEqual(this.documentCorrections, this.saved.documentCorrections) || !isDeepStrictEqual(this.reviewApprovals, this.saved.reviewApprovals) ||
           !isDeepStrictEqual(this.receiptAnalysisVersions, this.saved.receiptAnalysisVersions) ||
+          !isDeepStrictEqual(this.statementAnalysisVersions, this.saved.statementAnalysisVersions) ||
           !isDeepStrictEqual(this.duplicateDecisions, this.saved.duplicateDecisions) || !isDeepStrictEqual(this.sourceRelocations, this.saved.sourceRelocations) ||
           !isDeepStrictEqual(this.sourceReplacements, this.saved.sourceReplacements),
         filePath: this.saved?.filePath ?? null, savedAt: this.saved?.metadata.savedAt ?? null, imports, documentImports, matchReviewCounts,
@@ -232,7 +237,11 @@ export class WorkspaceSession {
   }
 
   bankImports(): StoredBankImport[] {
-    return structuredClone(this.importRecords);
+    return structuredClone(projectStatementAnalyses(this.importRecords, this.statementAnalysisVersions));
+  }
+
+  private statementHistory(): StoredBankImport[] {
+    return [...this.importRecords, ...this.statementAnalysisVersions.map((version: StatementAnalysisVersion): StoredBankImport => version.record)];
   }
 
   private documents(): WorkspaceDocumentState {
@@ -342,7 +351,7 @@ export class WorkspaceSession {
     if (!source || this.sourceReplacements.has(source.sourceId) || !choose || !extract) {
       return { status: 'failed', error: 'Only an active source can be replaced.' };
     }
-    const statement: StoredBankImport | null | undefined = request.kind === 'statement' ? this.importRecords.find((record: StoredBankImport): boolean => record.id === request.id) : null;
+    const statement: StoredBankImport | null | undefined = request.kind === 'statement' ? projectStatementAnalyses(this.importRecords, this.statementAnalysisVersions).find((record: StoredBankImport): boolean => record.id === request.id) : null;
     const original: AnalyzedSource | null = statement ? { kind: 'statement', record: statement } : supportingDocumentSource(this.documents().analyzed, request.id);
     if (!original) {
       return { status: 'failed', error: 'The original analysis is unavailable.' };
@@ -590,7 +599,7 @@ export class WorkspaceSession {
       const banks: StoredBankImport[] = replacement.kind === 'statement' ? [...this.importRecords, replacement.record] : this.importRecords;
       const documents: StoredDocumentImport[] = replacement.kind === 'document' ? [...this.documentRecords, replacement.run] : this.documentRecords;
       const replacements: Map<string, string> = validateSourceReplacements(new Map(this.sourceReplacements).set(oldSourceId, provenance.sourceId), banks, documents);
-      const correctedBanks: StoredBankImport[] = applyBankCorrections(banks, plan.bankCorrections);
+      const correctedBanks: StoredBankImport[] = projectCorrectedStatementAnalyses(banks, this.statementAnalysisVersions, plan.bankCorrections);
       const active: StoredBankImport[] = excludeDuplicateTransactions(activeStatements(correctedBanks, replacements), this.duplicateDecisions.values());
       const documentView: WorkspaceDocumentState = new WorkspaceDocumentState(documents, plan.documentCorrections, this.receiptAnalysisVersions);
       const matches: TransactionMatch[] = suggestWorkspaceMatches(active, activeSupportingDocuments(documentView.effective, replacements));
@@ -724,7 +733,7 @@ export class WorkspaceSession {
     this.busy = true;
     try {
       this.publish();
-      const bank: StoredBankImport[] = applyBankCorrections(snapshot.imports, snapshot.bankCorrections);
+      const bank: StoredBankImport[] = projectCorrectedStatementAnalyses(snapshot.imports, snapshot.statementAnalysisVersions, snapshot.bankCorrections);
       const ignored: Set<string> = new Set([...snapshot.ignoredTransactions, ...transactionsIgnoredByRules(bank, this.ignoreRules)]);
       return await writeReconciliationExport({ ...snapshot, ignoredTransactions: ignored }, destination, pattern);
     } finally {
@@ -778,7 +787,7 @@ export class WorkspaceSession {
       this.saved = await saveWorkspace(
       this.saved, this.metadata, this.importRecords, this.documentRecords, this.matchDecisions, this.bankCorrections, this.documentCorrections,
       this.reviewApprovals, this.duplicateDecisions, this.sourceRelocations, this.sourceReplacements, this.archivedSourceReviews, this.ignoredTransactions,
-      this.receiptAnalysisVersions, removed
+      this.receiptAnalysisVersions, removed, this.statementAnalysisVersions
     );
     } else {
       const destination: string | null = await this.dialogs.save(this.metadata.name);
@@ -787,13 +796,14 @@ export class WorkspaceSession {
       }
       this.saved = await createWorkspace(
         destination, this.metadata, this.importRecords, this.documentRecords, this.matchDecisions, this.bankCorrections, this.documentCorrections,
-        this.reviewApprovals, this.duplicateDecisions, this.sourceRelocations, this.sourceReplacements, this.archivedSourceReviews, this.ignoredTransactions, this.receiptAnalysisVersions
+        this.reviewApprovals, this.duplicateDecisions, this.sourceRelocations, this.sourceReplacements, this.archivedSourceReviews, this.ignoredTransactions, this.receiptAnalysisVersions, this.statementAnalysisVersions
       );
     }
     this.metadata = { ...this.saved.metadata };
     this.importRecords = structuredClone(this.saved.imports);
     this.bankCorrections = new Map(this.saved.bankCorrections);
-    this.effectiveImports = applyBankCorrections(this.importRecords, this.bankCorrections);
+    this.statementAnalysisVersions = structuredClone(this.saved.statementAnalysisVersions);
+    this.effectiveImports = projectCorrectedStatementAnalyses(this.importRecords, this.statementAnalysisVersions, this.bankCorrections);
     this.documentRecords = structuredClone(this.saved.documentImports);
     this.receiptAnalysisVersions = structuredClone(this.saved.receiptAnalysisVersions);
     this.documentCorrections = new Map(this.saved.documentCorrections);
@@ -923,7 +933,7 @@ export class WorkspaceSession {
       value.id, value.result.sourceProvenance!.sourceId, ...value.accounts.flatMap((account: { sectionId: string; accountId: string; statementId: string; }): string[] => [account.accountId, account.statementId]),
       ...value.transactions.map((row: { rowId: string; transactionId: string; }): string => row.transactionId), ...value.drafts.map((row: { rowId: string; draftId: string; }): string => row.draftId)
     ];
-    const existingIds: Set<string> = new Set([...this.importRecords.flatMap(identities), ...this.documentIdentities(), ...this.sources().map((source: WorkspaceSource): string => source.id), workspaceId].map((id: string): string => id.toLowerCase()));
+    const existingIds: Set<string> = new Set([...this.statementHistory().flatMap(identities), ...this.documentIdentities(), ...this.sources().map((source: WorkspaceSource): string => source.id), workspaceId].map((id: string): string => id.toLowerCase()));
     if (identities(record).some((id: string): boolean => existingIds.has(id.toLowerCase()))) {
       this.failedImport('invalid-import', 'The statement import contains reused workspace identities.'); return;
     }
@@ -946,10 +956,11 @@ export class WorkspaceSession {
       throw new Error('The selected statement is no longer in the workspace.');
     }
     const sourceId: string = removed.result.sourceProvenance!.sourceId;
-    const rows: Set<string> = new Set([
-      ...removed.transactions.map((row: StoredBankImport['transactions'][number]): string => row.transactionId),
-      ...removed.drafts.map((row: StoredBankImport['drafts'][number]): string => row.draftId)
-    ]);
+    const history: StoredBankImport[] = this.statementHistory().filter((record: StoredBankImport): boolean => record.id === importId);
+    const rows: Set<string> = new Set(history.flatMap((record: StoredBankImport): string[] => [
+      ...record.transactions.map((row: StoredBankImport['transactions'][number]): string => row.transactionId),
+      ...record.drafts.map((row: StoredBankImport['drafts'][number]): string => row.draftId)
+    ]));
     const effective: StoredBankImport[] = this.effectiveImports.filter((record: StoredBankImport): boolean => record.id !== importId);
     const documents: StoredDocumentImport[] = this.documents().effective;
     const plan: ReturnType<typeof prepareStatementRemoval> = prepareStatementRemoval(sourceId, rows, effective, documents, {
@@ -960,6 +971,7 @@ export class WorkspaceSession {
     const documentRecords: StoredDocumentImport[] = withoutRemovedSourceSkips(this.documentRecords, new Set([sourceId]));
 
     this.importRecords = this.importRecords.filter((record: StoredBankImport): boolean => record.id !== importId);
+    this.statementAnalysisVersions = this.statementAnalysisVersions.filter((version: StatementAnalysisVersion): boolean => version.importId !== importId);
     this.effectiveImports = effective;
     this.documentRecords = documentRecords;
     this.documentView = null;
@@ -1028,7 +1040,7 @@ export class WorkspaceSession {
   }
 
   private validateDocumentImport(record: StoredDocumentImport, workspaceId: string): void {
-    const identities: Set<string> = new Set([workspaceId, ...this.documentIdentities(), ...this.sources().map((source: WorkspaceSource): string => source.id), ...this.importRecords.flatMap((bank: StoredBankImport): string[] => [
+    const identities: Set<string> = new Set([workspaceId, ...this.documentIdentities(), ...this.sources().map((source: WorkspaceSource): string => source.id), ...this.statementHistory().flatMap((bank: StoredBankImport): string[] => [
       bank.id, ...bank.accounts.flatMap((account: { sectionId: string; accountId: string; statementId: string; }): string[] => [account.accountId, account.statementId]), ...bank.transactions.map((row: { rowId: string; transactionId: string; }): string => row.transactionId), ...bank.drafts.map((row: { rowId: string; draftId: string; }): string => row.draftId)
     ])].map((id: string): string => id.toLowerCase()));
     const sources: Map<string, WorkspaceSource> = new Map(this.sources().map((source: WorkspaceSource): [string, WorkspaceSource] => [source.id, source]));
@@ -1175,7 +1187,7 @@ export class WorkspaceSession {
         reviews.delete(secondary);
       }
     }
-    validateDuplicateDecisions(duplicates.values(), this.effectiveImports);
+    validateDuplicateDecisions(duplicates.values(), this.effectiveImports, originalStatementBankIds(this.importRecords));
     if (secondary && this.matchDecisions.get(secondary) !== reviews.get(secondary)) {
       approvals.set(secondary, advanceReviewRevision(approvals.get(secondary)));
     }
@@ -1218,7 +1230,7 @@ export class WorkspaceSession {
     decision: Exclude<Extract<WorkspaceCommand, { type: 'set-duplicate-decision' }>['decision'], 'clear'>, reviews: Map<string, string | null>
   ): DuplicateDecision {
     const statement: StoredBankImport | undefined = this.effectiveImports.find((record: StoredBankImport): boolean => record.transactions.some((row: { rowId: string; transactionId: string; }): boolean => row.transactionId === transactionId));
-    if (!statement || !indexStatementOverlaps(active)(statement.id).get(transactionId)
+    if (!statement || !indexStatementOverlaps(active, originalStatementBankIds(this.importRecords))(statement.id).get(transactionId)
       .some((row: StatementOverlap): boolean => row.transactionId === otherTransactionId)) {
       throw new Error('These bookings are no longer possible duplicates.');
     }
@@ -1301,7 +1313,7 @@ export class WorkspaceSession {
     const correction: BankCorrection = bankCorrectionSchema.parse({ ...previous, rowId, revision: (previous?.revision ?? 1) + 1,
       ...(bookingDate === undefined ? {} : { bookingDate }), ...(accountAmount === undefined ? {} : { accountAmount }) });
     const corrections: Map<string, BankCorrection> = new Map(this.bankCorrections).set(rowId, correction);
-    const effective: StoredBankImport[] = applyBankCorrections(this.importRecords, corrections);
+    const effective: StoredBankImport[] = projectCorrectedStatementAnalyses(this.importRecords, this.statementAnalysisVersions, corrections);
     const matches: TransactionMatch[] = suggestWorkspaceMatches(this.activeImports(effective), this.activeDocuments());
     const before: boolean = this.effectiveImports.some((record: StoredBankImport): boolean => record.transactions.some((row: { rowId: string; transactionId: string; }): boolean => row.transactionId === rowId));
     if (before && !effective.some((record: StoredBankImport): boolean => record.transactions.some((row: { rowId: string; transactionId: string; }): boolean => row.transactionId === rowId))) {
@@ -1493,6 +1505,7 @@ export class WorkspaceSession {
     }
     this.metadata = newMetadata(); this.saved = null; this.importRecords = []; this.documentRecords = []; this.matches = []; this.matchDecisions.clear();
     this.receiptAnalysisVersions = []; this.pendingReceiptAnalysis = null;
+    this.statementAnalysisVersions = [];
     this.bankCorrections.clear(); this.effectiveImports = [];
     this.documentCorrections.clear(); this.documentView = null;
     this.reviewApprovals.clear(); this.ignoredTransactions.clear(); this.duplicateDecisions.clear(); this.sourceRelocations.clear();
@@ -1515,11 +1528,12 @@ export class WorkspaceSession {
     }
     this.metadata = { ...loaded.metadata }; this.saved = loaded; this.importRecords = structuredClone(loaded.imports); this.documentRecords = structuredClone(loaded.documentImports);
     this.receiptAnalysisVersions = structuredClone(loaded.receiptAnalysisVersions); this.pendingReceiptAnalysis = null;
+    this.statementAnalysisVersions = structuredClone(loaded.statementAnalysisVersions);
     this.matchDecisions = new Map(loaded.matchDecisions);
     this.reviewApprovals = new Map(loaded.reviewApprovals);
     this.sourceRelocations = new Map(loaded.sourceRelocations);
     this.bankCorrections = new Map(loaded.bankCorrections);
-    this.effectiveImports = applyBankCorrections(this.importRecords, this.bankCorrections);
+    this.effectiveImports = projectCorrectedStatementAnalyses(this.importRecords, this.statementAnalysisVersions, this.bankCorrections);
     this.documentCorrections = new Map(loaded.documentCorrections);
     this.restoreMatches(loaded);
     this.pendingAnalysis = null;

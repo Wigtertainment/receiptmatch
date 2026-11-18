@@ -45,7 +45,7 @@ function validateGroups(primaryBySecondary: ReadonlyMap<string, string>, owners:
 	}
 }
 
-export function validateDuplicateDecisions(decisions: Iterable<DuplicateDecision>, imports: readonly StoredBankImport[]): Map<string, DuplicateDecision> {
+export function validateDuplicateDecisions(decisions: Iterable<DuplicateDecision>, imports: readonly StoredBankImport[], originalBankIds: ReadonlyMap<string, string> = new Map()): Map<string, DuplicateDecision> {
 	const result: Map<string, DuplicateDecision> = new Map<string, DuplicateDecision>(), primaryBySecondary: Map<string, string> = new Map<string, string>();
 	const parsed: DuplicateDecision[] = [...decisions].map((value: DuplicateDecision): DuplicateDecision => duplicateDecisionSchema.parse(value));
 	if (!parsed.length) {
@@ -53,7 +53,7 @@ export function validateDuplicateDecisions(decisions: Iterable<DuplicateDecision
 	}
 	const referenced: Set<string> = new Set(parsed.flatMap(({ firstId, secondId }: DuplicateDecision): string[] => [firstId, secondId]));
 	const owners: Map<string, { readonly statementId: string; readonly account: string | null; readonly scope: string; readonly references: Set<string>; }> = new Map(imports.flatMap((record: StoredBankImport): (readonly [string, { readonly statementId: string; readonly account: string | null; readonly scope: string; readonly references: Set<string>; }])[] => {
-		const bank: string | undefined = record.result.adapter?.bankId;
+		const bank: string | undefined = record.result.adapter?.bankId ?? originalBankIds.get(record.id);
 		const selected: { rowId: string; transactionId: string; }[] = record.transactions.filter((row: { rowId: string; transactionId: string; }): boolean => referenced.has(row.transactionId));
 		if (!bank || !selected.length) {
 			return [];
