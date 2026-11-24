@@ -7,6 +7,7 @@ import type { StoredDocumentImport, StoredSupportingDocument } from '../src/shar
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
 import type { MatchCandidate, TransactionMatch } from '../src/shared/workspace-matching.js';
 import { hasFullDocumentReference, mergedLegacySections, recordedDocumentPayments } from './documents/interpret.js';
+import { hasUsableDocumentFieldSibling } from '../src/shared/document-field-reviews.js';
 
 type AmountField = DocumentSection['amounts'][number];
 type DateField = DocumentSection['dates'][number];
@@ -69,16 +70,17 @@ interface SectionAmountFacts {
 	declaredCurrencies: Set<string>;
 	uncertainFields: Set<string | null>;
 	uncertainReferences: Set<string>;
+	unresolvedCoreReview: boolean;
 }
 
 function addIndexedAmounts(index: Map<string, IndexedAmount[]>, facts: SectionAmountFacts, direction: Direction, fields: AmountField[]): void {
-	const { documentId, section, paymentDates, dates, currencies, declaredCurrencies, uncertainFields, uncertainReferences }: SectionAmountFacts = facts;
+	const { documentId, section, paymentDates, dates, currencies, declaredCurrencies, uncertainFields, uncertainReferences, unresolvedCoreReview }: SectionAmountFacts = facts;
 	if (!fields.length) {
 		return;
 	}
 	const amounts: { field: AmountField; amount: AmountField['candidates'][number]; }[] = fields.flatMap((field: AmountField): { field: AmountField; amount: AmountField['candidates'][number]; }[] => field.candidates.map((amount: AmountField['candidates'][number]): { field: AmountField; amount: AmountField['candidates'][number]; } => ({ field, amount })));
 	const values: Set<string | null> = new Set(amounts.map(({ amount }: { field: AmountField; amount: AmountField['candidates'][number]; }): string | null => (amount.currency === null ? null : moneyKey({ ...amount, currency: amount.currency }))));
-	const conflicting: boolean = values.size > 1 || declaredCurrencies.size > 1 || new Set(dates.flatMap((field: DateField): string[] => field.candidates)).size > 1 ||
+	const conflicting: boolean = unresolvedCoreReview || values.size > 1 || declaredCurrencies.size > 1 || new Set(dates.flatMap((field: DateField): string[] => field.candidates)).size > 1 ||
 		[...fields, ...dates, ...paymentDates, ...currencies].some((field: AmountField | DateField | DocumentSection['currencies'][number]): boolean => uncertainFields.has(field.id)) ||
 		(fields.some((field: AmountField): boolean => field.role === 'billed-total') && section.kind === 'invoice' &&
 			!section.merchants.some((field: DocumentSection['merchants'][number]): boolean => field.candidates.length === 1 && !uncertainFields.has(field.id)));
@@ -96,7 +98,7 @@ function addIndexedAmounts(index: Map<string, IndexedAmount[]>, facts: SectionAm
 	}
 }
 
-function indexSectionAmounts(index: Map<string, IndexedAmount[]>, id: string, section: DocumentSection, uncertainFields: Set<string | null>, recordedPayments: Set<string>): void {
+function indexSectionAmounts(index: Map<string, IndexedAmount[]>, id: string, section: DocumentSection, uncertainFields: Set<string | null>, recordedPayments: Set<string>, unresolvedCoreReview: boolean): void {
 	const paymentDates: DateField[] = section.dates.filter((field: DateField): boolean => field.role === 'payment');
 	const dates: DateField[] = paymentDates.some((field: DateField): boolean => field.candidates.length > 0) ? paymentDates : section.dates.filter((field: DateField): boolean => field.role === 'issue');
 	const currencies: DocumentSection['currencies'][number][] = section.currencies.filter((field: DocumentSection['currencies'][number]): boolean => field.role === 'settlement');
@@ -107,19 +109,29 @@ function indexSectionAmounts(index: Map<string, IndexedAmount[]>, id: string, se
 		['incoming', section.amounts.filter((field: AmountField): boolean => field.role === 'refund-payment')],
 	] as const;
 	for (const [direction, fields] of directions) {
-		addIndexedAmounts(index, { documentId: id, section, paymentDates, dates, currencies, declaredCurrencies, uncertainFields, uncertainReferences }, direction, fields);
+		addIndexedAmounts(index, { documentId: id, section, paymentDates, dates, currencies, declaredCurrencies, uncertainFields, uncertainReferences, unresolvedCoreReview }, direction, fields);
 	}
+}
+
+function hasUnresolvedCoreReview(section: DocumentSection, issues: DocumentIssue[], uncertainFields: ReadonlySet<string | null>): boolean {
+	const primaryReference: string = section.kind === 'receipt' ? 'receipt' : section.kind === 'payment-information' ? 'payment' : 'invoice';
+	const coreFields: Set<string> = new Set([...section.merchants, ...section.references.filter((field: DocumentSection['references'][number]): boolean => field.role === primaryReference)]
+		.map((field: DocumentSection['merchants' | 'references'][number]): string => field.id));
+	return issues.some((issue: DocumentIssue): boolean => issue.sectionId === section.sectionId && !!issue.fieldId && coreFields.has(issue.fieldId) &&
+		uncertainFields.has(issue.fieldId) && ['rejected-field', 'unavailable-field'].includes(issue.code));
 }
 
 function indexDocumentAmounts(documents: readonly StoredSupportingDocument[]): Map<string, IndexedAmount[]> {
 	const index: Map<string, IndexedAmount[]> = new Map();
 	for (const { id, result } of documents) {
 		const mergedSections: Set<string> = mergedLegacySections(result);
-		const uncertainFields: Set<string | null> = new Set(result.issues.map((issue: DocumentIssue): string | null => issue.fieldId));
+		const rejectedWithReplacement: Set<string> = new Set(result.issues.filter((issue: DocumentIssue): boolean => issue.code === 'rejected-field' &&
+			!!issue.sectionId && !!issue.fieldId && hasUsableDocumentFieldSibling(result, issue.sectionId, issue.fieldId)).map((issue: DocumentIssue): string => issue.fieldId!));
+		const uncertainFields: Set<string | null> = new Set(result.issues.filter((issue: DocumentIssue): boolean => issue.severity === 'error' || !issue.fieldId || !rejectedWithReplacement.has(issue.fieldId)).map((issue: DocumentIssue): string | null => issue.fieldId));
 		const recordedPayments: Set<string> = recordedDocumentPayments(result);
 		for (const section of result.sections) {
 			if (!mergedSections.has(section.sectionId)) {
-				indexSectionAmounts(index, id, section, uncertainFields, recordedPayments);
+				indexSectionAmounts(index, id, section, uncertainFields, recordedPayments, hasUnresolvedCoreReview(section, result.issues, uncertainFields));
 			}
 		}
 	}

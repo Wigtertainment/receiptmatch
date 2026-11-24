@@ -76,7 +76,7 @@ for (const version of [1, 2]) {
 			file: string = path.join(root, "legacy.receiptmatch");
 		await createWorkspace(file, newMetadata());
 		const db: Database.Database = new Database(file);
-		db.exec(`DROP TABLE statement_analysis_versions; DROP TABLE receipt_analysis_versions; DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
+		db.exec(`DROP TABLE statement_analysis_versions; DROP TABLE document_field_reviews; DROP TABLE receipt_analysis_versions; DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
 			DROP TABLE match_results; DROP TABLE document_imports; ${version === 1 ? "DROP TABLE bank_imports;" : ""} PRAGMA user_version=${version};`);
 		db.prepare("INSERT INTO sources VALUES(?,?,?)").run("legacy-source", path.join(root, "legacy.pdf"), "a".repeat(64));
 		db.prepare("INSERT INTO sources VALUES(?,?,?)").run("legacy-duplicate-hash", path.join(root, "legacy-copy.pdf"), "a".repeat(64));
@@ -141,7 +141,7 @@ test("v2 bank manifests survive document migration and both import types share t
 		bank: StoredBankImport = retainedBank(root);
 	await createWorkspace(file, newMetadata(), [bank]);
 	const db: Database.Database = new Database(file);
-	db.exec(`DROP TABLE statement_analysis_versions; DROP TABLE receipt_analysis_versions; DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
+	db.exec(`DROP TABLE statement_analysis_versions; DROP TABLE document_field_reviews; DROP TABLE receipt_analysis_versions; DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
 		DROP TABLE match_results; DROP TABLE document_imports; PRAGMA user_version=2;`);
 	db.close();
 	const before: NonSharedBuffer = await readFile(file),
@@ -202,7 +202,7 @@ test("an append failure rolls back schema migration, document projection and met
 		file: string = path.join(root, "rollback.receiptmatch");
 	await createWorkspace(file, newMetadata());
 	const db: Database.Database = new Database(file);
-	db.exec(`DROP TABLE statement_analysis_versions; DROP TABLE receipt_analysis_versions; DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
+	db.exec(`DROP TABLE statement_analysis_versions; DROP TABLE document_field_reviews; DROP TABLE receipt_analysis_versions; DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
 		DROP TABLE match_results; DROP TABLE document_imports; PRAGMA user_version=2;`);
 	db.close();
 	const saved: SavedWorkspace = await loadWorkspace(file),

@@ -21,7 +21,7 @@ interface Fixture { root: string; file: string; original: StoredBankImport; vers
 function saveVersions(current: SavedWorkspace, versions: StatementAnalysisVersion[]): Promise<SavedWorkspace> {
     return saveWorkspace(current, current.metadata, current.imports, current.documentImports, current.matchDecisions, current.bankCorrections,
         current.documentCorrections, current.reviewApprovals, current.duplicateDecisions, current.sourceRelocations, current.sourceReplacements,
-        current.archivedSourceReviews, current.ignoredTransactions, current.receiptAnalysisVersions, new Set(), versions);
+        current.archivedSourceReviews, current.ignoredTransactions, current.receiptAnalysisVersions, new Set(), current.documentFieldReviews, versions);
 }
 
 function proposed(record: StoredBankImport, date: string): BankImportResult {

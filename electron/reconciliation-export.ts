@@ -33,7 +33,7 @@ export async function writeReconciliationExport(snapshot: SavedWorkspace, destin
 	}
 
 	const imports: StoredBankImport[] = excludeDuplicateTransactions(activeStatements(projectCorrectedStatementAnalyses(snapshot.imports, snapshot.statementAnalysisVersions, snapshot.bankCorrections), snapshot.sourceReplacements), snapshot.duplicateDecisions.values());
-	const revisions: Map<string, number> = documentRevisionIndex(snapshot.documentCorrections.values());
+	const revisions: Map<string, number> = documentRevisionIndex(snapshot.documentCorrections.values(), snapshot.documentFieldReviews.values());
 	const approvals: Map<string, MatchApproval> = currentMatchApprovals(snapshot.reviewApprovals, snapshot.matchDecisions, snapshot.bankCorrections, revisions);
 	for (const id of snapshot.ignoredTransactions) {
 		approvals.delete(id);

@@ -25,7 +25,7 @@ test('displays the latest saved statement analysis after opening and reopening t
     const initial: SavedWorkspace = await createWorkspace(file, newMetadata(), [original, other]);
     await saveWorkspace(initial, initial.metadata, initial.imports, initial.documentImports, initial.matchDecisions, initial.bankCorrections,
         initial.documentCorrections, initial.reviewApprovals, initial.duplicateDecisions, initial.sourceRelocations, initial.sourceReplacements,
-        initial.archivedSourceReviews, initial.ignoredTransactions, initial.receiptAnalysisVersions, new Set(), [version]);
+        initial.archivedSourceReviews, initial.ignoredTransactions, initial.receiptAnalysisVersions, new Set(), initial.documentFieldReviews, [version]);
     const executablePath: unknown = (await import('electron')).default;
     if (typeof executablePath !== 'string') {
         throw new Error('Electron is unavailable.');

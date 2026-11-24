@@ -3,12 +3,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { test, type TestContext } from 'vitest';
 import type { StatementAiService, StatementAiSource } from '../../electron/import/reanalyze-statement.js';
 import { reconciliationRows } from '../../electron/reconciliation-csv.js';
-import { createWorkspace, loadWorkspace, newMetadata, type SavedWorkspace } from '../../electron/store.js';
+import { createWorkspace, loadWorkspace, newMetadata, SCHEMA_VERSION, type SavedWorkspace } from '../../electron/store.js';
 import { WorkspaceSession, type WorkspaceDialogs } from '../../electron/workspace-session.js';
 import { importIssue, type BankImportResult } from '../../src/shared/bank-import.js';
+import { documentFieldReviewKey, type DocumentFieldReview } from '../../src/shared/document-field-reviews.js';
 import type { StatementAiPreviewResult, StatementAiRequest, StatementAiResult } from '../../src/shared/statement-ai.js';
 import type { MatchSummary } from '../../src/shared/workspace-matching.js';
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
@@ -245,4 +247,44 @@ test('saved protections remain in force until their removal is saved', async (co
     assert.equal(preview.blockingConflict, undefined);
     assert.equal((await session.acceptStatementAnalysis({ token: preview.token, loadRevision: request.loadRevision, acknowledgeConflicts: true })).status, 'adopted');
     assert.equal((await session.dispatch({ type: 'save' })).error, null);
+});
+
+test('schema 16 document confirmations survive statement reanalysis, migration and reopening together', async (context: TestContext): Promise<void> => {
+    const { session, request, original, receiptId, file }: Fixture = await fixture(context);
+    const imported: ReturnType<WorkspaceSession['documentImports']>[number]['files'][number] = session.documentImports()[0].files[0];
+    assert.equal(imported.status, 'imported');
+    const receipt: ReturnType<typeof retainedDocument> = imported.record;
+    const sectionId: string = receipt.result.sections[0].sectionId;
+    const fieldId: string = receipt.result.sections[0].merchants[0].id;
+    const target: { documentId: string; sectionId: string; fieldId: string } = { documentId: receiptId, sectionId, fieldId };
+    const confirmed: Awaited<ReturnType<WorkspaceSession['dispatch']>> = await session.dispatch({ type: 'set-document-field-confirmed',
+        revision: session.state().workspace!.matchRevision, ...target, confirmed: true });
+    assert.equal(confirmed.error, null);
+    assert.equal((await session.dispatch({ type: 'save' })).error, null);
+    const before: SavedWorkspace = await loadWorkspace(file);
+    const review: DocumentFieldReview = before.documentFieldReviews.get(documentFieldReviewKey(target))!;
+    assert.equal(review.confirmed, true);
+    const db: Database.Database = new Database(file);
+    try {
+        db.exec('DROP TABLE statement_analysis_versions; PRAGMA user_version=16;');
+    } finally {
+        db.close();
+    }
+    const oldBytes: Buffer = await readFile(file);
+    assert.equal((await session.dispatch({ type: 'open' })).error, null);
+    assert.deepEqual(await readFile(file), oldBytes);
+    assert.equal((await loadWorkspace(file)).schemaVersion, 16);
+    const currentRequest: StatementAiRequest = { ...request, loadRevision: session.state().workspace!.loadRevision };
+    const preview: Extract<StatementAiPreviewResult, { status: 'ready' }> = ready(await session.reanalyzeStatement(currentRequest));
+    assert.equal((await session.acceptStatementAnalysis({ token: preview.token, loadRevision: currentRequest.loadRevision, acknowledgeConflicts: true })).status, 'adopted');
+    assert.equal((await session.dispatch({ type: 'save' })).error, null);
+    const saved: SavedWorkspace = await loadWorkspace(file);
+    assert.equal(saved.schemaVersion, SCHEMA_VERSION);
+    assert.deepEqual(saved.documentFieldReviews.get(documentFieldReviewKey(target)), review);
+    assert.deepEqual(saved.imports, [original]);
+    assert.equal(saved.statementAnalysisVersions.length, 1);
+    assert.equal(reconciliationRows(saved)[0].booking_date, '2032-02-26');
+    assert.equal((await session.dispatch({ type: 'open' })).error, null);
+    assert.equal(session.bankImports()[0].result.transactions[0].bookingDate.value, '2032-02-26');
+    assert.deepEqual(session.state().workspace!.documentFieldReviews, [review]);
 });

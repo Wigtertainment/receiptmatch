@@ -303,6 +303,9 @@ app-document-imports, app-document-analysis, app-document-source-page { display:
 .document-imports .folder-issues { padding-left: 18px; }
 app-document-analysis { display: block; min-width: 0; container: document-fields / inline-size; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
 app-document-analysis .document-fields-heading { margin: 20px 0 12px; font-size: 16px; font-weight: 700; }
+app-document-analysis .document-fields-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; margin: 20px 0 12px; }
+app-document-analysis .document-fields-toolbar .document-fields-heading { margin: 0; }
+app-document-analysis .document-fields-toolbar app-original-preview-button { --wig-button-font-size: 13px; --wig-button-min-height: 36px; }
 app-document-analysis .extracted-section { margin: 0 0 20px; border: 1px solid var(--divider); border-radius: 8px; background: var(--surface); }
 app-document-analysis .document-section-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 4px 16px; padding: 12px 16px; background: #f3f6f4; border-radius: 7px 7px 0 0; }
 app-document-analysis .document-section-heading h5 { margin: 0; font-size: 14px; font-weight: 700; }
@@ -323,10 +326,17 @@ app-document-analysis .field-statuses { display: flex; flex-wrap: wrap; justify-
 app-document-analysis .field-statuses:empty { display: none; }
 app-document-analysis .field-statuses :is(.source-status, .field-warning) { display: inline-block; margin: 0; padding: 3px 8px; border: 1px solid #bed6cc; border-radius: 4px; background: #edf5f0; color: #245747; font-size: 12px; font-weight: 600; }
 app-document-analysis .field-statuses .field-warning { border-color: #e1c7a2; color: #734418; background: #fcf2e4; }
+app-document-analysis .field-decision-status { display: inline-block; padding: 3px 8px; border: 1px solid var(--divider); border-radius: 4px; color: var(--muted); font-size: 12px; font-weight: 600; }
 app-document-analysis .field-body { display: grid; gap: 14px; margin: 0; padding: 0 16px 16px 37px; }
 app-document-analysis .field-body > wig-button { justify-self: start; --wig-button-min-height: 36px; --wig-button-font-size: 13px; }
+app-document-analysis .field-confirmation { display: grid; justify-items: start; gap: 6px; }
+app-document-analysis .field-confirmation wig-button { --wig-button-min-height: 36px; --wig-button-font-size: 13px; }
+app-document-analysis :is(.field-confirmation-help, .field-decision-help) { margin: 0; color: var(--muted); font-size: 13px; }
+app-document-analysis .field-decision { display: grid; gap: 6px; }
+app-document-analysis .field-decision-actions { display: flex; flex-wrap: wrap; gap: 8px; --wig-button-min-height: 36px; --wig-button-font-size: 13px; }
 app-document-analysis .field-body h6 { margin: 0 0 4px; font-size: 13px; font-weight: 650; }
 app-document-analysis .field-review { padding: 12px 14px; border-left: 3px solid #b88545; border-radius: 0 4px 4px 0; background: #fcf6ec; color: #65431f; }
+app-document-analysis .field-review.field-notes { border-left-color: var(--divider); background: var(--surface); color: var(--muted); }
 app-document-analysis .field-issues { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
 app-document-analysis .field-issues p { margin: 0; }
 app-document-analysis .field-original { display: grid; gap: 12px; }

@@ -37,12 +37,12 @@ function sourceName(file: string): string {
 export function reconciliationRows(snapshot: SavedWorkspace, copyOutcomes: readonly DocumentExportOutcome[] = []): ReconciliationRow[] {
 	const corrected: StoredBankImport[] = projectCorrectedStatementAnalyses(snapshot.imports, snapshot.statementAnalysisVersions, snapshot.bankCorrections);
 	const imports: StoredBankImport[] = excludeDuplicateTransactions(activeStatements(corrected, snapshot.sourceReplacements), snapshot.duplicateDecisions.values());
-	const documentView: WorkspaceDocumentState = new WorkspaceDocumentState(snapshot.documentImports, snapshot.documentCorrections);
+	const documentView: WorkspaceDocumentState = new WorkspaceDocumentState(snapshot.documentImports, snapshot.documentCorrections, snapshot.receiptAnalysisVersions, snapshot.documentFieldReviews);
 	const documents: StoredDocumentImport[] = activeSupportingDocuments(documentView.effective, snapshot.sourceReplacements);
 	const matchImports: StoredBankImport[] = excludeTransactions(imports, snapshot.ignoredTransactions);
 	const exactMatches: TransactionMatch[] = matchImports === corrected && !snapshot.sourceReplacements.size && !documentView.hasAutomaticChanges ? snapshot.matches : suggestWorkspaceMatches(matchImports, documents);
 	const matches: ReviewMatch[] = evaluateReviewMatches(exactMatches, matchImports, documents);
-	const documentRevisions: Map<string, number> = documentRevisionIndex(snapshot.documentCorrections.values());
+	const documentRevisions: Map<string, number> = documentRevisionIndex(snapshot.documentCorrections.values(), snapshot.documentFieldReviews.values());
 	const summaries: Map<string, MatchSummary> = new Map(summarizeMatches(matches, imports, snapshot.matchDecisions, snapshot.bankCorrections, snapshot.reviewApprovals, documentRevisions, snapshot.ignoredTransactions)
 		.map((summary: MatchSummary): [string, MatchSummary] => [summary.transactionId, summary]));
 	const names: Map<string, string> = new Map(snapshot.documentImports.flatMap((run: StoredDocumentImport): (readonly [string, string])[] => run.files.flatMap((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): [] | [readonly [string, string]] => file.status === 'imported' ?

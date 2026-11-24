@@ -38,7 +38,7 @@ function version(original: StoredBankImport, current: StoredBankImport = origina
 function saveHistory(current: SavedWorkspace, versions: StatementAnalysisVersion[]): Promise<SavedWorkspace> {
     return saveWorkspace(current, current.metadata, current.imports, current.documentImports, current.matchDecisions, current.bankCorrections,
         current.documentCorrections, current.reviewApprovals, current.duplicateDecisions, current.sourceRelocations, current.sourceReplacements,
-        current.archivedSourceReviews, current.ignoredTransactions, current.receiptAnalysisVersions, new Set(), versions);
+        current.archivedSourceReviews, current.ignoredTransactions, current.receiptAnalysisVersions, new Set(), current.documentFieldReviews, versions);
 }
 
 test('statement versions round-trip unchanged originals, retain historical SQL rows and validate the exact union', async (context: TestContext): Promise<void> => {
@@ -125,7 +125,7 @@ test('old workspaces stay byte-identical on open and gain the history table only
     const file: string = path.join(root, 'old.receiptmatch');
     await createWorkspace(file, newMetadata(), [retainedBank(root)]);
     const db: Database.Database = new Database(file);
-    db.exec('DROP TABLE statement_analysis_versions; PRAGMA user_version=13;');
+    db.exec('DROP TABLE statement_analysis_versions; DROP TABLE document_field_reviews; PRAGMA user_version=13;');
     db.close();
     const bytes: NonSharedBuffer = await readFile(file);
     const previous: SavedWorkspace = await loadWorkspace(file);
@@ -143,7 +143,7 @@ test('removing a statement deletes every retained analysis and historical transa
     const initial: SavedWorkspace = await createWorkspace(path.join(root, 'workspace.receiptmatch'), newMetadata(), [original]);
     const saved: SavedWorkspace = await saveHistory(initial, [version(original)]);
     const removed: SavedWorkspace = await saveWorkspace(saved, saved.metadata, [], [], new Map(), new Map(), undefined, new Map(), new Map(), undefined,
-        undefined, undefined, new Set(), undefined, new Set([original.id]), []);
+        undefined, undefined, new Set(), undefined, new Set([original.id]), undefined, []);
     assert.deepEqual(removed.imports, []);
     assert.deepEqual((await loadWorkspace(removed.filePath)).statementAnalysisVersions, []);
     const db: Database.Database = new Database(removed.filePath);

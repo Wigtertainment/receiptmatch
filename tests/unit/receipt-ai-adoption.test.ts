@@ -11,6 +11,7 @@ import { applySelectedReceiptAi, reviewNuExtractResult, type ReceiptAiSource } f
 import { compareDocuments } from '../../electron/source-comparison.js';
 import type { PositionedSpan } from '../../src/shared/bank-import.js';
 import { documentCorrectionKey, type DocumentCorrection } from '../../src/shared/document-corrections.js';
+import { activeDocumentFieldDisposition, type DocumentFieldReview } from '../../src/shared/document-field-reviews.js';
 import { approvalSelectionFor, type ReviewApprovalState } from '../../src/shared/match-approvals.js';
 import type { OriginalAdoptionResult } from '../../src/shared/original-preview.js';
 import type { DocumentSnapshot, WorkspaceView } from '../../src/shared/protocol.js';
@@ -115,6 +116,26 @@ async function preview({ report, session }: Fixture, fileIndex: number = 0): Pro
 function accept(session: WorkspaceSession, token: string, acknowledgeConflicts: boolean = false): Promise<OriginalAdoptionResult> {
     return session.acceptReceiptAnalysis({ token, acknowledgeConflicts, loadRevision: workspace(session).loadRevision });
 }
+
+test('accepted reanalysis tombstones field decisions even when the reviewed field value stays unchanged', async (context: TestContext): Promise<void> => {
+    const prepared: Fixture = await fixture(context);
+    const { session, document, file }: Fixture = prepared;
+    const section: DocumentSection = document.result.sections[0];
+    const fieldId: string = section.merchants[0].id;
+    const target: { documentId: string; sectionId: string; fieldId: string } = { documentId: document.id, sectionId: section.sectionId, fieldId };
+    await session.dispatch({ type: 'set-document-field-disposition', revision: workspace(session).matchRevision, ...target, disposition: 'rejected' });
+    assert.equal(session.state().error, null);
+    prepared.modelReading.total = '48.75';
+    const staged: Ready = await preview(prepared);
+    assert.deepEqual(await accept(session, staged.token, true), { status: 'adopted' });
+    const review: DocumentFieldReview = workspace(session).documentFieldReviews!.find((item: DocumentFieldReview): boolean => item.fieldId === fieldId)!;
+    assert.equal(review.disposition, undefined);
+    assert.equal(review.confirmed, false);
+    assert.equal(activeDocumentFieldDisposition(document.result, target, [review]), null);
+    await session.dispatch({ type: 'save' });
+    assert.equal(session.state().error, null);
+    assert.equal((await loadWorkspace(file)).documentFieldReviews.values().next().value!.disposition, undefined);
+});
 
 test('requires a current preview token and rechecks the original bytes before applying an OCR analysis', async (context: TestContext & object): Promise<void> => {
     const prepared: Fixture = await fixture(context);
@@ -269,4 +290,20 @@ test('preserves an existing manual correction and approval while applying a veri
     assert.deepEqual([...stored.documentCorrections.values()], [correction]);
     assert.equal((await session.dispatch({ type: 'open' })).error, null);
     assert.equal(workspace(session).approvedDocumentCount, 1);
+});
+
+test('does not offer an AI reference suggestion over an explicit manual reference correction', async (context: TestContext): Promise<void> => {
+    const prepared: Fixture = await fixture(context, { selectable: true });
+    const { document, session }: Fixture = prepared;
+    const section: DocumentSection = document.result.sections[0];
+    const reference: DocumentSection['references'][number] = section.references[0];
+    assert.equal((await session.dispatch({ type: 'correct-document-field', revision: workspace(session).matchRevision, documentId: document.id, sectionId: section.sectionId,
+        fieldId: reference.id, change: { kind: 'reference', role: reference.role, value: 'MANUAL-2047' } })).error, null);
+    const staged: Ready = await preview(prepared);
+    assert.match(staged.proposals!.find((proposal: ReceiptAiProposal): boolean => proposal.field === 'reference')!.unavailable!, /manual correction/);
+    const result: OriginalAdoptionResult = await session.acceptReceiptAnalysis({ token: staged.token, loadRevision: workspace(session).loadRevision, acknowledgeConflicts: true, selectedFields: ['reference'] });
+    assert.equal(result.status, 'failed');
+    const view: WorkspaceView = workspace(session);
+    const snapshot: DocumentSnapshot = session.documentSnapshot({ loadRevision: view.loadRevision, revision: view.matchRevision })!;
+    assert.deepEqual(imported(snapshot.reports, document.id).result.sections[0].references[0].candidates, ['MANUAL-2047']);
 });

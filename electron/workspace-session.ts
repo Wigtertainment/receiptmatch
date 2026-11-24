@@ -20,6 +20,7 @@ import type { StatementAiAcceptRequest, StatementAiDiscardRequest, StatementAiPr
 import { projectCorrectedStatementAnalyses, projectStatementAnalyses } from './import/statement-analyses.js';
 import type { StatementAiService, StatementAiSource } from './import/reanalyze-statement.js';
 import { prepareStatementAnalysis, type StatementAnalysisPlan } from './import/prepare-statement-analysis.js';
+import { activeDocumentFieldDisposition, documentFieldConfirmationIssue, documentFieldReviewKey, documentFieldReviewSchema, documentFieldSignature, isDocumentFieldConfirmed, type DocumentFieldReview } from '../src/shared/document-field-reviews.js';
 import { documentCorrectionKey, documentCorrectionSchema, type DocumentCorrection, type DocumentCorrectionValue } from '../src/shared/document-corrections.js';
 import { sameMoneyValue } from '../src/shared/money.js';
 import { advanceReviewRevision, currentMatchApprovals, documentRevisionIndex, sameApprovalSelection,
@@ -91,7 +92,10 @@ function sameDocumentCorrection(previous: DocumentCorrectionValue, change: Docum
   if (change.kind === 'amount') {
     return previous.kind === 'amount' && sameMoneyValue(previous.value, change.value);
   }
-  return previous.kind === 'date' && previous.value === change.value;
+  if (change.kind === 'date') {
+    return previous.kind === 'date' && previous.value === change.value;
+  }
+  return previous.kind === change.kind && previous.value === change.value && (!('role' in change) || ('role' in previous && previous.role === change.role));
 }
 
 type PendingStatementFallback = { stage: 'offer'; token: string; source: StatementFallback } | { stage: 'review'; token: string; record: StoredBankImport };
@@ -143,13 +147,14 @@ function statementPreviewRows(record: StoredBankImport): Map<string, StatementAi
 }
 
 function preserveReceiptCorrection(proposal: ReceiptAiProposal, document: SupportingDocument, corrections: readonly DocumentCorrection[]): ReceiptAiProposal {
-  if (proposal.field === 'reference' || proposal.unavailable || !corrections.length) {
+  if (proposal.unavailable || !corrections.length) {
     return proposal;
   }
   const section: DocumentSection | undefined = document.sections.find((item: DocumentSection): boolean => item.sectionId === proposal.sectionId);
-  const kind: 'date' | 'amount' = proposal.field === 'issue-date' ? 'date' : 'amount';
+  const kind: 'date' | 'amount' | 'reference' = proposal.field === 'issue-date' ? 'date' : proposal.field === 'reference' ? 'reference' : 'amount';
   const fieldIds: string[] = kind === 'date'
     ? (section?.dates ?? []).filter((item: DocumentSection['dates'][number]): boolean => item.role === 'issue').map((item: DocumentSection['dates'][number]): string => item.id)
+    : kind === 'reference' ? (section?.references ?? []).filter((item: DocumentSection['references'][number]): boolean => ['invoice', 'receipt'].includes(item.role)).map((item: DocumentSection['references'][number]): string => item.id)
     : (section?.amounts ?? []).filter((item: DocumentSection['amounts'][number]): boolean => item.role === 'billed-total').map((item: DocumentSection['amounts'][number]): string => item.id);
   const maintained: boolean = corrections.some((correction: DocumentCorrection): boolean =>
     correction.sectionId === proposal.sectionId && correction.change.kind === kind && (correction.fieldId === null || fieldIds.includes(correction.fieldId)));
@@ -176,6 +181,7 @@ export class WorkspaceSession {
   private pendingReceiptAnalysis: PendingReceiptAnalysis | null = null;
   private documentView: WorkspaceDocumentState | null = null;
   private documentCorrections: Map<string, DocumentCorrection> = new Map<string, DocumentCorrection>();
+  private documentFieldReviews: Map<string, DocumentFieldReview> = new Map();
   private matches: TransactionMatch[] = [];
   private reviewMatches: { source: TransactionMatch[]; results: ReviewMatch[] } | null = null;
   private ignoredTransactions: Set<string> = new Set<string>();
@@ -239,14 +245,14 @@ export class WorkspaceSession {
         id: this.metadata.id, loadRevision: this.loadRevision, matchRevision: this.matchRevision, name: this.metadata.name,
         dirty: this.metadata.name !== this.saved?.metadata.name || !sameImports || !sameDocuments ||
           !isDeepStrictEqual(this.ignoredTransactions, this.saved.ignoredTransactions) || !isDeepStrictEqual(this.matchDecisions, this.saved.matchDecisions) || !isDeepStrictEqual(this.bankCorrections, this.saved.bankCorrections) ||
-          !isDeepStrictEqual(this.documentCorrections, this.saved.documentCorrections) || !isDeepStrictEqual(this.reviewApprovals, this.saved.reviewApprovals) ||
+          !isDeepStrictEqual(this.documentFieldReviews, this.saved.documentFieldReviews) || !isDeepStrictEqual(this.documentCorrections, this.saved.documentCorrections) || !isDeepStrictEqual(this.reviewApprovals, this.saved.reviewApprovals) ||
           !isDeepStrictEqual(this.receiptAnalysisVersions, this.saved.receiptAnalysisVersions) ||
           !isDeepStrictEqual(this.statementAnalysisVersions, this.saved.statementAnalysisVersions) ||
           !isDeepStrictEqual(this.duplicateDecisions, this.saved.duplicateDecisions) || !isDeepStrictEqual(this.sourceRelocations, this.saved.sourceRelocations) ||
           !isDeepStrictEqual(this.sourceReplacements, this.saved.sourceReplacements),
         filePath: this.saved?.filePath ?? null, savedAt: this.saved?.metadata.savedAt ?? null, imports, documentImports, matchReviewCounts,
         approvedDocumentCount: this.exportableApprovals().size,
-        bankCorrections: structuredClone([...this.bankCorrections.values()]), documentCorrections: structuredClone([...this.documentCorrections.values()]),
+        bankCorrections: structuredClone([...this.bankCorrections.values()]), documentCorrections: structuredClone([...this.documentCorrections.values()]), documentFieldReviews: structuredClone([...this.documentFieldReviews.values()]),
         duplicateDecisions: structuredClone([...this.duplicateDecisions.values()]),
         supersededStatements: this.importRecords.filter((record: StoredBankImport): boolean => this.sourceReplacements.has(record.result.sourceProvenance!.sourceId)).map((record: StoredBankImport): string => record.id),
         supersededDocuments: this.documentRecords.flatMap((run: StoredDocumentImport): string[] => run.files.flatMap((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): string[] => file.status === 'imported' &&
@@ -277,8 +283,8 @@ export class WorkspaceSession {
   }
 
   private documents(): WorkspaceDocumentState {
-    if (this.documentView?.imports !== this.documentRecords || this.documentView.corrections !== this.documentCorrections || this.documentView.versions !== this.receiptAnalysisVersions) {
-      this.documentView = new WorkspaceDocumentState(this.documentRecords, this.documentCorrections, this.receiptAnalysisVersions);
+    if (this.documentView?.imports !== this.documentRecords || this.documentView.corrections !== this.documentCorrections || this.documentView.versions !== this.receiptAnalysisVersions || this.documentView.reviews !== this.documentFieldReviews) {
+      this.documentView = new WorkspaceDocumentState(this.documentRecords, this.documentCorrections, this.receiptAnalysisVersions, this.documentFieldReviews);
     }
     return this.documentView;
   }
@@ -299,7 +305,8 @@ export class WorkspaceSession {
       const { id, result: { sections, issues } }: StoredSupportingDocument = file.record;
       return [[id, { sections, issues }]];
     })));
-    return structuredClone({ ...request, reports: documents.effective, originals });
+    const reviewBases: Record<string, { sections: DocumentSection[]; issues: DocumentIssue[]; }> = Object.fromEntries(documents.reviewBase.flatMap((run: StoredDocumentImport): [string, { sections: DocumentSection[]; issues: DocumentIssue[]; }][] => run.files.flatMap((file: StoredDocumentImport['files'][number]): [string, { sections: DocumentSection[]; issues: DocumentIssue[]; }][] => file.status === 'imported' ? [[file.record.id, { sections: file.record.result.sections, issues: file.record.result.issues }]] : [])));
+    return structuredClone({ ...request, reports: documents.effective, originals, reviewBases });
   }
 
   savedWorkspaceFingerprint(): string | null {
@@ -725,7 +732,9 @@ export class WorkspaceSession {
   private applyReceiptAnalysis({ source, plan }: PendingReceiptAnalysis): void {
     const acceptedAt: string = new Date().toISOString();
     const versions: ReceiptAnalysisVersion[] = [...this.receiptAnalysisVersions, { documentId: source.documentId, analysis: plan.analysis, acceptedAt }];
-    const view: WorkspaceDocumentState = new WorkspaceDocumentState(this.documentRecords, this.documentCorrections, versions);
+    const latest: number = documentRevisionIndex(this.documentCorrections.values(), this.documentFieldReviews.values()).get(source.documentId) ?? 1;
+    const fieldReviews: Map<string, DocumentFieldReview> = this.withdrawDocumentConfirmations(source.documentId, latest);
+    const view: WorkspaceDocumentState = new WorkspaceDocumentState(this.documentRecords, this.documentCorrections, versions, fieldReviews);
     const matches: TransactionMatch[] = suggestWorkspaceMatches(this.activeImports(), this.activeDocuments(view.effective));
     const approvals: Map<string, ReviewApprovalState> = new Map(this.reviewApprovals);
     if (plan.invalidatesApproval) {
@@ -736,6 +745,7 @@ export class WorkspaceSession {
       }
     }
     this.receiptAnalysisVersions = versions;
+    this.documentFieldReviews = fieldReviews;
     this.documentView = view;
     this.matches = matches;
     this.reviewApprovals = approvals;
@@ -773,7 +783,7 @@ export class WorkspaceSession {
       const replacements: Map<string, string> = validateSourceReplacements(new Map(this.sourceReplacements).set(oldSourceId, provenance.sourceId), banks, documents);
       const correctedBanks: StoredBankImport[] = projectCorrectedStatementAnalyses(banks, this.statementAnalysisVersions, plan.bankCorrections);
       const active: StoredBankImport[] = excludeDuplicateTransactions(activeStatements(correctedBanks, replacements), this.duplicateDecisions.values());
-      const documentView: WorkspaceDocumentState = new WorkspaceDocumentState(documents, plan.documentCorrections, this.receiptAnalysisVersions);
+      const documentView: WorkspaceDocumentState = new WorkspaceDocumentState(documents, plan.documentCorrections, this.receiptAnalysisVersions, this.documentFieldReviews);
       const matches: TransactionMatch[] = suggestWorkspaceMatches(active, activeSupportingDocuments(documentView.effective, replacements));
       if (plan.archive.size) {
         this.archivedSourceReviews.set(oldSourceId, plan.archive);
@@ -849,7 +859,7 @@ export class WorkspaceSession {
   matchSummaries(revision: number): MatchSummary[] | null {
     return this.metadata && revision === this.matchRevision ? summarizeMatches(
       this.matchesForReview(), this.activeImports(), this.matchDecisions, this.bankCorrections, this.reviewApprovals,
-      documentRevisionIndex(this.documentCorrections.values()), this.allIgnoredTransactions(), this.ignoredByRule()
+      documentRevisionIndex(this.documentCorrections.values(), this.documentFieldReviews.values()), this.allIgnoredTransactions(), this.ignoredByRule()
     ) : null;
   }
 
@@ -862,7 +872,7 @@ export class WorkspaceSession {
   }
 
   private currentApprovals(): Map<string, MatchApproval> {
-    return currentMatchApprovals(this.reviewApprovals, this.matchDecisions, this.bankCorrections, documentRevisionIndex(this.documentCorrections.values()));
+    return currentMatchApprovals(this.reviewApprovals, this.matchDecisions, this.bankCorrections, documentRevisionIndex(this.documentCorrections.values(), this.documentFieldReviews.values()));
   }
 
   private exportableApprovals(): Map<string, MatchApproval> {
@@ -959,7 +969,7 @@ export class WorkspaceSession {
       this.saved = await saveWorkspace(
       this.saved, this.metadata, this.importRecords, this.documentRecords, this.matchDecisions, this.bankCorrections, this.documentCorrections,
       this.reviewApprovals, this.duplicateDecisions, this.sourceRelocations, this.sourceReplacements, this.archivedSourceReviews, this.ignoredTransactions,
-      this.receiptAnalysisVersions, removed, this.statementAnalysisVersions
+      this.receiptAnalysisVersions, removed, this.documentFieldReviews, this.statementAnalysisVersions
     );
     } else {
       const destination: string | null = await this.dialogs.save(this.metadata.name);
@@ -968,7 +978,8 @@ export class WorkspaceSession {
       }
       this.saved = await createWorkspace(
         destination, this.metadata, this.importRecords, this.documentRecords, this.matchDecisions, this.bankCorrections, this.documentCorrections,
-        this.reviewApprovals, this.duplicateDecisions, this.sourceRelocations, this.sourceReplacements, this.archivedSourceReviews, this.ignoredTransactions, this.receiptAnalysisVersions, this.statementAnalysisVersions
+        this.reviewApprovals, this.duplicateDecisions, this.sourceRelocations, this.sourceReplacements, this.archivedSourceReviews, this.ignoredTransactions,
+        this.receiptAnalysisVersions, this.documentFieldReviews, this.statementAnalysisVersions
       );
     }
     this.metadata = { ...this.saved.metadata };
@@ -979,6 +990,7 @@ export class WorkspaceSession {
     this.documentRecords = structuredClone(this.saved.documentImports);
     this.receiptAnalysisVersions = structuredClone(this.saved.receiptAnalysisVersions);
     this.documentCorrections = new Map(this.saved.documentCorrections);
+    this.documentFieldReviews = new Map(this.saved.documentFieldReviews);
     this.reviewApprovals = new Map(this.saved.reviewApprovals);
     this.sourceRelocations = new Map(this.saved.sourceRelocations);
     this.restoreMatches(this.saved);
@@ -1200,7 +1212,7 @@ export class WorkspaceSession {
     }
     this.validateDocumentImport(record, workspaceId);
     const imports: StoredDocumentImport[] = [...this.documentRecords, record];
-    const documentView: WorkspaceDocumentState = new WorkspaceDocumentState(imports, this.documentCorrections, this.receiptAnalysisVersions);
+    const documentView: WorkspaceDocumentState = new WorkspaceDocumentState(imports, this.documentCorrections, this.receiptAnalysisVersions, this.documentFieldReviews);
     const hasNewDocuments: boolean = record.files.some((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): file is { status: "imported"; record: StoredSupportingDocument; } => file.status === 'imported');
     const matches: TransactionMatch[] = hasNewDocuments ? suggestWorkspaceMatches(this.activeImports(), this.activeDocuments(documentView.effective)) : this.matches;
     this.documentRecords = imports;
@@ -1519,6 +1531,91 @@ export class WorkspaceSession {
     return current;
   }
 
+  private setDocumentFieldConfirmed({ revision, documentId, sectionId, fieldId, confirmed }: Extract<WorkspaceCommand, { type: 'set-document-field-confirmed' }>): void {
+    if (!this.metadata || revision !== this.matchRevision) {
+      throw new Error('The document has changed. Refresh it before reviewing a field.');
+    }
+    const source: Extract<AnalyzedSource, { kind: 'document' }> | null = supportingDocumentSource(this.activeDocuments(), documentId);
+    if (!source) {
+      throw new Error('This document is no longer active.');
+    }
+    const target: { documentId: string; sectionId: string; fieldId: string } = { documentId, sectionId, fieldId };
+    const base: SupportingDocument = supportingDocumentSource(this.documents().reviewBase, documentId)!.record.result;
+    const key: string = documentFieldReviewKey(target);
+    const previous: DocumentFieldReview | undefined = this.documentFieldReviews.get(key);
+    const active: boolean = isDocumentFieldConfirmed(base, target, [...this.documentFieldReviews.values()], source.record.result);
+    if ((confirmed && active) || (!confirmed && !previous?.confirmed)) {
+      return;
+    }
+    if (confirmed) {
+      const issue: string | null = documentFieldConfirmationIssue(source.record.result, sectionId, fieldId);
+      if (issue) {
+        throw new Error(issue);
+      }
+    }
+    const signature: string | null = documentFieldSignature(base, sectionId, fieldId) ?? previous?.signature ?? null;
+    if (!signature) {
+      throw new Error('This document field is no longer available.');
+    }
+    const nextRevision: number = (documentRevisionIndex(this.documentCorrections.values(), this.documentFieldReviews.values()).get(documentId) ?? 1) + 1;
+    const review: DocumentFieldReview = documentFieldReviewSchema.parse({ ...target, confirmed, revision: nextRevision, signature });
+    this.documentFieldReviews = new Map(this.documentFieldReviews).set(key, review);
+    this.matches = suggestWorkspaceMatches(this.activeImports(), this.activeDocuments());
+    this.matchRevision++;
+  }
+
+  private withdrawDocumentConfirmations(documentId: string, latest: number): Map<string, DocumentFieldReview> {
+    const reviews: Map<string, DocumentFieldReview> = new Map(this.documentFieldReviews);
+    for (const [key, review] of reviews) {
+      if (review.documentId === documentId && (review.confirmed || review.disposition)) {
+        const withdrawn: DocumentFieldReview = { ...review, confirmed: false, revision: ++latest };
+        delete withdrawn.disposition;
+        reviews.set(key, withdrawn);
+      }
+    }
+    return reviews;
+  }
+
+  private setDocumentFieldDisposition({ revision, documentId, sectionId, fieldId, disposition }: Extract<WorkspaceCommand, { type: 'set-document-field-disposition' }>): void {
+    if (!this.metadata || revision !== this.matchRevision) {
+      throw new Error('The document has changed. Refresh it before reviewing a field.');
+    }
+    if (!supportingDocumentSource(this.activeDocuments(), documentId)) {
+      throw new Error('This document is no longer active.');
+    }
+    const base: SupportingDocument = supportingDocumentSource(this.documents().reviewBase, documentId)!.record.result;
+    const target: { documentId: string; sectionId: string; fieldId: string } = { documentId, sectionId, fieldId };
+    const key: string = documentFieldReviewKey(target);
+    const previous: DocumentFieldReview | undefined = this.documentFieldReviews.get(key);
+    const active: string | null = activeDocumentFieldDisposition(base, target, [...this.documentFieldReviews.values()]);
+    if ((disposition && disposition === active) || (!disposition && !previous?.disposition)) {
+      return;
+    }
+    const signature: string | null = documentFieldSignature(base, sectionId, fieldId);
+    if (!signature) {
+      throw new Error('This document field is no longer available.');
+    }
+    const nextRevision: number = (documentRevisionIndex(this.documentCorrections.values(), this.documentFieldReviews.values()).get(documentId) ?? 1) + 1;
+    const review: DocumentFieldReview = documentFieldReviewSchema.parse({ ...target, confirmed: false, signature, revision: nextRevision, ...(disposition ? { disposition } : {}) });
+    this.documentFieldReviews = new Map(this.documentFieldReviews).set(key, review);
+    this.withdrawInvalidConfirmations(documentId, nextRevision);
+    this.matches = suggestWorkspaceMatches(this.activeImports(), this.activeDocuments());
+    this.matchRevision++;
+  }
+
+  private withdrawInvalidConfirmations(documentId: string, latest: number): void {
+    const documents: WorkspaceDocumentState = this.documents();
+    const base: SupportingDocument = supportingDocumentSource(documents.reviewBase, documentId)!.record.result;
+    const effective: SupportingDocument = supportingDocumentSource(documents.effective, documentId)!.record.result;
+    const reviews: Map<string, DocumentFieldReview> = new Map(this.documentFieldReviews);
+    for (const [key, review] of reviews) {
+      if (review.documentId === documentId && review.confirmed && !isDocumentFieldConfirmed(base, review, [review], effective)) {
+        reviews.set(key, { ...review, confirmed: false, revision: ++latest });
+      }
+    }
+    this.documentFieldReviews = reviews;
+  }
+
   private correctDocumentField({ revision, documentId, sectionId, fieldId, change }: Extract<WorkspaceCommand, { type: 'correct-document-field' }>): void {
     if (!this.metadata || revision !== this.matchRevision) {
       throw new Error('The document has changed. Refresh it before correcting a field.');
@@ -1527,7 +1624,7 @@ export class WorkspaceSession {
       throw new Error('This document is no longer active.');
     }
     const target: { documentId: string; sectionId: string; fieldId: string | null; } = { documentId, sectionId, fieldId };
-    const key: string = documentCorrectionKey(target, change.kind);
+    const key: string = documentCorrectionKey(target, change.kind, 'role' in change ? change.role : undefined);
     const previous: DocumentCorrection | undefined = this.documentCorrections.get(key);
     if (previous) {
       if (sameDocumentCorrection(previous.change, change)) {
@@ -1536,7 +1633,7 @@ export class WorkspaceSession {
     } else if (fieldId !== null && this.isOriginalDocumentValue(documentId, sectionId, fieldId, change)) {
       return;
     }
-    let latest: number = 1;
+    let latest: number = documentRevisionIndex(this.documentCorrections.values(), this.documentFieldReviews.values()).get(documentId) ?? 1;
     for (const correction of this.documentCorrections.values()) {
       if (correction.documentId === documentId) {
         latest = Math.max(latest, correction.revision);
@@ -1544,15 +1641,20 @@ export class WorkspaceSession {
     }
     const correction: DocumentCorrection = documentCorrectionSchema.parse({ ...target, revision: latest + 1, change });
     const corrections: Map<string, DocumentCorrection> = new Map(this.documentCorrections).set(key, correction);
-    const documentView: WorkspaceDocumentState = new WorkspaceDocumentState(this.documentRecords, corrections, this.receiptAnalysisVersions);
+    const fieldReviews: Map<string, DocumentFieldReview> = this.withdrawDocumentConfirmations(documentId, correction.revision);
+    const documentView: WorkspaceDocumentState = new WorkspaceDocumentState(this.documentRecords, corrections, this.receiptAnalysisVersions, fieldReviews);
     const matches: TransactionMatch[] = suggestWorkspaceMatches(this.activeImports(), this.activeDocuments(documentView.effective));
     this.documentCorrections = corrections;
+    this.documentFieldReviews = fieldReviews;
     this.documentView = documentView;
     this.matches = matches;
     this.matchRevision++;
   }
 
   private isOriginalDocumentValue(documentId: string, sectionId: string, fieldId: string, change: DocumentCorrectionValue): boolean {
+    if (change.kind !== 'amount' && change.kind !== 'date') {
+      return false;
+    }
     const analyzed: SupportingDocument | undefined = supportingDocumentSource(this.documents().analyzed, documentId)?.record.result;
     if (analyzed && !analyzed.issues.some((issue: DocumentIssue): boolean => issue.fieldId === fieldId)) {
       const section: DocumentSection | undefined = analyzed.sections.find((section: DocumentSection): boolean => section.sectionId === sectionId);
@@ -1657,6 +1759,8 @@ export class WorkspaceSession {
       case 'approve-matches': this.approveMatches(command); break;
       case 'correct-bank-row': this.correctBankRow(command); break;
       case 'correct-document-field': this.correctDocumentField(command); break;
+      case 'set-document-field-confirmed': this.setDocumentFieldConfirmed(command); break;
+      case 'set-document-field-disposition': this.setDocumentFieldDisposition(command); break;
       case 'import-statement': return this.importStatement();
       case 'remove-statement': this.removeStatement(command); break;
       case 'try-statement-ai': return this.tryStatementAi();
@@ -1677,6 +1781,7 @@ export class WorkspaceSession {
       this.ignoreRules = await readTransactionIgnoreRules(this.ignoreRulesDirectory);
     }
     this.metadata = newMetadata(); this.saved = null; this.importRecords = []; this.documentRecords = []; this.matches = []; this.matchDecisions.clear();
+    this.documentFieldReviews = new Map();
     this.receiptAnalysisVersions = []; this.pendingReceiptAnalysis = null;
     this.statementAnalysisVersions = [];
     this.pendingStatementAnalysis = null;
@@ -1710,6 +1815,7 @@ export class WorkspaceSession {
     this.bankCorrections = new Map(loaded.bankCorrections);
     this.effectiveImports = projectCorrectedStatementAnalyses(this.importRecords, this.statementAnalysisVersions, this.bankCorrections);
     this.documentCorrections = new Map(loaded.documentCorrections);
+    this.documentFieldReviews = new Map(loaded.documentFieldReviews);
     this.restoreMatches(loaded);
     this.pendingAnalysis = null;
     this.pendingStatementFallback = null;

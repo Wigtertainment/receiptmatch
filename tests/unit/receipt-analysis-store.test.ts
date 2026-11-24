@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -15,6 +15,10 @@ import { interpretSupportingDocument } from '../../electron/documents/interpret.
 import { projectReceiptAnalyses, type ReceiptAnalysisVersion } from '../../electron/documents/analysis-history.js';
 import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERSION, type SavedWorkspace } from '../../electron/store.js';
 import { documentRun, retainedBank, retainedDocument } from './document-fixtures.js';
+import { documentFieldReviewKey, documentFieldSignature, type DocumentFieldReview } from '../../src/shared/document-field-reviews.js';
+import { prepareStatementAnalysisVersion } from '../../electron/import/statement-analyses.js';
+import type { StoredBankImport } from '../../src/shared/workspace-import.js';
+import type { StatementAnalysisVersion } from '../../src/shared/statement-analysis.js';
 
 function newAnalysis(record: StoredSupportingDocument, amount: string, version: string = NUEXTRACT_RECEIPT_VERSION): ReceiptAnalysisVersion {
   const input: BankImportInput = structuredClone(record.result.input!);
@@ -36,6 +40,57 @@ function candidatesFor(saved: SavedWorkspace, documentId: string): boolean {
   return saved.matches.some((match: TransactionMatch): boolean => match.candidates.some((candidate: TransactionMatch['candidates'][number]): boolean => candidate.documentId === documentId));
 }
 
+test('upgrades canonical field-review versions and the unreleased statement-history layout without modifying files on open', async (): Promise<void> => {
+  const temporary: string = await realpath(tmpdir());
+  const root: string = await mkdtemp(path.join(temporary, 'receiptmatch-combined-history-'));
+  try {
+    for (const layout of [14, 15, 16, 'statement-14'] as const) {
+      const file: string = path.join(root, layout + '.receiptmatch');
+      const document: StoredSupportingDocument = retainedDocument(root);
+      const bank: StoredBankImport = retainedBank(root);
+      const section: DocumentSection = document.result.sections[0];
+      const review: DocumentFieldReview = { documentId: document.id, sectionId: section.sectionId, fieldId: section.merchants[0].id, confirmed: true,
+        revision: 2, signature: documentFieldSignature(document.result, section.sectionId, section.merchants[0].id)! };
+      const reviews: Map<string, DocumentFieldReview> = layout === 'statement-14' ? new Map<string, DocumentFieldReview>() : new Map([[documentFieldReviewKey(review), review]]);
+      const proposed: StoredBankImport['result'] = { ...structuredClone(bank.result), adapter: null, localRecognition: { model: 'nuextract3', parserVersion: '1' } };
+      proposed.transactions[0].bookingDate.value = '2032-03-05';
+      const statementVersion: StatementAnalysisVersion = prepareStatementAnalysisVersion(bank, bank, proposed);
+      const versions: StatementAnalysisVersion[] = layout === 'statement-14' ? [statementVersion] : [];
+      await createWorkspace(file, newMetadata(), [bank], [documentRun(root, [document])], undefined, undefined, undefined, undefined, undefined,
+        undefined, undefined, undefined, undefined, undefined, reviews, versions);
+      const db: Database.Database = new Database(file);
+      try {
+        db.exec(layout === 'statement-14' ? 'DROP TABLE document_field_reviews; PRAGMA user_version=14;' : `DROP TABLE statement_analysis_versions; PRAGMA user_version=${layout};`);
+      } finally {
+        db.close();
+      }
+      const bytes: NonSharedBuffer = await readFile(file);
+      const previous: SavedWorkspace = await loadWorkspace(file);
+      assert.equal(previous.schemaVersion, layout === 'statement-14' ? 14 : layout);
+      assert.deepEqual(previous.documentFieldReviews, reviews);
+      assert.deepEqual(previous.statementAnalysisVersions, versions);
+      assert.deepEqual(await readFile(file), bytes);
+      await saveWorkspace(previous, previous.metadata, previous.imports, previous.documentImports, previous.matchDecisions, previous.bankCorrections,
+        previous.documentCorrections, previous.reviewApprovals, previous.duplicateDecisions, previous.sourceRelocations, previous.sourceReplacements,
+        previous.archivedSourceReviews, previous.ignoredTransactions, previous.receiptAnalysisVersions, new Set(), previous.documentFieldReviews, [statementVersion]);
+      const reopened: SavedWorkspace = await loadWorkspace(file);
+      assert.equal(reopened.schemaVersion, SCHEMA_VERSION);
+      assert.deepEqual(reopened.documentFieldReviews, reviews);
+      assert.deepEqual(reopened.statementAnalysisVersions, [statementVersion]);
+      assert.deepEqual(reopened.imports, [bank]);
+    }
+    const mixed: string = path.join(root, 'mixed-14.receiptmatch');
+    await createWorkspace(mixed, newMetadata());
+    const db: Database.Database = new Database(mixed);
+    db.pragma('user_version=14');
+    db.close();
+    await assert.rejects(loadWorkspace(mixed), /structure is not supported/);
+  } finally {
+    assert.equal(path.dirname(await realpath(root)), temporary);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('migrates version 12 and reopens historical OCR and NuExtract analyses under the same matching and source identities', async (): Promise<void> => {
   const root: string = await mkdtemp(path.join(tmpdir(), 'receiptmatch-analysis-store-'));
   try {
@@ -44,7 +99,7 @@ test('migrates version 12 and reopens historical OCR and NuExtract analyses unde
     await createWorkspace(file, newMetadata(), [retainedBank(root)], [documentRun(root, [document])]);
     const oldDatabase: Database.Database = new Database(file);
     try {
-      oldDatabase.exec('DROP TABLE statement_analysis_versions; DROP TABLE receipt_analysis_versions; PRAGMA user_version=12;');
+      oldDatabase.exec('DROP TABLE statement_analysis_versions; DROP TABLE document_field_reviews; DROP TABLE receipt_analysis_versions; PRAGMA user_version=12;');
     } finally {
       oldDatabase.close();
     }

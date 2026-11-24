@@ -138,7 +138,7 @@ function transferDocumentCorrections(original: DocumentSource, replacement: Docu
             continue;
         }
         const correction: DocumentCorrection = { ...edit, documentId: replacement.record.id, sectionId, fieldId };
-        const key: string = documentCorrectionKey(correction, edit.change.kind);
+        const key: string = documentCorrectionKey(correction, edit.change.kind, 'role' in edit.change ? edit.change.role : undefined);
         const transferred: Map<string, DocumentCorrection> = new Map([...state.documentCorrections].filter(([, value]: [string, DocumentCorrection]): boolean => value.documentId === replacement.record.id)).set(key, correction);
         try {
             applyDocumentCorrections([replacement.run], transferred);
