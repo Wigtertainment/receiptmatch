@@ -245,7 +245,7 @@
 					<wig-icon-button
 						[iconTemplate]="removeStatementIcon"
 						ariaLabel="Remove statement"
-						tooltip="Remove statement"
+						[tooltip]="removal() ? undefined : 'Remove statement'"
 						tooltipPosition="top"
 						[text]="true"
 						[disabled]="state().busy"

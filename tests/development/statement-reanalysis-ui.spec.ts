@@ -183,10 +183,14 @@ test('reviews local AI statement changes safely, keeps drafts on discard and sup
         const [previewWindow]: [Page, void] = await Promise.all([application.waitForEvent('window'), original.press('Enter')]);
         await expect(previewWindow.getByRole('img', { name: 'Page 1 of 1', exact: true })).toBeVisible();
         await previewWindow.close();
-        await remove.press('Enter');
+        await remove.hover();
+        await expect(page.getByRole('tooltip', { name: 'Remove statement', exact: true })).toBeVisible();
+        await remove.click();
         const removal: Locator = panel.getByRole('dialog', { name: 'Remove statement?', exact: true });
         await expect(removal).toBeVisible();
-        await removal.getByRole('button', { name: 'Cancel', exact: true }).click();
+        const cancelRemoval: Locator = removal.getByRole('button', { name: 'Cancel', exact: true });
+        await expect(cancelRemoval).toBeFocused();
+        await cancelRemoval.press('Escape');
         await expect(removal).not.toBeVisible();
         await expect(remove).toBeFocused();
         const state: WorkspaceState = await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'get-state' }));
