@@ -36,6 +36,8 @@ import type { NuExtractRuntimeFiles } from './extraction/nuextract-runtime.js';
 import { reanalyzeNuExtractReceipt, type NuExtractReceiptDependencies, type ReceiptAiSource } from './documents/nuextract-receipt.js';
 import { receiptAiAcceptRequestSchema, receiptAiDiscardRequestSchema, receiptAiRequestSchema,
   type ReceiptAiPreviewResult, type ReceiptAiRequest, type ReceiptAiResult } from '../src/shared/receipt-ai.js';
+import { statementAiAcceptRequestSchema, statementAiDiscardRequestSchema, statementAiRequestSchema, type StatementAiPreviewResult } from '../src/shared/statement-ai.js';
+import { StatementReanalysisService } from './import/reanalyze-statement.js';
 
 // Load the same module instance as other main-process consumers of the extraction API.
 const { extractPdfBytes, extractDocumentBytes, renderDocumentImages }: Pick<typeof import("./extraction/host.js"), "extractPdfBytes" | "extractDocumentBytes" | "renderDocumentImages"> = createRequire(__filename)('./extraction-host.cjs') as Pick<typeof import('./extraction/host.js'), 'extractPdfBytes' | 'extractDocumentBytes' | 'renderDocumentImages'>;
@@ -156,7 +158,11 @@ async function launch(): Promise<void> {
     extract: extractDocumentBytes
   }), extractDocumentBytes, path.join(userData, 'transaction-ignore-rules'), {
     analyze: (source: ReceiptAiSource, options?: ExtractionOptions): Promise<ReceiptAiResult> => reanalyzeNuExtractReceipt(source, localRecognition, options)
-  });
+  }, new StatementReanalysisService({
+    extract: extractPdfBytes,
+    propose: (bytes: Uint8Array, input: BankImportInput, options: ExtractionOptions): Promise<StatementProposalExtraction> =>
+      proposeNuExtractStatement(bytes, input, localRecognition, options)
+  }));
   const authorized: (event: Electron.IpcMainInvokeEvent) => boolean = (event: Electron.IpcMainInvokeEvent): boolean => event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && event.senderFrame.url === appUrl;
   const exportSettingsFile: string = path.join(app.getPath('userData'), 'export-settings.json');
   let confirmingOcrDownload: boolean = false;
@@ -348,6 +354,29 @@ async function launch(): Promise<void> {
       throw new Error('Receipt analysis discard denied.');
     }
     workspace.discardReceiptAnalysis(receiptAiDiscardRequestSchema.parse(payload[0]));
+  });
+
+  ipcMain.handle('workspace:reanalyze-statement', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<StatementAiPreviewResult> => {
+    if (!authorized(event) || closeRequested || payload.length !== 1) {
+      return Promise.resolve({ status: 'failed', error: 'Statement analysis request denied.' });
+    }
+    const request: ReturnType<typeof statementAiRequestSchema.safeParse> = statementAiRequestSchema.safeParse(payload[0]);
+    return request.success ? workspace.reanalyzeStatement(request.data) : Promise.resolve({ status: 'failed', error: 'Invalid statement analysis request.' });
+  });
+
+  ipcMain.handle('workspace:accept-statement-analysis', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<OriginalAdoptionResult> => {
+    if (!authorized(event) || closeRequested || payload.length !== 1) {
+      return Promise.resolve({ status: 'failed', error: 'Statement analysis confirmation denied.' });
+    }
+    const request: ReturnType<typeof statementAiAcceptRequestSchema.safeParse> = statementAiAcceptRequestSchema.safeParse(payload[0]);
+    return request.success ? workspace.acceptStatementAnalysis(request.data) : Promise.resolve({ status: 'failed', error: 'Invalid statement analysis confirmation.' });
+  });
+
+  ipcMain.handle('workspace:discard-statement-analysis', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): void => {
+    if (!authorized(event) || closeRequested || payload.length !== 1) {
+      throw new Error('Statement analysis discard denied.');
+    }
+    workspace.discardStatementAnalysis(statementAiDiscardRequestSchema.parse(payload[0]));
   });
 
   ipcMain.handle('workspace:accept-original-analysis', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<OriginalAdoptionResult> => {

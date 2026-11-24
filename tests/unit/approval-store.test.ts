@@ -35,7 +35,7 @@ test('approves an explicit batch atomically and preserves its revisions through 
     await createWorkspace(file, newMetadata(), [bank], [documentRun(root, [receipt, other])], new Map([[first, receipt.id], [second, other.id]]));
     const db: Database.Database = new Database(file);
     try {
-        db.exec('DROP TABLE document_field_reviews; DROP TABLE receipt_analysis_versions; DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; PRAGMA user_version=7;');
+        db.exec('DROP TABLE statement_analysis_versions; DROP TABLE document_field_reviews; DROP TABLE receipt_analysis_versions; DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; PRAGMA user_version=7;');
     } finally {
         db.close();
     }

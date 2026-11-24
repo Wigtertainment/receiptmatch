@@ -7,6 +7,7 @@ import { type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonCo
     WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
 import { InputLength } from './app/input-length.js';
 import { OriginalPreviewButton } from './app/original-preview-button.js';
+import { StatementReanalysis } from './app/statement-reanalysis.js';
 import { amountEntryExample, formatAmountEntry, parseAmountEntry } from './shared/amount-entry.js';
 import { applyBankCorrections } from './shared/bank-corrections.js';
 import { calendarDateSchema, type ImportIssue, type SourceEvidence, type TransactionCandidate, type UnresolvedDraft } from './shared/bank-import.js';
@@ -112,12 +113,15 @@ class RowSource {
 }
 
 @Component({ selector: 'app-statement-imports', standalone: true,
-    imports: [RowSource, OriginalPreviewButton, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDrawerComponent, WigDropdownComponent, WigInputComponent,
+    imports: [RowSource, OriginalPreviewButton, StatementReanalysis, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDrawerComponent, WigDropdownComponent, WigInputComponent,
         WigTableComponent, WigTemplateDirective, InputLength, NgTemplateOutlet],
     templateUrl: './app/statement-imports.html' })
 export class StatementImports {
     readonly state: InputSignal<WorkspaceState> = input.required<WorkspaceState>();
+    readonly active: InputSignal<boolean> = input(true);
+    readonly settingsRequested: OutputEmitterRef<void> = output<void>();
     readonly workspaceCommand: OutputEmitterRef<WorkspaceCommand> = output<WorkspaceCommand>();
+    readonly reanalysis: Signal<StatementReanalysis | undefined> = viewChild(StatementReanalysis);
     private readonly injector: Injector = inject(Injector);
     private readonly importAction: Signal<WigButtonComponent | undefined> = viewChild<WigButtonComponent>('importAction');
     private readonly cancelImportAction: Signal<WigButtonComponent | undefined> = viewChild<WigButtonComponent>('cancelImportAction');
@@ -155,7 +159,9 @@ export class StatementImports {
     });
     private readonly overlapIndex: Signal<(statementId: string) => StatementOverlaps> = computed((): (statementId: string) => StatementOverlaps => {
         const archived: Set<string> = new Set(this.state().workspace?.supersededStatements);
-        return indexStatementOverlaps(this.effectiveRecords().filter((record: StoredBankImport): boolean => !archived.has(record.id)));
+        const originalBankIds: Map<string, string> = new Map((this.state().workspace?.imports ?? []).flatMap((record: BankImportSummary): [string, string][] =>
+            record.bankId ? [[record.id, record.bankId]] : []));
+        return indexStatementOverlaps(this.effectiveRecords().filter((record: StoredBankImport): boolean => !archived.has(record.id)), originalBankIds);
     });
     readonly overlaps: Signal<StatementOverlaps> = computed((): StatementOverlaps => this.overlapIndex()(this.selectedId() ?? ''));
     private readonly expandedOverlapRows: WritableSignal<ReadonlySet<string>> = signal<ReadonlySet<string>>(new Set());
@@ -325,7 +331,7 @@ export class StatementImports {
             return;
         }
         if (state.busy) {
-            if (state.statementImport?.localAi && previous?.stage === 'offer' && !previous.importing) {
+            if (state.statementImport?.localAi && !previous?.importing && (previous?.stage === 'offer' || this.reanalysis()?.pending())) {
                 this.cancelImportAction()?.nativeButton.focus();
             }
             return;
@@ -387,6 +393,21 @@ export class StatementImports {
 
     retryDetails(): void {
         this.loadRecords(this.state(), this.key(this.state()));
+    }
+
+    async refreshAnalysis(): Promise<void> {
+        const key: string = this.key(this.state());
+        const generation: number = ++this.generation;
+        try {
+            const records: StoredBankImport[] = await window.receiptmatch.bankImports();
+            if (!this.disposed && generation === this.generation && key === this.key(this.state())) {
+                this.records.set(records);
+            }
+        } catch {
+            if (!this.disposed && generation === this.generation && key === this.key(this.state())) {
+                this.detailsError.set('The analysis was applied, but statement details could not be refreshed. Retry details.');
+            }
+        }
     }
 
     select(id: string | null): void {
@@ -618,7 +639,7 @@ export class StatementImports {
             return '';
         }
         if (current.cancelling) {
-            return 'Cancelling import…';
+            return this.reanalysis()?.pending() ? 'Cancelling analysis…' : 'Cancelling import…';
         }
         const progress: ExtractionProgress | null = current.progress;
         if (!progress) {

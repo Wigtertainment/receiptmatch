@@ -8,7 +8,7 @@ import type { MatchSummary } from "../src/shared/workspace-matching.js";
 import type { ReviewMatch } from "../src/shared/workspace-matching.js";
 import path from 'node:path';
 import { formatAmountEntry } from '../src/shared/amount-entry.js';
-import { applyBankCorrections } from '../src/shared/bank-corrections.js';
+import { projectCorrectedStatementAnalyses } from './import/statement-analyses.js';
 import type { TransactionCandidate, UnresolvedDraft } from '../src/shared/bank-import.js';
 import type { DocumentExportOutcome } from '../src/shared/document-export.js';
 import { documentRevisionIndex } from '../src/shared/match-approvals.js';
@@ -35,7 +35,7 @@ function sourceName(file: string): string {
 }
 
 export function reconciliationRows(snapshot: SavedWorkspace, copyOutcomes: readonly DocumentExportOutcome[] = []): ReconciliationRow[] {
-	const corrected: StoredBankImport[] = applyBankCorrections(snapshot.imports, snapshot.bankCorrections);
+	const corrected: StoredBankImport[] = projectCorrectedStatementAnalyses(snapshot.imports, snapshot.statementAnalysisVersions, snapshot.bankCorrections);
 	const imports: StoredBankImport[] = excludeDuplicateTransactions(activeStatements(corrected, snapshot.sourceReplacements), snapshot.duplicateDecisions.values());
 	const documentView: WorkspaceDocumentState = new WorkspaceDocumentState(snapshot.documentImports, snapshot.documentCorrections, snapshot.receiptAnalysisVersions, snapshot.documentFieldReviews);
 	const documents: StoredDocumentImport[] = activeSupportingDocuments(documentView.effective, snapshot.sourceReplacements);

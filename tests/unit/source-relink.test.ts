@@ -117,7 +117,7 @@ test('opens a version 9 workspace and migrates its source links only on save', a
 	const { file, session, receiptPath, relink, state }: Awaited<ReturnType<typeof fixture>> = await fixture(context);
 	const database: Database.Database = new Database(file);
 	try {
-		database.exec('DROP TABLE document_field_reviews; DROP TABLE receipt_analysis_versions; DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; PRAGMA user_version=9;');
+		database.exec('DROP TABLE statement_analysis_versions; DROP TABLE document_field_reviews; DROP TABLE receipt_analysis_versions; DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; PRAGMA user_version=9;');
 	} finally {
 		database.close();
 	}

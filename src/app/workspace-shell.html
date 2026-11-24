@@ -79,7 +79,12 @@
 				<section [hidden]="section() !== 'sources'" aria-labelledby="sources-heading">
 					<h1 class="view-heading" id="sources-heading" tabindex="-1">Sources</h1>
 					<div class="workspace-imports">
-						<app-statement-imports [state]="state()" (workspaceCommand)="run($event)" />
+						<app-statement-imports
+							[state]="state()"
+							[active]="section() === 'sources'"
+							(workspaceCommand)="run($event)"
+							(settingsRequested)="showSection('settings')"
+						/>
 						<app-document-imports [state]="state()" [active]="section() === 'sources'" (workspaceCommand)="run($event)" />
 					</div>
 				</section>

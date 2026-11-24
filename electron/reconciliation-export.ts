@@ -4,7 +4,7 @@ import type { DocumentExportReport } from "../src/shared/document-export.js";
 import type { WorkspaceSource } from "../src/shared/workspace-documents.js";
 import { lstat } from 'node:fs/promises';
 import path from 'node:path';
-import { applyBankCorrections } from '../src/shared/bank-corrections.js';
+import { projectCorrectedStatementAnalyses } from './import/statement-analyses.js';
 import type { ReconciliationExportReport } from '../src/shared/document-export.js';
 import { currentMatchApprovals, documentRevisionIndex } from '../src/shared/match-approvals.js';
 import { excludeDuplicateTransactions } from '../src/shared/transaction-duplicates.js';
@@ -32,7 +32,7 @@ export async function writeReconciliationExport(snapshot: SavedWorkspace, destin
 		throw new ExportDestinationError('reconciliation.csv already exists. Choose another export folder.');
 	}
 
-	const imports: StoredBankImport[] = excludeDuplicateTransactions(activeStatements(applyBankCorrections(snapshot.imports, snapshot.bankCorrections), snapshot.sourceReplacements), snapshot.duplicateDecisions.values());
+	const imports: StoredBankImport[] = excludeDuplicateTransactions(activeStatements(projectCorrectedStatementAnalyses(snapshot.imports, snapshot.statementAnalysisVersions, snapshot.bankCorrections), snapshot.sourceReplacements), snapshot.duplicateDecisions.values());
 	const revisions: Map<string, number> = documentRevisionIndex(snapshot.documentCorrections.values(), snapshot.documentFieldReviews.values());
 	const approvals: Map<string, MatchApproval> = currentMatchApprovals(snapshot.reviewApprovals, snapshot.matchDecisions, snapshot.bankCorrections, revisions);
 	for (const id of snapshot.ignoredTransactions) {

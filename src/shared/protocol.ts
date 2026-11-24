@@ -16,6 +16,7 @@ import { exportFilenamePatternLimit } from './export-filename.js';
 import type { DocumentExportResponse } from './document-export.js';
 import type { DuplicateDecision } from './transaction-duplicates.js';
 import type { ReceiptAiAcceptRequest, ReceiptAiDiscardRequest, ReceiptAiPreviewResult, ReceiptAiRequest } from './receipt-ai.js';
+import type { StatementAiAcceptRequest, StatementAiDiscardRequest, StatementAiPreviewResult, StatementAiRequest } from './statement-ai.js';
 
 export const workspaceName: z.ZodString = z.string().max(120);
 type StatementAiCommandSchema<T extends string> = z.ZodObject<{ type: z.ZodLiteral<T>; token: z.ZodUUID }, z.core.$strict>;
@@ -98,6 +99,9 @@ export interface WorkspaceBridge {
   reanalyzeReceipt(request: ReceiptAiRequest): Promise<ReceiptAiPreviewResult>;
   acceptReceiptAnalysis(request: ReceiptAiAcceptRequest): Promise<OriginalAdoptionResult>;
   discardReceiptAnalysis(request: ReceiptAiDiscardRequest): Promise<void>;
+  reanalyzeStatement(request: StatementAiRequest): Promise<StatementAiPreviewResult>;
+  acceptStatementAnalysis(request: StatementAiAcceptRequest): Promise<OriginalAdoptionResult>;
+  discardStatementAnalysis(request: StatementAiDiscardRequest): Promise<void>;
   acceptOriginalAnalysis(request: OriginalAdoptionRequest): Promise<OriginalAdoptionResult>;
   exportSettings(request: ExportSettingsRequest): Promise<string>;
   localOcr(request: LocalOcrRequest): Promise<LocalOcrStatus>;

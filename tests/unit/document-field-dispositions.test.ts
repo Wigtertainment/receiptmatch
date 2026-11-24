@@ -251,6 +251,7 @@ test('version 15 opens without mutation and upgrades on explicit save', async (c
     const file: string = path.join(root, 'old.receiptmatch');
     await createWorkspace(file, newMetadata());
     const db: Database.Database = new Database(file);
+    db.exec('DROP TABLE statement_analysis_versions;');
     db.pragma('user_version=15');
     db.close();
     const bytes: NonSharedBuffer = await readFile(file);

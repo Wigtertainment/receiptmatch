@@ -144,7 +144,7 @@ test('version 13 opens unchanged and gains field reviews only on explicit save',
         const file: string = path.join(root, 'old.receiptmatch');
         await createWorkspace(file, newMetadata());
         const db: Database.Database = new Database(file);
-        db.exec('DROP TABLE document_field_reviews; PRAGMA user_version=13;');
+        db.exec('DROP TABLE statement_analysis_versions; DROP TABLE document_field_reviews; PRAGMA user_version=13;');
         db.close();
         const previous: SavedWorkspace = await loadWorkspace(file);
         assert.equal(previous.schemaVersion, 13);
