@@ -420,7 +420,7 @@
 			@if (ignored.length) {
 				<section class="match-panel match-ignored-panel" aria-labelledby="match-ignored-heading">
 					<header class="match-panel-heading">
-						<h2 id="match-ignored-heading" tabindex="-1">Ignored transactions</h2>
+						<h2 id="match-ignored-heading">Ignored transactions</h2>
 						<p>{{ ignored.length }} {{ ignored.length === 1 ? 'transaction' : 'transactions' }}</p>
 					</header>
 					<wig-table ariaLabel="Ignored transactions" [data]="ignored" [config]="ignoredColumns" [insideCard]="false">

@@ -36,13 +36,14 @@ test('ignores transactions once or by rule and restores them from the separate t
 		await ignore.press('Enter');
 		await expect(ignore).toHaveAttribute('aria-expanded', 'true');
 		await options.getByRole('button', { name: 'Ignore once', exact: true }).press('Enter');
-		await expect(ignored.getByRole('heading')).toBeFocused();
+		await expect(transactions.getByRole('heading')).toBeFocused();
 		await expect(transactions.getByRole('row', { name: /Orchard Workshop/ })).toHaveCount(0);
 		await expect(ignored.getByRole('row', { name: /Orchard Workshop/ })).toContainText('This transaction only');
 
 		await ignore.click();
 		await options.getByRole('button', { name: 'Remember for future bookings' }).click();
 		await expect(transactions.getByText('All transactions are ignored.')).toBeVisible();
+		await expect(transactions.getByRole('heading')).toBeFocused();
 		await expect(ignored.getByRole('row', { name: /River Studio/ })).toContainText('Remembered rule');
 		await ignored.getByRole('button', { name: /Remove rule and restore .*River Studio/ }).press('Enter');
 		await expect(transactions.getByRole('heading')).toBeFocused();

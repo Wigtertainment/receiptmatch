@@ -89,7 +89,7 @@ export class MatchSuggestions {
 	] };
 	private readonly ignoreChoice: WritableSignal<{ transactionId: string; loadRevision: number; } | null> = signal<{ transactionId: string; loadRevision: number } | null>(null);
 	private readonly ignoreFeedback: WritableSignal<{ loadRevision: number; message: string; } | null> = signal<{ loadRevision: number; message: string } | null>(null);
-	private readonly ignoreFocus: WritableSignal<{ loadRevision: number; revision: number; headingId: string; } | null> = signal<{ loadRevision: number; revision: number; headingId: string } | null>(null);
+	private readonly ignoreFocus: WritableSignal<{ loadRevision: number; revision: number; preventScroll: boolean } | null> = signal(null);
 	private readonly selected: WritableSignal<{ transactionId: string; loadRevision: number; } | null> = signal<{ transactionId: string; loadRevision: number } | null>(null);
 	private readonly filterState: WritableSignal<{ filter: Filter; loadRevision: number; } | null> = signal<{ filter: Filter; loadRevision: number } | null>(null);
 	private readonly summaryRequest: WritableSignal<{ revision: number; loadRevision: number; rows: MatchSummary[] | null; } | null> = signal<{ revision: number; loadRevision: number; rows: MatchSummary[] | null } | null>(null);
@@ -223,14 +223,14 @@ export class MatchSuggestions {
 
 	constructor() {
 		effect((): void => {
-			const focus: { loadRevision: number; revision: number; headingId: string; } | null = this.ignoreFocus();
+			const focus: { loadRevision: number; revision: number; preventScroll: boolean } | null = this.ignoreFocus();
 			if (!focus || !this.active() || focus.loadRevision !== this.workspace().loadRevision || (this.currentSummary()?.revision ?? -1) < focus.revision) {
 				return;
 			}
 			this.ignoreFocus.set(null);
 			requestAnimationFrame((): void => {
 				if (this.active() && focus.loadRevision === this.workspace().loadRevision) {
-					document.getElementById(focus.headingId)?.focus();
+					document.getElementById('match-list-heading')?.focus({ preventScroll: focus.preventScroll });
 				}
 			});
 		});
@@ -390,8 +390,7 @@ export class MatchSuggestions {
 				this.setFilter('all');
 				this.selected.set({ transactionId: row.transactionId, loadRevision });
 			}
-			this.ignoreFocus.set({ loadRevision, revision: result.workspace?.matchRevision ?? matchRevision,
-				headingId: ignored ? 'match-ignored-heading' : 'match-list-heading' });
+			this.ignoreFocus.set({ loadRevision, revision: result.workspace?.matchRevision ?? matchRevision, preventScroll: ignored });
 		} catch {
 			this.ignoreFeedback.set({ loadRevision, message: 'The ignore decision could not be saved. Please try again.' });
 		} finally {
