@@ -3,8 +3,8 @@ import type { BankImportResult } from "./shared/bank-import.js";
 import { NgTemplateOutlet } from '@angular/common';
 import { Component, DestroyRef, Injector, afterNextRender, afterRenderEffect, computed, effect, inject, input, output, signal, untracked, viewChild, type ElementRef, type WritableSignal,
     type OutputEmitterRef, type Signal, type InputSignal } from '@angular/core';
-import { type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDrawerComponent, WigDropdownComponent, WigInputComponent, WigTableComponent,
-    WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
+import { type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDrawerComponent, WigDropdownComponent, WigIconButtonComponent, WigInputComponent,
+    WigTableComponent, WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
 import { InputLength } from './app/input-length.js';
 import { OriginalPreviewButton } from './app/original-preview-button.js';
 import { StatementReanalysis } from './app/statement-reanalysis.js';
@@ -113,8 +113,8 @@ class RowSource {
 }
 
 @Component({ selector: 'app-statement-imports', standalone: true,
-    imports: [RowSource, OriginalPreviewButton, StatementReanalysis, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDrawerComponent, WigDropdownComponent, WigInputComponent,
-        WigTableComponent, WigTemplateDirective, InputLength, NgTemplateOutlet],
+    imports: [RowSource, OriginalPreviewButton, StatementReanalysis, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDrawerComponent, WigDropdownComponent,
+        WigIconButtonComponent, WigInputComponent, WigTableComponent, WigTemplateDirective, InputLength, NgTemplateOutlet],
     templateUrl: './app/statement-imports.html' })
 export class StatementImports {
     readonly state: InputSignal<WorkspaceState> = input.required<WorkspaceState>();

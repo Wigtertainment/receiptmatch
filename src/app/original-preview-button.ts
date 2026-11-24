@@ -33,7 +33,8 @@ interface PreviewFeedback extends OriginalPreviewResult {
       @let canRelink = current?.status === 'missing' || current?.status === 'changed';
       @if (sourceId()) {
       @if (iconTooltip(); as tooltip) {
-        <wig-icon-button #openButton [iconTemplate]="externalIcon" [text]="true" [ariaLabel]="'Open original ' + sourceName()"
+        <wig-icon-button #openButton [iconName]="kind() === 'statement' ? 'search' : undefined" [iconTemplate]="kind() === 'document' ? externalIcon : undefined"
+          [text]="true" [ariaLabel]="'Open original ' + sourceName()"
           [tooltip]="tooltip" tooltipPosition="top" [loading]="current?.pending === 'open'" [disabled]="!!current?.pending || loadRevision() === undefined" (click)="open()" />
       } @else {
       <wig-button #openButton [buttonStyle]="iconOnly() ? iconButtonStyle : undefined" [label]="iconOnly() ? '' : current?.pending === 'open' ? 'Opening…' : 'Open original'"

@@ -237,16 +237,25 @@
 					}
 					<app-original-preview-button
 						kind="statement"
+						iconTooltip="Open original"
 						[sourceId]="record.id"
 						[sourceName]="filename(record.filePath)"
 						[loadRevision]="state().workspace?.loadRevision"
 					/>
-					<wig-button
-						label="Remove statement"
-						severity="secondary"
+					<wig-icon-button
+						[iconTemplate]="removeStatementIcon"
+						ariaLabel="Remove statement"
+						tooltip="Remove statement"
+						tooltipPosition="top"
+						[text]="true"
 						[disabled]="state().busy"
 						(click)="requestStatementRemoval(record.id, removalDialog, cancelRemovalAction)"
 					/>
+					<ng-template #removeStatementIcon>
+						<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+							<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5m4-5v5" />
+						</svg>
+					</ng-template>
 					<app-statement-reanalysis
 						[state]="state()"
 						[record]="record"

@@ -4,6 +4,7 @@ import { NgTemplateOutlet } from '@angular/common';
 import { Component, DestroyRef, ElementRef, afterRenderEffect, computed, effect, inject, input, output, signal, untracked, viewChild, type EffectCleanupRegisterFn, type OutputEmitterRef, type Signal, type WritableSignal, type InputSignal } from '@angular/core';
 import { DrawerSize, type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigCheckboxComponent, WigDrawerComponent, WigIconButtonComponent, WigInputComponent, WigTableComponent, WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
 import { InputLength } from './input-length.js';
+import { LocalAiIcon } from './local-ai-icon.js';
 import { OriginalPreviewButton } from './original-preview-button.js';
 import { amountEntryExample, formatAmountEntry, parseAmountEntry } from '../shared/amount-entry.js';
 import { calendarDateSchema, type ImportIssue, type ImportPage, type PositionedSpan, type SourceEvidence } from '../shared/bank-import.js';
@@ -514,7 +515,8 @@ interface ReceiptAnalysisFeedback { context: ReceiptAnalysisContext; message: st
 
 @Component({
     selector: 'app-document-imports', standalone: true,
-    imports: [DocumentAnalysis, OriginalPreviewButton, NgTemplateOutlet, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigCheckboxComponent, WigDrawerComponent, WigIconButtonComponent, WigTableComponent, WigTemplateDirective],
+    imports: [DocumentAnalysis, LocalAiIcon, OriginalPreviewButton, NgTemplateOutlet, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigCheckboxComponent,
+        WigDrawerComponent, WigIconButtonComponent, WigTableComponent, WigTemplateDirective],
     templateUrl: './document-imports.html'
 })
 export class DocumentImports {

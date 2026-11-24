@@ -1,4 +1,16 @@
-<wig-button #trigger label="Analyze with local AI" severity="secondary" (click)="analyze()" [disabled]="state().busy || !!pending() || !!review() || archived()" />
+<ng-template #aiIcon>
+	<app-local-ai-icon />
+</ng-template>
+<wig-icon-button
+	#trigger
+	[iconTemplate]="aiIcon"
+	ariaLabel="Analyze with local AI"
+	tooltip="Analyze with local AI"
+	tooltipPosition="top"
+	[text]="true"
+	[disabled]="state().busy || !!pending() || !!review() || archived()"
+	(click)="analyze()"
+/>
 @if (archived()) {
 	<p class="analysis-feedback">Only the active statement can be analyzed again.</p>
 }
