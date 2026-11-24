@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   windows:
     name: Lint, build and test (Windows)
@@ -40,7 +44,12 @@ jobs:
       - name: Build and package ReceiptMatch
         run: npm run pack:win
 
-      - name: Run packaged Electron tests
+      - name: Run packaged Electron smoke test
+        if: github.event_name == 'pull_request'
+        run: npm run test:packaged
+
+      - name: Run full packaged Electron suite
+        if: github.event_name == 'push'
         env:
           RECEIPTMATCH_NUEXTRACT_PACKAGE_TEST: '1'
         run: npm run test:electron

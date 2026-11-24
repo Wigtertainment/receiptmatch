@@ -104,10 +104,9 @@ jobs:
         if: github.ref_type != 'tag' && !inputs.sign_windows
         run: npm run dist:win
 
-      - name: Verify Windows setup and packaged app
+      - name: Verify Windows setup and update metadata
         shell: pwsh
         env:
-          RECEIPTMATCH_NUEXTRACT_PACKAGE_TEST: '1'
           REQUIRE_SIGNATURE: ${{ github.ref_type == 'tag' || inputs.sign_windows }}
         run: |
           $installer = "release/ReceiptMatch-Setup-$env:VERSION-windows-x64.exe"
@@ -127,7 +126,11 @@ jobs:
               throw "Missing Windows update metadata: $file"
             }
           }
-          npm run test:packaged
+
+      - name: Test packaged Windows app
+        env:
+          RECEIPTMATCH_NUEXTRACT_PACKAGE_TEST: '1'
+        run: npm run ${{ github.ref_type == 'tag' && 'test:electron' || 'test:packaged' }}
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
