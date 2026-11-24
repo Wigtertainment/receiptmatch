@@ -11,6 +11,7 @@ import { applySelectedReceiptAi, reviewNuExtractResult, type ReceiptAiSource } f
 import { compareDocuments } from '../../electron/source-comparison.js';
 import type { PositionedSpan } from '../../src/shared/bank-import.js';
 import { documentCorrectionKey, type DocumentCorrection } from '../../src/shared/document-corrections.js';
+import { activeDocumentFieldDisposition, type DocumentFieldReview } from '../../src/shared/document-field-reviews.js';
 import { approvalSelectionFor, type ReviewApprovalState } from '../../src/shared/match-approvals.js';
 import type { OriginalAdoptionResult } from '../../src/shared/original-preview.js';
 import type { DocumentSnapshot, WorkspaceView } from '../../src/shared/protocol.js';
@@ -115,6 +116,26 @@ async function preview({ report, session }: Fixture, fileIndex: number = 0): Pro
 function accept(session: WorkspaceSession, token: string, acknowledgeConflicts: boolean = false): Promise<OriginalAdoptionResult> {
     return session.acceptReceiptAnalysis({ token, acknowledgeConflicts, loadRevision: workspace(session).loadRevision });
 }
+
+test('accepted reanalysis tombstones field decisions even when the reviewed field value stays unchanged', async (context: TestContext): Promise<void> => {
+    const prepared: Fixture = await fixture(context);
+    const { session, document, file }: Fixture = prepared;
+    const section: DocumentSection = document.result.sections[0];
+    const fieldId: string = section.merchants[0].id;
+    const target: { documentId: string; sectionId: string; fieldId: string } = { documentId: document.id, sectionId: section.sectionId, fieldId };
+    await session.dispatch({ type: 'set-document-field-disposition', revision: workspace(session).matchRevision, ...target, disposition: 'rejected' });
+    assert.equal(session.state().error, null);
+    prepared.modelReading.total = '48.75';
+    const staged: Ready = await preview(prepared);
+    assert.deepEqual(await accept(session, staged.token, true), { status: 'adopted' });
+    const review: DocumentFieldReview = workspace(session).documentFieldReviews!.find((item: DocumentFieldReview): boolean => item.fieldId === fieldId)!;
+    assert.equal(review.disposition, undefined);
+    assert.equal(review.confirmed, false);
+    assert.equal(activeDocumentFieldDisposition(document.result, target, [review]), null);
+    await session.dispatch({ type: 'save' });
+    assert.equal(session.state().error, null);
+    assert.equal((await loadWorkspace(file)).documentFieldReviews.values().next().value!.disposition, undefined);
+});
 
 test('requires a current preview token and rechecks the original bytes before applying an OCR analysis', async (context: TestContext & object): Promise<void> => {
     const prepared: Fixture = await fixture(context);

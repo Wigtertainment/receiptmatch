@@ -13,7 +13,8 @@ import {
     documentCorrectionKey, documentCorrectionValueSchema, missingDocumentCorrectionFields, type DocumentCorrection, type DocumentCorrectionTarget, type DocumentCorrectionValue
 } from '../shared/document-corrections.js';
 import { sameMoneyValue } from '../shared/money.js';
-import { documentFieldConfirmationIssue, isDocumentFieldConfirmed, type DocumentFieldReview, type DocumentFieldReviewTarget } from '../shared/document-field-reviews.js';
+import { activeDocumentFieldDisposition, documentFieldConfirmationIssue, isDocumentFieldConfirmed, type DocumentFieldDisposition, type DocumentFieldReview, type DocumentFieldReviewTarget } from '../shared/document-field-reviews.js';
+import { documentIssueNeedsReview, documentNeedsReview } from '../shared/document-review-presentation.js';
 import type { NuExtractSettingsStatus } from '../shared/local-ocr-settings.js';
 import type { OriginalAdoptionResult } from '../shared/original-preview.js';
 import type { DocumentImportSummary, DocumentSnapshot, OriginalDocumentFields, WorkspaceCommand, WorkspaceState, WorkspaceView } from '../shared/protocol.js';
@@ -75,7 +76,8 @@ interface FieldView {
     id: string; role: string; label: string; values: string[]; evidence: SourceEvidence[]; issues: DocumentIssue[];
     reviewNeeded: boolean; originalValues?: string[]; correction?: FieldCorrectionView; confirmedByUser?: true;
 }
-interface FieldConfirmationView { confirmed: boolean; issue: string | null; }
+interface FieldConfirmationView { confirmed: boolean; issue: string | null; disposition: DocumentFieldDisposition | null; }
+type FieldDispositionChange = DocumentFieldReviewTarget & { disposition: DocumentFieldDisposition | null; };
 
 @Component({
     selector: 'app-document-source-page', standalone: true, imports: [WigButtonComponent],
@@ -136,7 +138,35 @@ export class DocumentAnalysis {
     readonly documentName: InputSignal<string> = input('Document');
     readonly loadRevision: InputSignal<number | undefined> = input<number>();
     readonly fieldReviews: InputSignal<readonly DocumentFieldReview[]> = input<readonly DocumentFieldReview[]>([]);
+    readonly reviewBase: InputSignal<OriginalDocumentFields | null> = input<OriginalDocumentFields | null>(null);
+    private readonly preReviewAnalysis: Signal<SupportingDocument> = computed((): SupportingDocument => ({ ...this.analysis(), ...this.reviewBase() }));
+    readonly valuesBeforeDecision: Signal<ReadonlyMap<string, string[]>> = computed((): ReadonlyMap<string, string[]> => {
+        const values: Map<string, string[]> = new Map<string, string[]>();
+        for (const section of this.preReviewAnalysis().sections) {
+            for (const field of section.amounts) {
+                values.set(field.id, field.candidates.map((value: DocumentSection['amounts'][number]['candidates'][number]): string => formatMoney(value)));
+            }
+            for (const field of section.dates) {
+                values.set(field.id, field.candidates.map((value: string): string => formatCalendarDate(value)));
+            }
+            for (const field of [...section.merchants, ...section.references, ...section.currencies]) {
+                values.set(field.id, field.candidates);
+            }
+        }
+        return values;
+    });
     readonly confirmation: OutputEmitterRef<DocumentFieldReviewTarget & { confirmed: boolean; }> = output<DocumentFieldReviewTarget & { confirmed: boolean }>();
+    readonly disposition: OutputEmitterRef<FieldDispositionChange> = output<FieldDispositionChange>();
+    private readonly requestedDisposition: WritableSignal<FieldDispositionChange | null> = signal<FieldDispositionChange | null>(null);
+    private readonly dispositionTrigger: WritableSignal<HTMLElement | null> = signal<HTMLElement | null>(null);
+    readonly dispositionFeedback: Signal<string> = computed((): string => {
+        const requested: FieldDispositionChange | null = this.requestedDisposition();
+        if (requested?.documentId !== this.documentId() || this.busy() || this.workspaceError() ||
+            this.confirmationStates().get(requested.fieldId)?.disposition !== requested.disposition) {
+            return '';
+        }
+        return requested.disposition === null ? 'Field decision reset.' : requested.disposition === 'rejected' ? 'Recognition excluded from matching.' : 'Field marked as not determinable and excluded from matching.';
+    });
     private readonly requestedConfirmation: WritableSignal<{ documentId: string; fieldId: string; confirmed: boolean; } | null> = signal<{ documentId: string; fieldId: string; confirmed: boolean } | null>(null);
     private readonly confirmationTrigger: WritableSignal<HTMLElement | null> = signal<HTMLElement | null>(null);
     readonly confirmationFeedback: Signal<string> = computed((): string => {
@@ -154,9 +184,10 @@ export class DocumentAnalysis {
             for (const section of analysis.sections) {
                 for (const field of [...section.amounts, ...section.dates, ...section.merchants, ...section.references, ...section.currencies]) {
                     const target: DocumentFieldReviewTarget = { documentId, sectionId: section.sectionId, fieldId: field.id };
-                    const confirmed: boolean = isDocumentFieldConfirmed(analysis, target, this.fieldReviews());
+                    const confirmed: boolean = isDocumentFieldConfirmed(this.preReviewAnalysis(), target, this.fieldReviews(), analysis);
                     const issue: string | null = documentFieldConfirmationIssue(analysis, section.sectionId, field.id);
-                    states.set(field.id, { confirmed, issue });
+                    const disposition: DocumentFieldDisposition | null = activeDocumentFieldDisposition(this.preReviewAnalysis(), target, this.fieldReviews());
+                    states.set(field.id, { confirmed, issue, disposition });
                 }
             }
         }
@@ -232,7 +263,7 @@ export class DocumentAnalysis {
         const field: (source: SourceField, role: string, values: string[], correction?: FieldCorrectionView, originalValues?: string[]) => FieldView =
             (source: SourceField, role: string, values: string[], correction?: FieldCorrectionView, originalValues?: string[]): FieldView => {
             const issues: DocumentIssue[] = fieldIssues.get(source.id) ?? [];
-            return { ...source, role, values, issues, reviewNeeded: issues.length > 0, correction, originalValues };
+            return { ...source, role, values, issues, reviewNeeded: issues.some((issue: DocumentIssue): boolean => documentIssueNeedsReview(issue, analysis)), correction, originalValues };
         };
         const documentId: string | null = this.documentId();
         const corrections: ReadonlyMap<string, DocumentCorrection> | null = this.corrections();
@@ -346,12 +377,42 @@ export class DocumentAnalysis {
                 trigger.focus();
             }
         });
+
+        afterRenderEffect((): void => {
+            const trigger: HTMLElement | null = this.dispositionTrigger();
+            const requested: FieldDispositionChange | null = this.requestedDisposition();
+            if (!trigger || requested?.documentId !== this.documentId() || this.busy() || (!this.dispositionFeedback() && !this.workspaceError())) {
+                return;
+            }
+            this.dispositionTrigger.set(null);
+            if (document.activeElement === document.body || document.activeElement === trigger) {
+                const next: HTMLElement | null = trigger.isConnected ? trigger : document.getElementById(this.decisionActionsId(requested.fieldId))?.querySelector('button') ?? null;
+                next?.focus();
+            }
+        });
+    }
+
+    decisionActionsId(fieldId: string): string {
+        return `field-decision-${this.documentId()}-${fieldId}`;
+    }
+
+    setDisposition(sectionId: string, fieldId: string, disposition: DocumentFieldDisposition | null, trigger: WigButtonComponent): void {
+        const documentId: string | null = this.documentId();
+        if (documentId && !this.busy() && this.confirmationStates().has(fieldId)) {
+            const change: FieldDispositionChange = { documentId, sectionId, fieldId, disposition };
+            this.edit.set(null);
+            this.requestedConfirmation.set(null);
+            this.requestedDisposition.set(change);
+            this.dispositionTrigger.set(trigger.nativeButton);
+            this.disposition.emit(change);
+        }
     }
 
     confirmField(sectionId: string, fieldId: string, confirmed: boolean, trigger: WigButtonComponent): void {
         const documentId: string | null = this.documentId();
         const state: FieldConfirmationView | undefined = this.confirmationStates().get(fieldId);
         if (documentId && !this.busy() && state && (!confirmed || !state.issue)) {
+            this.requestedDisposition.set(null);
             this.requestedConfirmation.set({ documentId, fieldId, confirmed });
             this.confirmationTrigger.set(trigger.nativeButton);
             this.confirmation.emit({ documentId, sectionId, fieldId, confirmed });
@@ -443,8 +504,8 @@ export class DocumentAnalysis {
     }
 }
 
-interface DocumentFileRow { file: DocumentFileResult; total: string | null; original: OriginalDocumentFields | null; }
-interface ReportCache { workspaceKey: string; requestKey: string; records: Map<string, StoredDocumentImport>; originals: Record<string, OriginalDocumentFields>; }
+interface DocumentFileRow { file: DocumentFileResult; total: string | null; original: OriginalDocumentFields | null; reviewBase: OriginalDocumentFields | null; }
+interface ReportCache { workspaceKey: string; requestKey: string; records: Map<string, StoredDocumentImport>; originals: Record<string, OriginalDocumentFields>; reviewBases: Record<string, OriginalDocumentFields>; }
 interface ReceiptAnalysisContext {
     request: ReceiptAiRequest; workspaceKey: string; matchRevision: number; name: string; format: DocumentFormat; documentId: string; trigger: HTMLButtonElement;
 }
@@ -546,6 +607,7 @@ export class DocumentImports {
                 }
                 rows.set(id, record.files.map((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): DocumentFileRow => ({
                     file, total: this.billedTotal(file), original: file.status === 'imported' ? originals?.[file.record.id] ?? null : null,
+                    reviewBase: file.status === 'imported' ? this.cache()?.reviewBases[file.record.id] ?? null : null,
                 })));
             }
         }
@@ -568,6 +630,7 @@ export class DocumentImports {
             case 'unsupported': return 'Unsupported';
         }
     };
+    readonly documentNeedsReview: (analysis: SupportingDocument) => boolean = documentNeedsReview;
 
     constructor() {
         effect((): void => {
@@ -633,7 +696,7 @@ export class DocumentImports {
                     records.some((record: StoredDocumentImport, index: number): boolean => record?.id !== summaries[index].id || record.folderPath !== summaries[index].folderPath)) {
                     throw new Error('The report does not match the current workspace.');
                 }
-                this.cache.set({ workspaceKey, requestKey, records: new Map(records.map((record: StoredDocumentImport): [string, StoredDocumentImport] => [record.id, record])), originals: snapshot.originals });
+                this.cache.set({ workspaceKey, requestKey, records: new Map(records.map((record: StoredDocumentImport): [string, StoredDocumentImport] => [record.id, record])), originals: snapshot.originals, reviewBases: snapshot.reviewBases ?? {} });
             }).catch((): void => {
                 if (isCurrent()) {
                     this.failedRequest.set(requestKey);
@@ -845,6 +908,13 @@ export class DocumentImports {
         const workspace: WorkspaceView | null = this.state().workspace;
         if (workspace && !this.state().busy && this.detailsCurrent()) {
             this.workspaceCommand.emit({ ...value, type: 'set-document-field-confirmed', revision: workspace.matchRevision });
+        }
+    }
+
+    setFieldDisposition(value: FieldDispositionChange): void {
+        const workspace: WorkspaceView | null = this.state().workspace;
+        if (workspace && !this.state().busy && this.detailsCurrent()) {
+            this.workspaceCommand.emit({ ...value, type: 'set-document-field-disposition', revision: workspace.matchRevision });
         }
     }
 

@@ -26,7 +26,7 @@ import { projectReceiptAnalyses, receiptAnalysisVersionSchema, type ReceiptAnaly
 export { moneySchema } from '../src/shared/money.js';
 
 export const APPLICATION_ID: 1380142420 = 0x52434d54;
-export const SCHEMA_VERSION: number = 15;
+export const SCHEMA_VERSION: number = 16;
 const metadataSchema: z.ZodObject<{ id: z.ZodUUID; name: z.ZodString; createdAt: z.ZodISODateTime; savedAt: z.ZodNullable<z.ZodISODateTime>; }, z.core.$strict> = z.strictObject({ id: z.uuid(), name: workspaceName.refine((value: string): boolean => value.trim().length > 0), createdAt: z.iso.datetime(), savedAt: z.iso.datetime().nullable() });
 export type WorkspaceMetadata = z.infer<typeof metadataSchema>;
 export interface SavedWorkspace {

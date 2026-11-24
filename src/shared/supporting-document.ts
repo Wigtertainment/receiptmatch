@@ -308,7 +308,9 @@ function checkDocumentField(candidate: DocumentField, item: DocumentSection, iss
 	}
 	fieldIds.set(candidate.id, item.sectionId);
 	allEvidence.push({ values: candidate.evidence, pages: item.pageIds });
-	if ('correctedByUser' in candidate && candidate.correctedByUser) {
+	if (issues.some((issue: DocumentIssue): boolean => issue.fieldId === candidate.id && issue.sectionId === item.sectionId && ['rejected-field', 'unavailable-field'].includes(issue.code))) {
+		checkExcludedField(candidate, invalid);
+	} else if ('correctedByUser' in candidate && candidate.correctedByUser) {
 		if (candidate.candidates.length !== 1) {
 			invalid('A manually corrected field needs one value.');
 		}
@@ -324,6 +326,12 @@ function checkDocumentField(candidate: DocumentField, item: DocumentSection, iss
 	}
 	if (candidate.candidates.length !== 1 && !issues.some((issue: { code: string; severity: "error" | "warning"; message: string; sectionId: string | null; fieldId: string | null; field: string | null; evidence: SourceEvidence[]; }): boolean => issue.fieldId === candidate.id)) {
 		invalid('Unresolved or ambiguous fields need an explicit issue.');
+	}
+}
+
+function checkExcludedField(candidate: DocumentField, invalid: (message: string) => void): void {
+	if (candidate.candidates.length) {
+		invalid('An excluded document field cannot retain effective values.');
 	}
 }
 
@@ -391,5 +399,8 @@ export function documentScalarConflicts(section: DocumentSection): Set<string> {
 }
 
 export function hasManualDocumentFields(analysis: SupportingDocument): boolean {
+	if (analysis.issues.some((issue: DocumentIssue): boolean => ['rejected-field', 'unavailable-field'].includes(issue.code))) {
+		return true;
+	}
 	return analysis.sections.some((section: DocumentSection): boolean => [...section.merchants, ...section.references, ...section.currencies].some((field: DocumentSection['merchants' | 'references' | 'currencies'][number]): boolean => field.correctedByUser === true));
 }

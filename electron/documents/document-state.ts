@@ -2,10 +2,10 @@ import type { DocumentIssue, DocumentSection } from "../../src/shared/supporting
 import type { ImportIssue, SourceEvidence } from "../../src/shared/bank-import.js";
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
 import { applyDocumentFieldCorrections, type DocumentCorrection } from '../../src/shared/document-corrections.js';
-import { applyDocumentFieldReviews, type DocumentFieldReview } from '../../src/shared/document-field-reviews.js';
+import { applyDocumentFieldReviews, documentFieldReviewKey, type DocumentFieldReview } from '../../src/shared/document-field-reviews.js';
 import type { SupportingDocument } from '../../src/shared/supporting-document.js';
 import type { StoredDocumentImport } from '../../src/shared/workspace-documents.js';
-import { evaluateStoredReceipt, withGenericIssueDate } from './interpret.js';
+import { evaluateStoredReceipt, printedCurrencies, withGenericIssueDate } from './interpret.js';
 import { projectReceiptAnalyses, type ReceiptAnalysisVersion } from './analysis-history.js';
 
 export class SupportingDocumentState {
@@ -50,6 +50,7 @@ export class WorkspaceDocumentState {
 	readonly analyzed: StoredDocumentImport[];
 	readonly correctionBase: StoredDocumentImport[];
 	readonly effective: StoredDocumentImport[];
+	readonly reviewBase: StoredDocumentImport[];
 	readonly hasAutomaticChanges: boolean;
 
 	constructor(readonly imports: StoredDocumentImport[], readonly corrections: ReadonlyMap<string, DocumentCorrection>, readonly versions: readonly ReceiptAnalysisVersion[] = [], readonly reviews: ReadonlyMap<string, DocumentFieldReview> = new Map()) {
@@ -77,6 +78,17 @@ export class WorkspaceDocumentState {
 			return records.some((run: StoredDocumentImport, index: number): boolean => run !== this.analyzed[index]) ? records : this.analyzed;
 		};
 		this.correctionBase = project('correctionBase');
-		this.effective = applyDocumentFieldReviews(project('effective'), reviews);
+		this.reviewBase = project('effective');
+		const independentCurrencies: Set<string> = new Set(this.reviewBase.flatMap((run: StoredDocumentImport): string[] => run.files.flatMap((file: StoredDocumentImport['files'][number]): string[] => file.status === 'imported' ?
+			file.record.result.sections.flatMap((section: DocumentSection): string[] => independentCurrencyFields(section, file.record.id, corrections)) : [])));
+		this.effective = applyDocumentFieldReviews(this.reviewBase, reviews, independentCurrencies);
 	}
+}
+
+function independentCurrencyFields(section: DocumentSection, documentId: string, corrections: ReadonlyMap<string, DocumentCorrection>): string[] {
+	const corrected: Set<string | null> = new Set([...corrections.values()].filter((correction: DocumentCorrection): boolean => correction.documentId === documentId && correction.sectionId === section.sectionId && correction.change.kind === 'amount').map((correction: DocumentCorrection): string | null => correction.fieldId));
+	return section.amounts.filter((field: DocumentSection['amounts'][number]): boolean => field.confirmedByUser === true || corrected.has(field.id) ||
+		(corrected.has(null) && !field.evidence.length && ['billed-total', 'credit-note-component'].includes(field.role)) ||
+		field.candidates.every((value: DocumentSection['amounts'][number]['candidates'][number]): boolean => !!value.currency && field.evidence.some((evidence: SourceEvidence): boolean => printedCurrencies(evidence.rawText).includes(value.currency!))))
+		.map((field: DocumentSection['amounts'][number]): string => documentFieldReviewKey({ documentId, sectionId: section.sectionId, fieldId: field.id }));
 }

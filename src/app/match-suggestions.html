@@ -256,11 +256,13 @@
 												[fieldReviews]="workspace().documentFieldReviews ?? []"
 												[corrections]="documentCorrections()"
 												[original]="document.original"
+												[reviewBase]="document.reviewBase"
 												[busy]="reviewDisabled() || !documents()"
 												[workspaceError]="reviewError()"
 												fieldHeading="Document fields"
 												(confirmation)="confirmField($event)"
 												(correction)="correctField($event)"
+												(disposition)="setFieldDisposition($event)"
 											/>
 										</ng-template>
 									</wig-accordion>

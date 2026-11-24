@@ -15,12 +15,12 @@ import { DocumentAnalysis } from './document-imports.js';
 import { OriginalPreviewButton } from './original-preview-button.js';
 import { ButtonPressed } from './button-pressed.js';
 import type { Money } from '../shared/money.js';
-import type { DocumentFieldReviewTarget } from '../shared/document-field-reviews.js';
+import type { DocumentFieldDisposition, DocumentFieldReviewTarget } from '../shared/document-field-reviews.js';
 import { documentCorrectionKey, type DocumentCorrection, type DocumentCorrectionTarget, type DocumentCorrectionValue } from '../shared/document-corrections.js';
 
 type MatchStatus = MatchSummary['status'];
 type Filter = 'all' | MatchStatus;
-interface ReviewDocument { id: string; name: string; path: string; total: string | null; record: StoredSupportingDocument; original: OriginalDocumentFields | null; }
+interface ReviewDocument { id: string; name: string; path: string; total: string | null; record: StoredSupportingDocument; original: OriginalDocumentFields | null; reviewBase: OriginalDocumentFields | null; }
 
 @Component({
 	selector: 'app-match-suggestions', standalone: true, templateUrl: './match-suggestions.html',
@@ -319,6 +319,7 @@ export class MatchSuggestions {
 				const documents: ReviewDocument[] = records.flatMap((record: StoredDocumentImport): ReviewDocument[] => record.files.flatMap((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): ReviewDocument[] => file.status === 'imported' && !archived.has(file.record.id) ? [{
 					id: file.record.id, name: this.basename(file.record.filePath), path: file.record.filePath, total: formatDocumentTotal(file.record.result), record: file.record,
 					original: snapshot.originals[file.record.id] ?? null,
+					reviewBase: snapshot.reviewBases?.[file.record.id] ?? null,
 				}] : []));
 				update(documents.sort((a: ReviewDocument, b: ReviewDocument): number => a.name.localeCompare(b.name) || a.path.localeCompare(b.path)));
 			}).catch((): void => update(null));
@@ -550,7 +551,11 @@ export class MatchSuggestions {
 		await this.changeDocumentField({ ...value, type: 'correct-document-field', revision: this.workspace().matchRevision });
 	}
 
-	private async changeDocumentField(command: Extract<WorkspaceCommand, { type: 'set-document-field-confirmed' | 'correct-document-field' }>): Promise<void> {
+	async setFieldDisposition(value: DocumentFieldReviewTarget & { disposition: DocumentFieldDisposition | null }): Promise<void> {
+		await this.changeDocumentField({ ...value, type: 'set-document-field-disposition', revision: this.workspace().matchRevision });
+	}
+
+	private async changeDocumentField(command: Extract<WorkspaceCommand, { type: 'set-document-field-confirmed' | 'set-document-field-disposition' | 'correct-document-field' }>): Promise<void> {
 		const transactionId: string | undefined = this.selectedRow()?.transactionId;
 		if (this.reviewDisabled() || !this.documents() || !transactionId || command.documentId !== this.selectedDocumentId()) {
 			return;

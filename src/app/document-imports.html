@@ -93,7 +93,7 @@
 											@let row = fileRows().get(report.id)![item.index];
 											@let file = row.file;
 											@let archived = file.status === 'imported' && state().workspace?.supersededDocuments?.includes(file.record.id);
-											@let reviewNeeded = file.status === 'imported' && !!file.record.result.issues.length;
+											@let reviewNeeded = file.status === 'imported' && documentNeedsReview(file.record.result);
 											@let analyzing = isAiPendingRow(report.id, item.index);
 											<div role="status">
 												@if (analyzing) {
@@ -330,9 +330,11 @@
 						[busy]="state().busy || !detailsCurrent()"
 						[workspaceError]="state().error"
 						[original]="row.original"
+						[reviewBase]="row.reviewBase"
 						[corrections]="correctionsByDocument().get(file.record.id) ?? null"
 						(correction)="correctField($event)"
 						(confirmation)="confirmField($event)"
+						(disposition)="setFieldDisposition($event)"
 					/>
 				} @else if (file.status === 'skipped') {
 					<p>Matching file content is already in this workspace.</p>
