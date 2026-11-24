@@ -10,9 +10,11 @@ import { calendarDateSchema, type ImportIssue, type ImportPage, type PositionedS
 import { formatCalendarDate, formatMoney } from '../shared/display.js';
 import { formatDocumentTotal } from '../shared/document-display.js';
 import {
-    documentCorrectionKey, type DocumentCorrection, type DocumentCorrectionTarget, type DocumentCorrectionValue
+    documentCorrectionKey, documentCorrectionValueSchema, missingDocumentCorrectionFields, type DocumentCorrection, type DocumentCorrectionTarget, type DocumentCorrectionValue
 } from '../shared/document-corrections.js';
 import { sameMoneyValue } from '../shared/money.js';
+import { activeDocumentFieldDisposition, documentFieldConfirmationIssue, isDocumentFieldConfirmed, type DocumentFieldDisposition, type DocumentFieldReview, type DocumentFieldReviewTarget } from '../shared/document-field-reviews.js';
+import { documentIssueNeedsReview, documentNeedsReview } from '../shared/document-review-presentation.js';
 import type { NuExtractSettingsStatus } from '../shared/local-ocr-settings.js';
 import type { OriginalAdoptionResult } from '../shared/original-preview.js';
 import type { DocumentImportSummary, DocumentSnapshot, OriginalDocumentFields, WorkspaceCommand, WorkspaceState, WorkspaceView } from '../shared/protocol.js';
@@ -63,15 +65,19 @@ interface FieldCorrectionView {
     target: DocumentCorrectionTarget;
     kind: DocumentCorrectionValue['kind'];
     role: string;
+    fieldRole?: string;
     inputValue: string;
     currency: string;
     key: string;
     corrected: DocumentCorrection | undefined;
 }
+interface FieldCorrectionEditor extends FieldCorrectionView { applied: boolean; }
 interface FieldView {
     id: string; role: string; label: string; values: string[]; evidence: SourceEvidence[]; issues: DocumentIssue[];
     reviewNeeded: boolean; originalValues?: string[]; correction?: FieldCorrectionView; confirmedByUser?: true;
 }
+interface FieldConfirmationView { confirmed: boolean; issue: string | null; disposition: DocumentFieldDisposition | null; }
+type FieldDispositionChange = DocumentFieldReviewTarget & { disposition: DocumentFieldDisposition | null; };
 
 @Component({
     selector: 'app-document-source-page', standalone: true, imports: [WigButtonComponent],
@@ -121,7 +127,7 @@ class DocumentSourcePage {
 
 @Component({
     selector: 'app-document-analysis', standalone: true,
-    imports: [DocumentSourcePage, NgTemplateOutlet, WigButtonComponent, WigAlertComponent, WigInputComponent, InputLength],
+    imports: [DocumentSourcePage, OriginalPreviewButton, NgTemplateOutlet, WigButtonComponent, WigAlertComponent, WigInputComponent, InputLength],
     templateUrl: './document-analysis.html'
 })
 export class DocumentAnalysis {
@@ -129,21 +135,80 @@ export class DocumentAnalysis {
     readonly fieldHeading: InputSignal<string> = input('Extracted fields');
     readonly format: InputSignal<"png" | "pdf" | "jpeg" | null> = input<DocumentFormat | null>(null);
     readonly documentId: InputSignal<string | null> = input<string | null>(null);
+    readonly documentName: InputSignal<string> = input('Document');
+    readonly loadRevision: InputSignal<number | undefined> = input<number>();
+    readonly fieldReviews: InputSignal<readonly DocumentFieldReview[]> = input<readonly DocumentFieldReview[]>([]);
+    readonly reviewBase: InputSignal<OriginalDocumentFields | null> = input<OriginalDocumentFields | null>(null);
+    private readonly preReviewAnalysis: Signal<SupportingDocument> = computed((): SupportingDocument => ({ ...this.analysis(), ...this.reviewBase() }));
+    readonly valuesBeforeDecision: Signal<ReadonlyMap<string, string[]>> = computed((): ReadonlyMap<string, string[]> => {
+        const values: Map<string, string[]> = new Map<string, string[]>();
+        for (const section of this.preReviewAnalysis().sections) {
+            for (const field of section.amounts) {
+                values.set(field.id, field.candidates.map((value: DocumentSection['amounts'][number]['candidates'][number]): string => formatMoney(value)));
+            }
+            for (const field of section.dates) {
+                values.set(field.id, field.candidates.map((value: string): string => formatCalendarDate(value)));
+            }
+            for (const field of [...section.merchants, ...section.references, ...section.currencies]) {
+                values.set(field.id, field.candidates);
+            }
+        }
+        return values;
+    });
+    readonly confirmation: OutputEmitterRef<DocumentFieldReviewTarget & { confirmed: boolean; }> = output<DocumentFieldReviewTarget & { confirmed: boolean }>();
+    readonly disposition: OutputEmitterRef<FieldDispositionChange> = output<FieldDispositionChange>();
+    private readonly requestedDisposition: WritableSignal<FieldDispositionChange | null> = signal<FieldDispositionChange | null>(null);
+    private readonly dispositionTrigger: WritableSignal<HTMLElement | null> = signal<HTMLElement | null>(null);
+    readonly dispositionFeedback: Signal<string> = computed((): string => {
+        const requested: FieldDispositionChange | null = this.requestedDisposition();
+        if (requested?.documentId !== this.documentId() || this.busy() || this.workspaceError() ||
+            this.confirmationStates().get(requested.fieldId)?.disposition !== requested.disposition) {
+            return '';
+        }
+        return requested.disposition === null ? 'Field decision reset.' : requested.disposition === 'rejected' ? 'Recognition excluded from matching.' : 'Field marked as not determinable and excluded from matching.';
+    });
+    private readonly requestedConfirmation: WritableSignal<{ documentId: string; fieldId: string; confirmed: boolean; } | null> = signal<{ documentId: string; fieldId: string; confirmed: boolean } | null>(null);
+    private readonly confirmationTrigger: WritableSignal<HTMLElement | null> = signal<HTMLElement | null>(null);
+    readonly confirmationFeedback: Signal<string> = computed((): string => {
+        const requested: { documentId: string; fieldId: string; confirmed: boolean; } | null = this.requestedConfirmation();
+        if (requested?.documentId !== this.documentId() || this.busy() || this.confirmationStates().get(requested.fieldId)?.confirmed !== requested.confirmed) {
+            return '';
+        }
+        return requested.confirmed ? 'Field value confirmed.' : 'Field confirmation withdrawn.';
+    });
+    readonly confirmationStates: Signal<ReadonlyMap<string, FieldConfirmationView>> = computed((): ReadonlyMap<string, FieldConfirmationView> => {
+        const analysis: SupportingDocument = this.analysis();
+        const documentId: string | null = this.documentId();
+        const states: Map<string, FieldConfirmationView> = new Map<string, FieldConfirmationView>();
+        if (documentId) {
+            for (const section of analysis.sections) {
+                for (const field of [...section.amounts, ...section.dates, ...section.merchants, ...section.references, ...section.currencies]) {
+                    const target: DocumentFieldReviewTarget = { documentId, sectionId: section.sectionId, fieldId: field.id };
+                    const confirmed: boolean = isDocumentFieldConfirmed(this.preReviewAnalysis(), target, this.fieldReviews(), analysis);
+                    const issue: string | null = documentFieldConfirmationIssue(analysis, section.sectionId, field.id);
+                    const disposition: DocumentFieldDisposition | null = activeDocumentFieldDisposition(this.preReviewAnalysis(), target, this.fieldReviews());
+                    states.set(field.id, { confirmed, issue, disposition });
+                }
+            }
+        }
+        return states;
+    });
     readonly busy: InputSignal<boolean> = input(false);
     readonly workspaceError: InputSignal<string | null> = input<string | null>(null);
     readonly original: InputSignal<OriginalDocumentFields | null> = input<OriginalDocumentFields | null>(null);
     readonly corrections: InputSignal<ReadonlyMap<string, DocumentCorrection> | null> = input<ReadonlyMap<string, DocumentCorrection> | null>(null);
+    readonly correctionsEnabled: InputSignal<boolean> = input(true);
     readonly correction: OutputEmitterRef<DocumentCorrectionTarget & { change: DocumentCorrectionValue; }> = output<DocumentCorrectionTarget & { change: DocumentCorrectionValue }>();
     readonly sourceOpen: WritableSignal<boolean> = signal(false);
     readonly openDetails: WritableSignal<ReadonlySet<string>> = signal<ReadonlySet<string>>(new Set());
     private readonly edit: WritableSignal<{ field: FieldCorrectionView; trigger: HTMLElement; originalRevision: number | undefined; } | null> = signal<{ field: FieldCorrectionView; trigger: HTMLElement; originalRevision: number | undefined } | null>(null);
-    readonly editing: Signal<{ inputValue: string; currency: string; applied: boolean; target: DocumentCorrectionTarget; kind: DocumentCorrectionValue["kind"]; role: string; key: string; corrected: DocumentCorrection | undefined; } | null> = computed((): { inputValue: string; currency: string; applied: boolean; target: DocumentCorrectionTarget; kind: DocumentCorrectionValue["kind"]; role: string; key: string; corrected: DocumentCorrection | undefined; } | null => {
+    readonly editing: Signal<FieldCorrectionEditor | null> = computed((): FieldCorrectionEditor | null => {
         const edit: { field: FieldCorrectionView; trigger: HTMLElement; originalRevision: number | undefined; } | null = this.edit();
         if (edit?.field.target.documentId !== this.documentId()) {
             return null;
         }
         const saved: DocumentCorrection | undefined = this.corrections()?.get(edit.field.key);
-        const change: { kind: "amount"; value: { coefficient: string; currency: string; scale: number; }; } | { kind: "date"; value: string; } | undefined = saved?.change;
+        const change: DocumentCorrectionValue | undefined = saved?.change;
         return {
             ...edit.field,
             inputValue: change?.kind === 'amount' ? formatAmountEntry(change.value) : change?.value ?? edit.field.inputValue,
@@ -198,27 +263,29 @@ export class DocumentAnalysis {
         const field: (source: SourceField, role: string, values: string[], correction?: FieldCorrectionView, originalValues?: string[]) => FieldView =
             (source: SourceField, role: string, values: string[], correction?: FieldCorrectionView, originalValues?: string[]): FieldView => {
             const issues: DocumentIssue[] = fieldIssues.get(source.id) ?? [];
-            return { ...source, role, values, issues, reviewNeeded: issues.length > 0, correction, originalValues };
+            return { ...source, role, values, issues, reviewNeeded: issues.some((issue: DocumentIssue): boolean => documentIssueNeedsReview(issue, analysis)), correction, originalValues };
         };
         const documentId: string | null = this.documentId();
         const corrections: ReadonlyMap<string, DocumentCorrection> | null = this.corrections();
+        const canEdit: boolean = documentId !== null && this.correctionsEnabled();
         const originalSections: Map<string, DocumentSection> = new Map((this.original()?.sections ?? analysis.sections).map((section: DocumentSection): [string, DocumentSection] => [section.sectionId, section]));
         return analysis.sections.map((section: DocumentSection): { id: string; kind: string; evidence: SourceEvidence[]; pages: (number | "Unknown")[]; missingFields: FieldCorrectionView[]; fields: FieldView[]; } => {
             const original: DocumentSection = originalSections.get(section.sectionId)!;
             const originalAmounts: Map<string, { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }> = new Map(original.amounts.map((value: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): [string, { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }] => [value.id, value]));
             const originalDates: Map<string, { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }> = new Map(original.dates.map((value: { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): [string, { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }] => [value.id, value]));
             const declared: string[] = [...new Set(section.currencies.filter((value: { role: "unknown" | "informational-fx" | "settlement"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => value.role === 'settlement').flatMap((value: { role: "unknown" | "informational-fx" | "settlement"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): string[] => value.candidates))];
-            const editable: (fieldId: string | null, kind: DocumentCorrectionValue["kind"], role: string, inputValue?: string, currency?: string) => FieldCorrectionView | undefined = (fieldId: string | null, kind: DocumentCorrectionValue['kind'], role: string, inputValue: string = '', currency: string = ''): FieldCorrectionView | undefined => {
-                if (!documentId) {
+            const editable: (fieldId: string | null, kind: DocumentCorrectionValue['kind'], role: string, inputValue?: string, currency?: string, fieldRole?: string) => FieldCorrectionView | undefined =
+                (fieldId: string | null, kind: DocumentCorrectionValue['kind'], role: string, inputValue: string = '', currency: string = '', fieldRole?: string): FieldCorrectionView | undefined => {
+                if (!documentId || !this.correctionsEnabled()) {
                     return undefined;
                 }
                 const target: { documentId: string; sectionId: string; fieldId: string | null; } = { documentId, sectionId: section.sectionId, fieldId };
-                const key: string = documentCorrectionKey(target, kind);
-                return { target, kind, role, inputValue, currency, key, corrected: corrections?.get(key) };
+                const key: string = documentCorrectionKey(target, kind, fieldRole);
+                return { target, kind, role, fieldRole, inputValue, currency, key, corrected: corrections?.get(key) };
             };
             const missingFields: FieldCorrectionView[] = [];
             const missing: Set<string> | undefined = missingBySection.get(section.sectionId);
-            if (documentId && missing && section.kind !== 'unknown') {
+            if (documentId && this.correctionsEnabled() && missing && section.kind !== 'unknown') {
                 const totalRole: "billed-total" | "credit-note-component" = section.kind === 'credit-note' ? 'credit-note-component' : 'billed-total';
                 if (missing.has('billed-total') && !original.amounts.some((value: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => value.role === totalRole)) {
                     missingFields.push(editable(null, 'amount', amountRoles[totalRole], '', declared.length === 1 ? declared[0] : '')!);
@@ -227,6 +294,9 @@ export class DocumentAnalysis {
                     missingFields.push(editable(null, 'date', 'Issue date')!);
                 }
             }
+            const additional: FieldCorrectionView[] = canEdit ? missingDocumentCorrectionFields(original).map(
+                (slot: ReturnType<typeof missingDocumentCorrectionFields>[number]): FieldCorrectionView => editable(null, slot.kind, slot.label, '', '', slot.role)!) : [];
+            missingFields.push(...additional);
             return {
                 id: section.sectionId, kind: kinds[section.kind], evidence: section.evidence, pages: section.pageIds.map((pageId: string): number | "Unknown" => this.pageNumber(pageId)), missingFields,
                 fields: [
@@ -245,9 +315,18 @@ export class DocumentAnalysis {
                             previous ? editable(value.id, 'date', dateRoles[value.role], value.candidates.length === 1 ? value.candidates[0] : '') : undefined,
                             previous?.candidates.map((candidate: string): string => formatCalendarDate(candidate)));
                     }),
-                    ...section.merchants.map((value: { role: "merchant"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): FieldView => field(value, 'Merchant', value.candidates)),
-                    ...section.references.map((value: { role: "table" | "unknown" | "invoice" | "receipt" | "payment" | "order" | "customer" | "account" | "related-invoice"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): FieldView => field(value, referenceRoles[value.role], value.candidates)),
-                    ...section.currencies.map((value: { role: "unknown" | "informational-fx" | "settlement"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): FieldView => field(value, currencyRoles[value.role], value.candidates))
+                    ...section.merchants.filter((value: DocumentSection['merchants'][number]): boolean => !documentId || original.merchants.some((item: DocumentSection['merchants'][number]): boolean => item.id === value.id) || value.evidence.length > 0)
+                        .map((value: DocumentSection['merchants'][number]): FieldView => field(value, 'Merchant', value.candidates,
+                            editable(value.id, 'merchant', 'Merchant', value.candidates.length === 1 ? value.candidates[0] : ''),
+                            original.merchants.find((item: DocumentSection['merchants'][number]): boolean => item.id === value.id)?.candidates)),
+                    ...section.references.filter((value: DocumentSection['references'][number]): boolean => !documentId || original.references.some((item: DocumentSection['references'][number]): boolean => item.id === value.id) || value.evidence.length > 0)
+                        .map((value: DocumentSection['references'][number]): FieldView => field(value, referenceRoles[value.role], value.candidates,
+                            editable(value.id, 'reference', referenceRoles[value.role], value.candidates.length === 1 ? value.candidates[0] : '', '', value.role),
+                            original.references.find((item: DocumentSection['references'][number]): boolean => item.id === value.id)?.candidates)),
+                    ...section.currencies.filter((value: DocumentSection['currencies'][number]): boolean => !documentId || original.currencies.some((item: DocumentSection['currencies'][number]): boolean => item.id === value.id) || value.evidence.length > 0)
+                        .map((value: DocumentSection['currencies'][number]): FieldView => field(value, currencyRoles[value.role], value.candidates,
+                            editable(value.id, 'currency', currencyRoles[value.role], value.candidates.length === 1 ? value.candidates[0] : '', '', value.role),
+                            original.currencies.find((item: DocumentSection['currencies'][number]): boolean => item.id === value.id)?.candidates))
                 ]
             };
         });
@@ -287,8 +366,61 @@ export class DocumentAnalysis {
         this.sourceOpen.set(expanded(event));
     }
 
+    constructor() {
+        afterRenderEffect((): void => {
+            const trigger: HTMLElement | null = this.confirmationTrigger();
+            if (!trigger || this.busy() || (!this.confirmationFeedback() && !this.workspaceError())) {
+                return;
+            }
+            this.confirmationTrigger.set(null);
+            if (trigger.isConnected && (document.activeElement === document.body || document.activeElement === trigger)) {
+                trigger.focus();
+            }
+        });
+
+        afterRenderEffect((): void => {
+            const trigger: HTMLElement | null = this.dispositionTrigger();
+            const requested: FieldDispositionChange | null = this.requestedDisposition();
+            if (!trigger || requested?.documentId !== this.documentId() || this.busy() || (!this.dispositionFeedback() && !this.workspaceError())) {
+                return;
+            }
+            this.dispositionTrigger.set(null);
+            if (document.activeElement === document.body || document.activeElement === trigger) {
+                const next: HTMLElement | null = trigger.isConnected ? trigger : document.getElementById(this.decisionActionsId(requested.fieldId))?.querySelector('button') ?? null;
+                next?.focus();
+            }
+        });
+    }
+
+    decisionActionsId(fieldId: string): string {
+        return `field-decision-${this.documentId()}-${fieldId}`;
+    }
+
+    setDisposition(sectionId: string, fieldId: string, disposition: DocumentFieldDisposition | null, trigger: WigButtonComponent): void {
+        const documentId: string | null = this.documentId();
+        if (documentId && !this.busy() && this.confirmationStates().has(fieldId)) {
+            const change: FieldDispositionChange = { documentId, sectionId, fieldId, disposition };
+            this.edit.set(null);
+            this.requestedConfirmation.set(null);
+            this.requestedDisposition.set(change);
+            this.dispositionTrigger.set(trigger.nativeButton);
+            this.disposition.emit(change);
+        }
+    }
+
+    confirmField(sectionId: string, fieldId: string, confirmed: boolean, trigger: WigButtonComponent): void {
+        const documentId: string | null = this.documentId();
+        const state: FieldConfirmationView | undefined = this.confirmationStates().get(fieldId);
+        if (documentId && !this.busy() && state && (!confirmed || !state.issue)) {
+            this.requestedDisposition.set(null);
+            this.requestedConfirmation.set({ documentId, fieldId, confirmed });
+            this.confirmationTrigger.set(trigger.nativeButton);
+            this.confirmation.emit({ documentId, sectionId, fieldId, confirmed });
+        }
+    }
+
     correctedValue(change: DocumentCorrectionValue): string {
-        return change.kind === 'amount' ? formatMoney(change.value) : formatCalendarDate(change.value);
+        return change.kind === 'amount' ? formatMoney(change.value) : change.kind === 'date' ? formatCalendarDate(change.value) : change.value;
     }
 
     startCorrection(field: FieldCorrectionView, trigger: WigButtonComponent): void {
@@ -316,36 +448,54 @@ export class DocumentAnalysis {
         }
     }
 
-    applyCorrection(form: HTMLFormElement, event?: Event): void {
-        event?.preventDefault();
-        const editing: { inputValue: string; currency: string; applied: boolean; target: DocumentCorrectionTarget; kind: DocumentCorrectionValue["kind"]; role: string; key: string; corrected: DocumentCorrection | undefined; } | null = this.editing();
-        if (!editing || this.busy()) {
-            return;
-        }
-        const fields: FormData = new FormData(form);
+    private parseCorrectionValue(editing: FieldCorrectionEditor, fields: FormData): DocumentCorrectionValue | null {
         const enteredValue: FormDataEntryValue | null = fields.get('value');
         const entered: string = typeof enteredValue === 'string' ? enteredValue.trim() : '';
-        let change: DocumentCorrectionValue;
         if (editing.kind === 'date') {
             const date: ZodSafeParseResult<string> = calendarDateSchema.safeParse(entered);
             if (!date.success) {
-                this.correctionError.set('Enter a valid date.'); return;
+                this.correctionError.set('Enter a valid date.'); return null;
             }
-            change = { kind: 'date', value: date.data };
-        } else {
-            const currencyValue: FormDataEntryValue | null = fields.get('currency');
-            const currency: string = typeof currencyValue === 'string' ? currencyValue.trim().toUpperCase() : '';
-            if (!/^[A-Z]{3}$/.test(currency)) {
-                this.correctionError.set('Enter a three-letter currency code, for example EUR.'); return;
-            }
-            const amount: { coefficient: string; currency: string; scale: number; } | null = parseAmountEntry(entered, currency);
-            if (!amount) {
-                this.correctionError.set(`Enter an amount without grouping separators, for example ${this.amountExample}.`); return;
-            }
-            change = { kind: 'amount', value: amount };
+            return { kind: 'date', value: date.data };
         }
-        const previous: { kind: "amount"; value: { coefficient: string; currency: string; scale: number; }; } | { kind: "date"; value: string; } | undefined = this.corrections()?.get(editing.key)?.change;
-        if ((change.kind === 'date' && previous?.kind === 'date' && change.value === previous.value) ||
+        if (editing.kind === 'amount') {
+            return this.parseAmountCorrection(entered, fields);
+        }
+        const value: string = editing.kind === 'currency' ? entered.toUpperCase() : entered;
+        const parsed: ZodSafeParseResult<DocumentCorrectionValue> = documentCorrectionValueSchema.safeParse({ kind: editing.kind, value,
+            ...(editing.kind === 'merchant' ? {} : { role: editing.fieldRole }) });
+        if (!parsed.success) {
+            this.correctionError.set(editing.kind === 'currency' ? 'Enter a three-letter currency code, for example EUR.' : 'Enter a value for this field.');
+            return null;
+        }
+        return parsed.data;
+    }
+
+    private parseAmountCorrection(entered: string, fields: FormData): DocumentCorrectionValue | null {
+        const currencyValue: FormDataEntryValue | null = fields.get('currency');
+        const currency: string = typeof currencyValue === 'string' ? currencyValue.trim().toUpperCase() : '';
+        if (!/^[A-Z]{3}$/.test(currency)) {
+            this.correctionError.set('Enter a three-letter currency code, for example EUR.'); return null;
+        }
+        const amount: { coefficient: string; currency: string; scale: number; } | null = parseAmountEntry(entered, currency);
+        if (!amount) {
+            this.correctionError.set(`Enter an amount without grouping separators, for example ${this.amountExample}.`); return null;
+        }
+        return { kind: 'amount', value: amount };
+    }
+
+    applyCorrection(form: HTMLFormElement, event?: Event): void {
+        event?.preventDefault();
+        const editing: FieldCorrectionEditor | null = this.editing();
+        if (!editing || this.busy()) {
+            return;
+        }
+        const change: DocumentCorrectionValue | null = this.parseCorrectionValue(editing, new FormData(form));
+        if (!change) {
+            return;
+        }
+        const previous: DocumentCorrectionValue | undefined = this.corrections()?.get(editing.key)?.change;
+        if ((change.kind !== 'amount' && previous?.kind === change.kind && change.value === previous.value) ||
             (change.kind === 'amount' && previous?.kind === 'amount' && sameMoneyValue(change.value, previous.value))) {
             this.correctionError.set('Enter a different value to update this correction.'); return;
         }
@@ -354,8 +504,8 @@ export class DocumentAnalysis {
     }
 }
 
-interface DocumentFileRow { file: DocumentFileResult; total: string | null; original: OriginalDocumentFields | null; }
-interface ReportCache { workspaceKey: string; requestKey: string; records: Map<string, StoredDocumentImport>; originals: Record<string, OriginalDocumentFields>; }
+interface DocumentFileRow { file: DocumentFileResult; total: string | null; original: OriginalDocumentFields | null; reviewBase: OriginalDocumentFields | null; }
+interface ReportCache { workspaceKey: string; requestKey: string; records: Map<string, StoredDocumentImport>; originals: Record<string, OriginalDocumentFields>; reviewBases: Record<string, OriginalDocumentFields>; }
 interface ReceiptAnalysisContext {
     request: ReceiptAiRequest; workspaceKey: string; matchRevision: number; name: string; format: DocumentFormat; documentId: string; trigger: HTMLButtonElement;
 }
@@ -440,7 +590,7 @@ export class DocumentImports {
         const byDocument: Map<string, Map<string, DocumentCorrection>> = new Map<string, Map<string, DocumentCorrection>>();
         for (const correction of this.state().workspace?.documentCorrections ?? []) {
             const fields: Map<string, DocumentCorrection> = byDocument.get(correction.documentId) ?? new Map<string, DocumentCorrection>();
-            fields.set(documentCorrectionKey(correction, correction.change.kind), correction);
+            fields.set(documentCorrectionKey(correction, correction.change.kind, 'role' in correction.change ? correction.change.role : undefined), correction);
             byDocument.set(correction.documentId, fields);
         }
         return byDocument;
@@ -457,6 +607,7 @@ export class DocumentImports {
                 }
                 rows.set(id, record.files.map((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): DocumentFileRow => ({
                     file, total: this.billedTotal(file), original: file.status === 'imported' ? originals?.[file.record.id] ?? null : null,
+                    reviewBase: file.status === 'imported' ? this.cache()?.reviewBases[file.record.id] ?? null : null,
                 })));
             }
         }
@@ -479,6 +630,7 @@ export class DocumentImports {
             case 'unsupported': return 'Unsupported';
         }
     };
+    readonly documentNeedsReview: (analysis: SupportingDocument) => boolean = documentNeedsReview;
 
     constructor() {
         effect((): void => {
@@ -544,7 +696,7 @@ export class DocumentImports {
                     records.some((record: StoredDocumentImport, index: number): boolean => record?.id !== summaries[index].id || record.folderPath !== summaries[index].folderPath)) {
                     throw new Error('The report does not match the current workspace.');
                 }
-                this.cache.set({ workspaceKey, requestKey, records: new Map(records.map((record: StoredDocumentImport): [string, StoredDocumentImport] => [record.id, record])), originals: snapshot.originals });
+                this.cache.set({ workspaceKey, requestKey, records: new Map(records.map((record: StoredDocumentImport): [string, StoredDocumentImport] => [record.id, record])), originals: snapshot.originals, reviewBases: snapshot.reviewBases ?? {} });
             }).catch((): void => {
                 if (isCurrent()) {
                     this.failedRequest.set(requestKey);
@@ -749,6 +901,20 @@ export class DocumentImports {
         const workspace: WorkspaceView | null = this.state().workspace;
         if (workspace && !this.state().busy && this.detailsCurrent()) {
             this.workspaceCommand.emit({ ...value, type: 'correct-document-field', revision: workspace.matchRevision });
+        }
+    }
+
+    confirmField(value: DocumentFieldReviewTarget & { confirmed: boolean }): void {
+        const workspace: WorkspaceView | null = this.state().workspace;
+        if (workspace && !this.state().busy && this.detailsCurrent()) {
+            this.workspaceCommand.emit({ ...value, type: 'set-document-field-confirmed', revision: workspace.matchRevision });
+        }
+    }
+
+    setFieldDisposition(value: FieldDispositionChange): void {
+        const workspace: WorkspaceView | null = this.state().workspace;
+        if (workspace && !this.state().busy && this.detailsCurrent()) {
+            this.workspaceCommand.emit({ ...value, type: 'set-document-field-disposition', revision: workspace.matchRevision });
         }
     }
 

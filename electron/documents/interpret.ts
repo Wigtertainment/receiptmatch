@@ -717,7 +717,7 @@ function referencesOnLine(line: string): { label: string; value: string; }[] {
 }
 
 export function hasFullDocumentReference(field: DocumentSection['references'][number], value: string): boolean {
-	if (field.confirmedByUser) {
+	if (field.confirmedByUser || field.correctedByUser) {
 		return field.candidates.includes(value);
 	}
 	const lines: { label: string; value: string; }[] = field.evidence.flatMap((item: SourceEvidence): { label: string; value: string; }[] => {

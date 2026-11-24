@@ -1,9 +1,3 @@
-import type { BankCorrection } from "../../src/shared/bank-corrections.js";
-import type { DocumentCorrection } from "../../src/shared/document-corrections.js";
-import type { DuplicateDecision } from "../../src/shared/transaction-duplicates.js";
-import type { MatchReviewCounts } from "../../src/shared/workspace-matching.js";
-import type { DocumentImportSummary } from "../../src/shared/protocol.js";
-import type { BankImportSummary } from "../../src/shared/workspace-import.js";
 import type { WorkspaceState } from "../../src/shared/protocol.js";
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -149,7 +143,7 @@ test('packaged Electron workspace smoke test', async ({ smoke: { root, report, c
 	async function waitState(expected: Partial<WorkspaceView>): Promise<void> {
 		await page.waitForFunction(async (values: Partial<WorkspaceView>): Promise<boolean> => {
 			const value: WorkspaceState = await window.receiptmatch.command({ type: 'get-state' });
-			return !value.busy && Object.entries(values).every(([key, wanted]: [string, string | number | boolean | string[] | BankImportSummary[] | BankCorrection[] | DocumentImportSummary[] | MatchReviewCounts | DocumentCorrection[] | DuplicateDecision[] | null]): boolean => value.workspace?.[key as keyof WorkspaceView] === wanted);
+			return !value.busy && Object.entries(values).every(([key, wanted]: [string, WorkspaceView[keyof WorkspaceView]]): boolean => value.workspace?.[key as keyof WorkspaceView] === wanted);
 		}, expected);
 	}
 

@@ -35,9 +35,22 @@
 					<p class="muted" [id]="editorId() + '-amount-hint'">Use {{ amountExample }} without grouping separators.</p>
 					<label [for]="editorId() + '-currency'">Currency</label>
 					<wig-input [inputId]="editorId() + '-currency'" name="currency" [appInputLength]="3" [value]="editor.currency" [disabled]="busy()" [required]="true" />
-				} @else {
+				} @else if (editor.kind === 'date') {
 					<label [for]="editorId() + '-date'">Date</label>
 					<input [id]="editorId() + '-date'" name="value" type="date" [value]="editor.inputValue" [disabled]="busy()" required />
+				} @else {
+					<label [for]="editorId() + '-value'">{{ editor.role }}</label>
+					<wig-input
+						[inputId]="editorId() + '-value'"
+						name="value"
+						[appInputLength]="editor.kind === 'currency' ? 3 : 16384"
+						[value]="editor.inputValue"
+						[disabled]="busy()"
+						[required]="true"
+					/>
+					@if (editor.kind === 'currency') {
+						<p class="muted">Use a three-letter currency code, for example EUR.</p>
+					}
 				}
 			</div>
 			@if (correctionError(); as error) {
@@ -56,7 +69,7 @@
 
 @if (generalIssues().length) {
 	<div class="statement-warnings">
-		<h4>{{ corrections()?.size ? 'Original extraction notes' : 'Review needed' }}</h4>
+		<h4>Review needed</h4>
 		<ul>
 			@for (issue of generalIssues(); track $index) {
 				<li>
@@ -79,7 +92,15 @@
 	</div>
 }
 
-<h4 class="document-fields-heading">{{ fieldHeading() }}</h4>
+<div class="document-fields-toolbar">
+	<h4 class="document-fields-heading">{{ fieldHeading() }}</h4>
+	@if (documentId(); as id) {
+		@if (loadRevision() !== undefined) {
+			<app-original-preview-button kind="document" [sourceId]="id" [sourceName]="documentName()" [loadRevision]="loadRevision()" />
+		}
+	}
+</div>
+<p class="sr-only" role="status" aria-atomic="true">{{ dispositionFeedback() || confirmationFeedback() }}</p>
 @if (!hasFields()) {
 	<p class="muted">No recognized fields were retained.</p>
 }
@@ -99,30 +120,88 @@
 			</details>
 		}
 		@for (field of section.fields; track field.id) {
+			@let confirmation = confirmationStates().get(field.id);
 			<details class="document-field" (toggle)="toggleDetail(field.id, $event)">
 				<summary class="field-summary">
 					<span class="field-overview">
 						<span class="field-role">{{ field.role }}</span>
-						<span class="field-value" [class.field-value-missing]="!field.values.length">{{ field.values.join(' / ') || 'No value found' }}</span>
+						<span class="field-value" [class.field-value-missing]="!field.values.length || !!confirmation?.disposition">
+							{{ confirmation?.disposition === 'rejected' ? 'Excluded from matching' : confirmation?.disposition === 'unavailable' ? 'Value not established' : field.values.join(' / ') || 'No value found' }}
+						</span>
 					</span>
 					<span class="field-statuses">
-						@if (field.correction?.corrected) {
+						@if (field.correction?.corrected && !confirmation?.disposition) {
 							<span class="source-status">Corrected</span>
-						} @else if (field.confirmedByUser) {
+						}
+						@if (!confirmation?.disposition && (field.confirmedByUser || confirmation?.confirmed)) {
 							<span class="source-status">Confirmed by you</span>
 						}
-						@if (!field.correction?.corrected && field.values.length > 1) {
+						@if (confirmation?.disposition) {
+							<span class="field-decision-status">{{ confirmation?.disposition === 'rejected' ? 'Incorrect recognition' : 'Not determinable' }}</span>
+						}
+						@if (!confirmation?.disposition && !field.correction?.corrected && field.values.length > 1 && field.reviewNeeded) {
 							<span class="field-warning">Ambiguous</span>
 						} @else if (field.reviewNeeded) {
-							<span class="field-warning">Review needed</span>
+							<span class="field-warning">{{ confirmation?.disposition ? 'Unresolved' : 'Review needed' }}</span>
+						} @else if (field.issues.length && !confirmation?.disposition) {
+							<span class="field-decision-status">Information</span>
 						}
 					</span>
 				</summary>
 				@if (openDetails().has(field.id)) {
 					<div class="field-body">
+						@if (confirmation && !field.confirmedByUser && !confirmation.disposition) {
+							<div class="field-confirmation">
+								@if (confirmation.confirmed || !confirmation.issue) {
+									<wig-button
+										#confirmationButton
+										[label]="confirmation.confirmed ? 'Withdraw confirmation' : 'Confirm value'"
+										severity="secondary"
+										[disabled]="busy()"
+										(click)="confirmField(section.id, field.id, !confirmation.confirmed, confirmationButton)"
+									/>
+								}
+								<p class="field-confirmation-help">
+									{{ confirmation.confirmed ? 'You confirmed this field against the original document.' : confirmation.issue || 'Compare this value with the original document before confirming.' }}
+								</p>
+							</div>
+						}
+						@if (confirmation) {
+							<div class="field-decision" [id]="decisionActionsId(field.id)">
+								<div class="field-decision-actions">
+									@if (confirmation.disposition) {
+										<wig-button
+											#resetDecision
+											label="Reset decision"
+											severity="secondary"
+											[disabled]="busy()"
+											(click)="setDisposition(section.id, field.id, null, resetDecision)"
+										/>
+									} @else {
+										<wig-button
+											#rejectField
+											label="Incorrect recognition"
+											severity="secondary"
+											[disabled]="busy()"
+											(click)="setDisposition(section.id, field.id, 'rejected', rejectField)"
+										/>
+										<wig-button
+											#unavailableField
+											label="Not determinable"
+											severity="secondary"
+											[disabled]="busy()"
+											(click)="setDisposition(section.id, field.id, 'unavailable', unavailableField)"
+										/>
+									}
+								</div>
+								<p class="field-decision-help">
+									{{ confirmation.disposition ? 'This field is excluded from matching. The original evidence is retained.' : 'Correct a known value below, or record why this recognition cannot be used.' }}
+								</p>
+							</div>
+						}
 						@if (field.issues.length) {
-							<div class="field-review">
-								<h6>{{ field.correction?.corrected ? 'Original extraction notes' : 'Why this needs review' }}</h6>
+							<div class="field-review" [class.field-notes]="!field.reviewNeeded">
+								<h6>{{ field.reviewNeeded ? 'Why this needs review' : 'Extraction notes' }}</h6>
 								<ul class="field-issues">
 									@for (issue of field.issues; track $index) {
 										<li>
@@ -158,6 +237,12 @@
 							}
 						}
 						<dl class="source-facts field-original">
+							@if (confirmation?.disposition) {
+								<div>
+									<dt>Value before decision</dt>
+									<dd>{{ valuesBeforeDecision().get(field.id)?.join(' / ') || 'No value found' }}</dd>
+								</div>
+							}
 							@if (!field.confirmedByUser || field.evidence.length) {
 								<div>
 									<dt>Original text</dt>

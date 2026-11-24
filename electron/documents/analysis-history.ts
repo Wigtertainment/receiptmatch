@@ -1,12 +1,12 @@
 import { z } from 'zod';
 import type { ImportPage, PositionedSpan } from '../../src/shared/bank-import.js';
 import { NUEXTRACT_RECEIPT_VERSION } from '../../src/shared/receipt-ai.js';
-import { supportingDocumentSchema } from '../../src/shared/supporting-document.js';
+import { hasManualDocumentFields, supportingDocumentSchema } from '../../src/shared/supporting-document.js';
 import type { DocumentFileResult, StoredDocumentImport, StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
 
 export const receiptAnalysisVersionSchema: z.ZodObject<{
   documentId: z.ZodUUID; acceptedAt: z.ZodISODateTime; analysis: typeof supportingDocumentSchema;
-}, z.core.$strict> = z.strictObject({ documentId: z.uuid(), acceptedAt: z.iso.datetime(), analysis: supportingDocumentSchema });
+}, z.core.$strict> = z.strictObject({ documentId: z.uuid(), acceptedAt: z.iso.datetime(), analysis: supportingDocumentSchema }).refine((version: { analysis: typeof supportingDocumentSchema._output }): boolean => !hasManualDocumentFields(version.analysis), 'Receipt analysis versions cannot contain manual correction markers.');
 export type ReceiptAnalysisVersion = z.infer<typeof receiptAnalysisVersionSchema>;
 
 const modelVersions: ReadonlySet<string> = new Set([

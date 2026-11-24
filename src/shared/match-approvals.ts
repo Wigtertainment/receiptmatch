@@ -18,9 +18,9 @@ export function advanceReviewRevision(previous?: ReviewApprovalState): ReviewApp
     return { associationRevision: revision.parse((previous?.associationRevision ?? 1) + 1), approval: previous?.approval ?? null };
 }
 
-export function documentRevisionIndex(corrections: Iterable<DocumentCorrection>): Map<string, number> {
+export function documentRevisionIndex(corrections: Iterable<Pick<DocumentCorrection, 'documentId' | 'revision'>>, reviews: Iterable<Pick<DocumentCorrection, 'documentId' | 'revision'>> = []): Map<string, number> {
     const revisions: Map<string, number> = new Map<string, number>();
-    for (const { documentId, revision } of corrections) {
+    for (const { documentId, revision } of [...corrections, ...reviews]) {
         revisions.set(documentId, Math.max(revisions.get(documentId) ?? 1, revision));
     }
     return revisions;

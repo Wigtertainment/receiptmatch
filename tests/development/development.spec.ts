@@ -1,11 +1,5 @@
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
-import type { BankCorrection } from "../../src/shared/bank-corrections.js";
-import type { DocumentCorrection } from "../../src/shared/document-corrections.js";
-import type { DuplicateDecision } from "../../src/shared/transaction-duplicates.js";
 import type { SourceEvidence, TransactionCandidate } from "../../src/shared/bank-import.js";
-import type { MatchReviewCounts } from "../../src/shared/workspace-matching.js";
-import type { DocumentImportSummary } from "../../src/shared/protocol.js";
-import type { BankImportSummary } from "../../src/shared/workspace-import.js";
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -261,7 +255,7 @@ test('direct Electron development and stylesheet HMR', async ({ development: { p
 	async function waitWorkspace(expected: Partial<WorkspaceView>): Promise<void> {
 		await page.waitForFunction((expected: Partial<WorkspaceView>): boolean | undefined => {
 			const value: WorkspaceState | undefined = window.receiptmatchDevelopmentState;
-			return value && !value.busy && Object.entries(expected).every(([key, wanted]: [string, string | number | boolean | string[] | BankImportSummary[] | BankCorrection[] | DocumentImportSummary[] | MatchReviewCounts | DocumentCorrection[] | DuplicateDecision[] | null]): boolean => value.workspace?.[key as keyof WorkspaceView] === wanted);
+			return value && !value.busy && Object.entries(expected).every(([key, wanted]: [string, WorkspaceView[keyof WorkspaceView]]): boolean => value.workspace?.[key as keyof WorkspaceView] === wanted);
 		}, expected);
 	}
 

@@ -72,7 +72,7 @@ const dateField: DateFieldType = z.strictObject({
 	role: z.enum(['issue', 'payment', 'due', 'service-period', 'service-start', 'service-end', 'unknown']),
 	candidates: z.array(calendarDateSchema).max(8)
 });
-const merchantField: z.ZodObject<{ role: z.ZodLiteral<"merchant">; candidates: z.ZodArray<z.ZodString>; id: z.ZodString; label: z.ZodString; evidence: typeof evidence; }, z.core.$strict> = z.strictObject({ ...field, role: z.literal('merchant'), candidates: z.array(text).max(8) });
+const merchantField: z.ZodObject<{ role: z.ZodLiteral<"merchant">; candidates: z.ZodArray<z.ZodString>; id: z.ZodString; label: z.ZodString; evidence: typeof evidence; correctedByUser: typeof userConfirmation }, z.core.$strict> = z.strictObject({ ...field, evidence, correctedByUser: userConfirmation, role: z.literal('merchant'), candidates: z.array(text).max(8) });
 type ReferenceFieldType = z.ZodObject<{
 	role: z.ZodEnum<{
 		unknown: "unknown";
@@ -90,11 +90,13 @@ type ReferenceFieldType = z.ZodObject<{
 	label: z.ZodString;
 	evidence: typeof evidence;
 	confirmedByUser: typeof userConfirmation;
+	correctedByUser: typeof userConfirmation;
 }, z.core.$strict>;
 const referenceField: ReferenceFieldType = z.strictObject({
 	...field,
 	evidence,
 	confirmedByUser: userConfirmation,
+	correctedByUser: userConfirmation,
 	role: z.enum(['invoice', 'receipt', 'payment', 'order', 'customer', 'account', 'table', 'related-invoice', 'unknown']),
 	candidates: z.array(text).max(8)
 });
@@ -108,9 +110,12 @@ type CurrencyFieldType = z.ZodObject<{
 	id: z.ZodString;
 	label: z.ZodString;
 	evidence: typeof evidence;
+	correctedByUser: typeof userConfirmation;
 }, z.core.$strict>;
 const currencyField: CurrencyFieldType = z.strictObject({
 	...field,
+	evidence,
+	correctedByUser: userConfirmation,
 	role: z.enum(['settlement', 'informational-fx', 'unknown']),
 	candidates: z.array(moneySchema.shape.currency).max(8)
 });
@@ -303,7 +308,13 @@ function checkDocumentField(candidate: DocumentField, item: DocumentSection, iss
 	}
 	fieldIds.set(candidate.id, item.sectionId);
 	allEvidence.push({ values: candidate.evidence, pages: item.pageIds });
-	if ('confirmedByUser' in candidate && candidate.confirmedByUser) {
+	if (issues.some((issue: DocumentIssue): boolean => issue.fieldId === candidate.id && issue.sectionId === item.sectionId && ['rejected-field', 'unavailable-field'].includes(issue.code))) {
+		checkExcludedField(candidate, invalid);
+	} else if ('correctedByUser' in candidate && candidate.correctedByUser) {
+		if (candidate.candidates.length !== 1) {
+			invalid('A manually corrected field needs one value.');
+		}
+	} else if ('confirmedByUser' in candidate && candidate.confirmedByUser) {
 		if (candidate.evidence.length || candidate.candidates.length !== 1) {
 			invalid('A user-confirmed field needs one value and cannot claim extracted source evidence.');
 		}
@@ -315,6 +326,12 @@ function checkDocumentField(candidate: DocumentField, item: DocumentSection, iss
 	}
 	if (candidate.candidates.length !== 1 && !issues.some((issue: { code: string; severity: "error" | "warning"; message: string; sectionId: string | null; fieldId: string | null; field: string | null; evidence: SourceEvidence[]; }): boolean => issue.fieldId === candidate.id)) {
 		invalid('Unresolved or ambiguous fields need an explicit issue.');
+	}
+}
+
+function checkExcludedField(candidate: DocumentField, invalid: (message: string) => void): void {
+	if (candidate.candidates.length) {
+		invalid('An excluded document field cannot retain effective values.');
 	}
 }
 
@@ -379,4 +396,11 @@ export function documentScalarConflicts(section: DocumentSection): Set<string> {
 		}
 	}
 	return conflicts;
+}
+
+export function hasManualDocumentFields(analysis: SupportingDocument): boolean {
+	if (analysis.issues.some((issue: DocumentIssue): boolean => ['rejected-field', 'unavailable-field'].includes(issue.code))) {
+		return true;
+	}
+	return analysis.sections.some((section: DocumentSection): boolean => [...section.merchants, ...section.references, ...section.currencies].some((field: DocumentSection['merchants' | 'references' | 'currencies'][number]): boolean => field.correctedByUser === true));
 }
