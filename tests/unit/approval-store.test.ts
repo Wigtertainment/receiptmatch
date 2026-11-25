@@ -1,6 +1,6 @@
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
 import type { StoredDocumentImport, StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
-import type { BankImportInput, PositionedSpan } from "../../src/shared/bank-import.js";
+import type { PositionedSpan } from "../../src/shared/bank-import.js";
 import type { DocumentSection } from "../../src/shared/supporting-document.js";
 import type { MatchApproval } from "../../src/shared/match-approvals.js";
 import type { IWorkspaceState } from "../../src/shared/protocol.js";
@@ -26,9 +26,9 @@ test('approves an explicit batch atomically and preserves its revisions through 
     context.onTestFinished((): Promise<void> => rm(root, { recursive: true, force: true }));
     const file: string = path.join(root, 'approvals.receiptmatch');
     const bank: StoredBankImport = retainedBank(root);
-    const [{ transactionId: first }, { transactionId: second }]: { rowId: string; transactionId: string; }[] = bank.transactions;
+    const [{ transactionId: first }, { transactionId: second }]: StoredBankImport['transactions'][number][] = bank.transactions;
     const receipt: StoredSupportingDocument = retainedDocument(root, 'uncertain.pdf');
-    const { input }: { status: "complete"; input: BankImportInput; } & { status: "complete"; } = extractedDocument(Buffer.from('uncertain receipt'), randomUUID());
+    const { input }: ReturnType<typeof extractedDocument> = extractedDocument(Buffer.from('uncertain receipt'), randomUUID());
     input.pages[0].spans = ['Receipt', 'Merchant: Cedar Workshop', 'Total: EUR 1,234.56'].map((line: string, index: number): PositionedSpan => span(line, 30, 30 + index * 30, 250));
     receipt.result = interpretSupportingDocument(input);
     const other: StoredSupportingDocument = retainedDocument(root, 'second.pdf');
@@ -135,10 +135,10 @@ test('keeps approvals through reanalysis and distinguishes corrected data from a
     context.onTestFinished((): Promise<void> => rm(root, { recursive: true, force: true }));
     const file: string = path.join(root, 'approval-status.receiptmatch');
     const bank: StoredBankImport = retainedBank(root);
-    const [{ transactionId: first }, { transactionId: second }]: { rowId: string; transactionId: string; }[] = bank.transactions;
+    const [{ transactionId: first }, { transactionId: second }]: StoredBankImport['transactions'][number][] = bank.transactions;
     const invoice: (name: string) => StoredSupportingDocument = (name: string): StoredSupportingDocument => {
         const document: StoredSupportingDocument = retainedDocument(root, name);
-        const { input }: { status: "complete"; input: BankImportInput; } & { status: "complete"; } = extractedDocument(Buffer.from(name), randomUUID());
+        const { input }: ReturnType<typeof extractedDocument> = extractedDocument(Buffer.from(name), randomUUID());
         const lines: string[] = ['Invoice', 'Merchant: Cedar Workshop', 'Invoice Number: SYNTHETIC-A', 'Invoice Date: 2032-02-28', 'Invoice Total: EUR 1,234.56'];
         input.pages[0].spans = lines.map((line: string, index: number): PositionedSpan => span(line, 30, 30 + index * 30, 250));
         return { ...document, result: interpretSupportingDocument(input) };

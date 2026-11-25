@@ -21,7 +21,7 @@ test('ignores transactions once or by rule and restores them from the separate t
 	try {
 		await app.evaluate(({ dialog, BrowserWindow }: typeof Electron.CrossProcessExports, workspace: string): void => {
 			BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
-			dialog.showOpenDialog = async (): Promise<{ canceled: false; filePaths: string[]; }> => Promise.resolve(({ canceled: false, filePaths: [workspace] }));
+			dialog.showOpenDialog = async (): Promise<Electron.OpenDialogReturnValue> => Promise.resolve(({ canceled: false, filePaths: [workspace] }));
 		}, file);
 		const page: Page = await app.firstWindow();
 		await page.getByRole('button', { name: 'Open workspace', exact: true }).click();

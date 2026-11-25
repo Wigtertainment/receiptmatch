@@ -11,9 +11,9 @@ import { applySelectedReceiptAi, reviewNuExtractResult, type IReceiptAiSource } 
 import { compareDocuments } from '../../electron/source-comparison.js';
 import type { PositionedSpan } from '../../src/shared/bank-import.js';
 import { documentCorrectionKey, type DocumentCorrection } from '../../src/shared/document-corrections.js';
-import { activeDocumentFieldDisposition, type DocumentFieldReview } from '../../src/shared/document-field-reviews.js';
+import { activeDocumentFieldDisposition, type DocumentFieldReview, type DocumentFieldReviewTarget } from '../../src/shared/document-field-reviews.js';
 import { approvalSelectionFor, type ReviewApprovalState } from '../../src/shared/match-approvals.js';
-import type { OriginalAdoptionResult } from '../../src/shared/original-preview.js';
+import type { OriginalAdoptionRequest, OriginalAdoptionResult } from '../../src/shared/original-preview.js';
 import type { IDocumentSnapshot, IWorkspaceView } from '../../src/shared/protocol.js';
 import { NUEXTRACT_RECEIPT_VERSION, type ReceiptAiPreviewResult, type IReceiptAiProposal, type ReceiptAiRequest, type ReceiptAiResult } from '../../src/shared/receipt-ai.js';
 import type { DocumentSection, SupportingDocument } from '../../src/shared/supporting-document.js';
@@ -21,16 +21,18 @@ import type { DocumentFileResult, StoredDocumentImport, StoredSupportingDocument
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
 import { documentRun, extractedDocument, retainedBank, retainedDocument } from './document-fixtures.js';
 
-type Ready = Extract<ReceiptAiPreviewResult, { status: 'ready' }>;
+type Ready = Extract<ReceiptAiPreviewResult, Record<'status', 'ready'>>;
 type Total = DocumentSection['amounts'][number];
 
-interface Fixture {
+interface IModelReading { total: string; tax?: string }
+
+interface IFixture {
     file: string;
     document: StoredSupportingDocument;
     report: StoredDocumentImport;
     session: WorkspaceSession;
     transactionId: string;
-    modelReading: { total: string; tax?: string };
+    modelReading: IModelReading;
     correction?: DocumentCorrection;
 }
 
@@ -40,7 +42,7 @@ function total(sections: DocumentSection[]): Total {
     return field;
 }
 
-async function fixture(context: TestContext, options: { corrected?: true; selectable?: true } = {}): Promise<Fixture> {
+async function fixture(context: TestContext, options: Partial<Record<'corrected' | 'selectable', true>> = {}): Promise<IFixture> {
     const temporary: string = await realpath(tmpdir());
     const root: string = await mkdtemp(path.join(temporary, 'receiptmatch-receipt-adoption-'));
     context.onTestFinished(async (): Promise<void> => {
@@ -64,7 +66,7 @@ async function fixture(context: TestContext, options: { corrected?: true; select
     await createWorkspace(file, newMetadata(), [bank], [report], new Map([[transactionId, document.id]]), new Map(), corrections, new Map([[transactionId, approved]]));
     const dialogs: IWorkspaceDialogs = { open: (): Promise<string> => Promise.resolve(file), save: (): Promise<string> => Promise.resolve(file),
         unsaved: (): Promise<'discard'> => Promise.resolve('discard') };
-    const modelReading: Fixture['modelReading'] = { total: '9007199254740993.27' };
+    const modelReading: IFixture['modelReading'] = { total: '9007199254740993.27' };
     const session: WorkspaceSession = new WorkspaceSession(dialogs, undefined, undefined, undefined, undefined, undefined, {
         async analyze(source: IReceiptAiSource): Promise<ReceiptAiResult> {
             if (options.selectable) {
@@ -106,7 +108,7 @@ function imported(reports: StoredDocumentImport[], documentId: string): StoredSu
     return file.record;
 }
 
-async function preview({ report, session }: Fixture, fileIndex: number = 0): Promise<Ready> {
+async function preview({ report, session }: IFixture, fileIndex: number = 0): Promise<Ready> {
     const request: ReceiptAiRequest = { reportId: report.id, fileIndex, loadRevision: workspace(session).loadRevision };
     const result: ReceiptAiPreviewResult = await session.reanalyzeReceipt(request);
     assert.equal(result.status, 'ready', JSON.stringify(result));
@@ -118,11 +120,11 @@ function accept(session: WorkspaceSession, token: string, acknowledgeConflicts: 
 }
 
 test('accepted reanalysis tombstones field decisions even when the reviewed field value stays unchanged', async (context: TestContext): Promise<void> => {
-    const prepared: Fixture = await fixture(context);
-    const { session, document, file }: Fixture = prepared;
+    const prepared: IFixture = await fixture(context);
+    const { session, document, file }: IFixture = prepared;
     const section: DocumentSection = document.result.sections[0];
     const fieldId: string = section.merchants[0].id;
-    const target: { documentId: string; sectionId: string; fieldId: string } = { documentId: document.id, sectionId: section.sectionId, fieldId };
+    const target: DocumentFieldReviewTarget = { documentId: document.id, sectionId: section.sectionId, fieldId };
     await session.dispatch({ type: 'set-document-field-disposition', revision: workspace(session).matchRevision, ...target, disposition: 'rejected' });
     assert.equal(session.state().error, null);
     prepared.modelReading.total = '48.75';
@@ -138,8 +140,8 @@ test('accepted reanalysis tombstones field decisions even when the reviewed fiel
 });
 
 test('requires a current preview token and rechecks the original bytes before applying an OCR analysis', async (context: TestContext & object): Promise<void> => {
-    const prepared: Fixture = await fixture(context);
-    const { file, document, session }: Fixture = prepared;
+    const prepared: IFixture = await fixture(context);
+    const { file, document, session }: IFixture = prepared;
     const before: IWorkspaceView = workspace(session);
     const saved: NonSharedBuffer = await readFile(file);
     assert.equal((await accept(session, randomUUID())).status, 'failed');
@@ -162,14 +164,14 @@ test('requires a current preview token and rechecks the original bytes before ap
 });
 
 test('applies only selected unverified fields and retains their user confirmation after reopening', async (context: TestContext): Promise<void> => {
-    const prepared: Fixture = await fixture(context, { selectable: true });
-    const { file, session, document, report }: Fixture = prepared;
+    const prepared: IFixture = await fixture(context, { selectable: true });
+    const { file, session, document, report }: IFixture = prepared;
     const staged: Ready = await preview(prepared);
     assert.equal(staged.blockingConflict, undefined);
     assert.deepEqual(staged.proposals?.map((item: IReceiptAiProposal): [IReceiptAiProposal['field'], boolean] => [item.field, item.verified]), [
         ['reference', false], ['issue-date', false], ['billed-total', false]
     ]);
-    const request: { token: string; loadRevision: number; acknowledgeConflicts: boolean } =
+    const request: OriginalAdoptionRequest =
         { token: staged.token, loadRevision: workspace(session).loadRevision, acknowledgeConflicts: true };
     assert.equal((await session.acceptReceiptAnalysis(request)).status, 'failed');
     assert.deepEqual(await session.acceptReceiptAnalysis({ ...request, selectedFields: ['reference', 'issue-date'] }), { status: 'adopted' });
@@ -190,8 +192,8 @@ test('applies only selected unverified fields and retains their user confirmatio
 });
 
 test('keeps an unselected manual correction when confirming a different receipt reference', async (context: TestContext): Promise<void> => {
-    const prepared: Fixture = await fixture(context, { selectable: true, corrected: true });
-    const { document, session, correction }: Fixture = prepared;
+    const prepared: IFixture = await fixture(context, { selectable: true, corrected: true });
+    const { document, session, correction }: IFixture = prepared;
     const staged: Ready = await preview(prepared);
     const amount: IReceiptAiProposal | undefined = staged.proposals?.find((item: IReceiptAiProposal): boolean => item.field === 'billed-total');
     assert.match(amount?.unavailable ?? '', /manual correction/i);
@@ -205,7 +207,7 @@ test('keeps an unselected manual correction when confirming a different receipt 
 });
 
 test('offers a matching total for confirmation when its currency is still missing', async (context: TestContext): Promise<void> => {
-    const { document }: Fixture = await fixture(context);
+    const { document }: IFixture = await fixture(context);
     const source: SupportingDocument = structuredClone(document.result);
     source.status = 'partial';
     const field: Total = total(source.sections);
@@ -213,7 +215,7 @@ test('offers a matching total for confirmation when its currency is still missin
     source.sections[0].currencies = [];
     source.issues.push({ code: 'missing-currency', severity: 'warning', message: 'Currency could not be established.',
         sectionId: source.sections[0].sectionId, fieldId: field.id, field: 'billed-total', evidence: field.evidence });
-    const staged: Extract<ReceiptAiResult, { status: 'ready' }> = reviewNuExtractResult(source, { gross_total: '9007199254740993.27' });
+    const staged: Extract<ReceiptAiResult, Record<'status', 'ready'>> = reviewNuExtractResult(source, { gross_total: '9007199254740993.27' });
     const proposals: IReceiptAiProposal[] = staged.proposals ?? [];
     assert.equal(proposals[0]?.needsCurrency, true);
     assert.equal(proposals[0]?.verified, false);
@@ -224,8 +226,8 @@ test('offers a matching total for confirmation when its currency is still missin
 });
 
 test('keeps receipt identity and assignment and renews review only for changed matching facts', async (context: TestContext & object): Promise<void> => {
-    const prepared: Fixture = await fixture(context);
-    const { file, document, report, session, transactionId, modelReading }: Fixture = prepared;
+    const prepared: IFixture = await fixture(context);
+    const { file, document, report, session, transactionId, modelReading }: IFixture = prepared;
     const saved: NonSharedBuffer = await readFile(file);
     assert.equal(workspace(session).approvedDocumentCount, 1);
 
@@ -270,8 +272,8 @@ test('keeps receipt identity and assignment and renews review only for changed m
 });
 
 test('preserves an existing manual correction and approval while applying a verified non-matching field', async (context: TestContext & object): Promise<void> => {
-    const prepared: Fixture = await fixture(context, { corrected: true });
-    const { document, session, modelReading, correction, file }: Fixture = prepared;
+    const prepared: IFixture = await fixture(context, { corrected: true });
+    const { document, session, modelReading, correction, file }: IFixture = prepared;
     modelReading.total = '48.75';
     modelReading.tax = '8.50';
     const staged: Ready = await preview(prepared);
@@ -293,8 +295,8 @@ test('preserves an existing manual correction and approval while applying a veri
 });
 
 test('does not offer an AI reference suggestion over an explicit manual reference correction', async (context: TestContext): Promise<void> => {
-    const prepared: Fixture = await fixture(context, { selectable: true });
-    const { document, session }: Fixture = prepared;
+    const prepared: IFixture = await fixture(context, { selectable: true });
+    const { document, session }: IFixture = prepared;
     const section: DocumentSection = document.result.sections[0];
     const reference: DocumentSection['references'][number] = section.references[0];
     assert.equal((await session.dispatch({ type: 'correct-document-field', revision: workspace(session).matchRevision, documentId: document.id, sectionId: section.sectionId,

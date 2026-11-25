@@ -14,11 +14,30 @@ import { test, type TestContext } from 'vitest';
 import { createWorkspace, loadWorkspace, newMetadata, SCHEMA_VERSION, type ISavedWorkspace } from '../../electron/store.js';
 import { WorkspaceSession } from '../../electron/workspace-session.js';
 import { defaultExportFilenamePattern } from '../../src/shared/export-filename.js';
-import { approvalSelectionFor } from '../../src/shared/match-approvals.js';
+import { approvalSelectionFor, type MatchApproval, type ReviewApprovalState } from '../../src/shared/match-approvals.js';
 import type { OriginalPreviewRequest } from '../../src/shared/original-preview.js';
 import { documentRun, retainedBank, retainedDocument } from './document-fixtures.js';
 
-async function fixture(context: TestContext): Promise<{ root: string; file: string; bank: StoredBankImport; receipt: StoredSupportingDocument; docs: StoredDocumentImport[]; bankPath: string; receiptPath: string; docsExport: string; csvExport: string; session: WorkspaceSession; state: () => IWorkspaceView; request: (kind: OriginalPreviewRequest["kind"]) => OriginalPreviewRequest; relink: (kind: OriginalPreviewRequest["kind"], target: string | null) => Promise<OriginalRelinkResult>; approvals: Map<string, { associationRevision: number; approval: { batchId: `${string}-${string}-${string}-${string}-${string}`; approvedAt: string; transactionId: string; documentId: string; transactionRevision: number; documentRevision: number; associationRevision: number; }; }>; calls: () => number; }> {
+type ApprovedReview = Omit<ReviewApprovalState, 'approval'> & Record<'approval', MatchApproval>;
+interface IRelinkFixture {
+	root: string;
+	file: string;
+	bank: StoredBankImport;
+	receipt: StoredSupportingDocument;
+	docs: StoredDocumentImport[];
+	bankPath: string;
+	receiptPath: string;
+	docsExport: string;
+	csvExport: string;
+	session: WorkspaceSession;
+	state: () => IWorkspaceView;
+	request: (kind: OriginalPreviewRequest['kind']) => OriginalPreviewRequest;
+	relink: (kind: OriginalPreviewRequest['kind'], target: string | null) => Promise<OriginalRelinkResult>;
+	approvals: Map<string, ApprovedReview>;
+	calls: () => number;
+}
+
+async function fixture(context: TestContext): Promise<IRelinkFixture> {
 	const root: string = await mkdtemp(path.join(await realpath(tmpdir()), 'receiptmatch-source-relink-'));
 	context.onTestFinished((): Promise<void> => rm(root, { recursive: true, force: true }));
 	const originals: string = path.join(root, 'originals'), moved: string = path.join(root, 'moved');
@@ -32,7 +51,7 @@ async function fixture(context: TestContext): Promise<{ root: string; file: stri
 	await Promise.all([writeFile(bank.filePath, bankBytes), writeFile(receipt.filePath, 'approved synthetic bytes')]);
 	await Promise.all([rename(bank.filePath, bankPath), rename(receipt.filePath, receiptPath)]);
 	const transactionId: string = bank.transactions[0].transactionId;
-	const approvals: Map<string, { associationRevision: number; approval: { batchId: `${string}-${string}-${string}-${string}-${string}`; approvedAt: string; transactionId: string; documentId: string; transactionRevision: number; documentRevision: number; associationRevision: number; }; }> = new Map([[transactionId, { associationRevision: 1, approval: {
+	const approvals: Map<string, ApprovedReview> = new Map([[transactionId, { associationRevision: 1, approval: {
 		...approvalSelectionFor(transactionId, receipt.id), batchId: randomUUID(), approvedAt: '2032-06-01T12:00:00Z',
 	} }]]);
 	const file: string = path.join(root, 'relink.receiptmatch');

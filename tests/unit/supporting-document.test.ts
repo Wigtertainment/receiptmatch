@@ -9,15 +9,20 @@ import { supportingDocumentSchema, type DocumentSection } from '../../src/shared
 import { interpretSupportingDocument } from '../../electron/documents/interpret.js';
 import type { ZodSafeParseResult } from 'zod';
 
+type AmountField = DocumentSection['amounts'][number];
+type DocumentAmount = AmountField['candidates'][number];
+type EmbeddedTextSpan = PositionedSpan & Record<'method', 'embedded-text'>;
+interface ICompleteTextPage extends Pick<ImportPage, 'pageId' | 'pageNumber' | 'width' | 'height'> { status: 'complete'; spans: EmbeddedTextSpan[] }
+
 // Independently invented examples; no private source names, values or identifiers.
 function document(...pages: string[][]): BankImportInput {
     return {
         source: { sourceId: 'synthetic-document', sha256: 'd'.repeat(64) },
         extraction: { runId: 'synthetic-extraction', version: 'test-1' },
         issues: [],
-        pages: pages.map((lines: string[], index: number): { pageId: string; pageNumber: number; width: number; height: number; status: "complete"; spans: { text: string; region: { x: number; y: number; width: number; height: number; }; method: "embedded-text"; }[]; } => ({
+        pages: pages.map((lines: string[], index: number): ICompleteTextPage => ({
             pageId: `page-${index + 1}`, pageNumber: index + 1, width: 900, height: 1200, status: 'complete',
-            spans: lines.map((text: string, row: number): { text: string; region: { x: number; y: number; width: number; height: number; }; method: "embedded-text"; } => ({ text, region: { x: 30, y: 25 + row * 25, width: 750, height: 12 }, method: 'embedded-text' }))
+            spans: lines.map((text: string, row: number): EmbeddedTextSpan => ({ text, region: { x: 30, y: 25 + row * 25, width: 750, height: 12 }, method: 'embedded-text' }))
         }))
     };
 }
@@ -26,16 +31,18 @@ function invoice(...extra: string[]): BankImportInput {
     return document(['Invoice', 'Merchant: Orchard Workshop', 'Invoice Number: SYNTHETIC-ALPHA', 'Invoice Date: March 14, 2032', 'Currency: EUR', 'Invoice Total: EUR 73.25', ...extra]);
 }
 
-function amounts(section: DocumentSection, role: DocumentSection['amounts'][number]['role']): { coefficient: string; scale: number; currency: string | null; }[] {
-    return section.amounts.filter((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.role === role).flatMap((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): { coefficient: string; scale: number; currency: string | null; }[] => field.candidates);
+function amounts(section: DocumentSection, role: DocumentSection['amounts'][number]['role']): DocumentAmount[] {
+    return section.amounts.filter((field: AmountField): boolean => field.role === role).flatMap((field: AmountField): DocumentAmount[] => field.candidates);
 }
 
 function references(section: DocumentSection, role: DocumentSection['references'][number]['role']): string[] {
-    return section.references.filter((field: { role: "unknown" | "invoice" | "receipt" | "payment" | "order" | "customer" | "account" | "table" | "related-invoice"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.role === role).flatMap((field: { role: "unknown" | "invoice" | "receipt" | "payment" | "order" | "customer" | "account" | "table" | "related-invoice"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): string[] => field.candidates);
+    return section.references.filter((field: DocumentSection['references'][number]): boolean => field.role === role)
+        .flatMap((field: DocumentSection['references'][number]): string[] => field.candidates);
 }
 
 function dates(section: DocumentSection, role: DocumentSection['dates'][number]['role']): string[] {
-    return section.dates.filter((field: { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.role === role).flatMap((field: { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): string[] => field.candidates);
+    return section.dates.filter((field: DocumentSection['dates'][number]): boolean => field.role === role)
+        .flatMap((field: DocumentSection['dates'][number]): string[] => field.candidates);
 }
 
 test('a labelled invoice retains exact values, field roles, extraction and source evidence without modifying its input', (): void => {
@@ -51,7 +58,7 @@ test('a labelled invoice retains exact values, field roles, extraction and sourc
     assert.deepEqual(dates(result.sections[0], 'issue'), ['2032-03-14']);
     assert.deepEqual(dates(result.sections[0], 'due'), ['2032-04-14']);
     assert.deepEqual(references(result.sections[0], 'invoice'), ['SYNTHETIC-ALPHA']);
-    assert.ok(result.sections[0].merchants.some((field: { role: "merchant"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.candidates.includes('Orchard Workshop')));
+    assert.ok(result.sections[0].merchants.some((field: DocumentSection['merchants'][number]): boolean => field.candidates.includes('Orchard Workshop')));
     assert.deepEqual(result.input, original);
     assert.deepEqual(input, original);
     assert.equal(supportingDocumentSchema.safeParse(result).success, true);
@@ -102,7 +109,8 @@ test('credit invoice terms, credit-card wording and a negative line item do not 
     const result: SupportingDocument = interpretSupportingDocument(input);
     assert.equal(result.sections[0].kind, 'invoice');
     assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '8100', scale: 2, currency: 'EUR' }]);
-    assert.ok(result.sections[0].amounts.some((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.role !== 'credit-note-component' && field.candidates.some((value: { coefficient: string; scale: number; currency: string | null; }): boolean => value.coefficient === '-475')));
+    assert.ok(result.sections[0].amounts.some((field: AmountField): boolean =>
+        field.role !== 'credit-note-component' && field.candidates.some((value: DocumentAmount): boolean => value.coefficient === '-475')));
     assert.equal('direction' in result.sections[0], false);
 });
 
@@ -123,9 +131,10 @@ test('a billing summary, attached invoice, distinct credit notes and FX instruct
     assert.deepEqual(amounts(result.sections[3], 'credit-note-component'), [{ coefficient: '3000', scale: 2, currency: 'EUR' }]);
     assert.ok(references(result.sections[2], 'related-invoice').includes('SYNTHETIC-PRIOR-1'));
     assert.ok(!references(result.sections[2], 'invoice').includes('SYNTHETIC-PRIOR-1'));
-    assert.deepEqual(result.sections[4].amounts.filter((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.role !== 'informational-fx'), []);
-    assert.ok(result.sections[4].currencies.some((field: { role: "unknown" | "informational-fx" | "settlement"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.role === 'informational-fx' && field.candidates.includes('USD')));
-    assert.ok(result.sections.slice(0, 4).flatMap((section: DocumentSection): { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }[] => section.amounts).flatMap((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): { coefficient: string; scale: number; currency: string | null; }[] => field.candidates).every((value: { coefficient: string; scale: number; currency: string | null; }): boolean => value.currency !== 'USD'));
+    assert.deepEqual(result.sections[4].amounts.filter((field: AmountField): boolean => field.role !== 'informational-fx'), []);
+    assert.ok(result.sections[4].currencies.some((field: DocumentSection['currencies'][number]): boolean => field.role === 'informational-fx' && field.candidates.includes('USD')));
+    assert.ok(result.sections.slice(0, 4).flatMap((section: DocumentSection): AmountField[] => section.amounts)
+        .flatMap((field: AmountField): DocumentAmount[] => field.candidates).every((value: DocumentAmount): boolean => value.currency !== 'USD'));
 });
 
 test('different documents can start on the same physical page', (): void => {
@@ -162,7 +171,7 @@ test('damaged amount tokens are unresolved in full, never a valid numeric prefix
 		assert.equal(result.status, 'partial', token);
 		assert.deepEqual(amounts(result.sections[0], 'billed-total'), [], token);
 		assert.ok(result.issues.length, token);
-		assert.ok(result.sections[0].amounts.some((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.evidence.some((evidence: SourceEvidence): boolean => evidence.rawText.includes(token))), token);
+		assert.ok(result.sections[0].amounts.some((field: AmountField): boolean => field.evidence.some((evidence: SourceEvidence): boolean => evidence.rawText.includes(token))), token);
 	}
 });
 
@@ -185,7 +194,8 @@ test('damaged document references are not silently shortened to a different iden
 	const result: SupportingDocument = interpretSupportingDocument(input);
 	assert.equal(result.status, 'partial');
 	assert.ok(!references(result.sections[0], 'invoice').includes('BROKEN'));
-	assert.ok(result.sections[0].references.some((field: { role: "unknown" | "invoice" | "receipt" | "payment" | "order" | "customer" | "account" | "table" | "related-invoice"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.evidence.some((evidence: SourceEvidence): boolean => evidence.rawText.includes('BROKEN?REF'))));
+	assert.ok(result.sections[0].references.some((field: DocumentSection['references'][number]): boolean =>
+		field.evidence.some((evidence: SourceEvidence): boolean => evidence.rawText.includes('BROKEN?REF'))));
 });
 
 test('multiple labelled dates on a single line keep their own roles', (): void => {
@@ -220,7 +230,7 @@ test('associates a Date label with an OCR date on the same visual row', (): void
 		{ text: 'Original', region: { x: 289.5, y: 392.5, width: 51.5, height: 15 }, method: 'local-ocr' },
 	];
 	const result: SupportingDocument = interpretSupportingDocument(input);
-	const date: { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; } | undefined = result.sections[0].dates.find((field: { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.role === 'issue');
+	const date: DocumentSection['dates'][number] | undefined = result.sections[0].dates.find((field: DocumentSection['dates'][number]): boolean => field.role === 'issue');
 	assert.ok(date);
 	assert.deepEqual(date.candidates, ['2032-10-16']);
 	assert.deepEqual(date.evidence.map((item: SourceEvidence): string => item.rawText), ['Date', '16/10/2032 Original']);
@@ -259,7 +269,7 @@ test('a column value above its total label retains both evidence regions and nee
 	const result: SupportingDocument = interpretSupportingDocument(input);
 	assert.equal(result.status, 'partial');
 	assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '4712', scale: 2, currency: 'EUR' }]);
-	const total: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; } = result.sections[0].amounts.find((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.role === 'billed-total')!;
+	const total: AmountField = result.sections[0].amounts.find((field: AmountField): boolean => field.role === 'billed-total')!;
 	assert.ok(total.evidence.some((evidence: SourceEvidence): boolean => evidence.rawText === 'EUR 47.12'));
 	assert.ok(total.evidence.some((evidence: SourceEvidence): boolean => evidence.rawText === 'Grand Total'));
 	assert.ok(result.issues.some((issue: DocumentIssue): boolean => issue.fieldId === total.id && /association|unconfirmed/.test(issue.code)));
@@ -287,7 +297,7 @@ test('equivalent exact totals with different printed scales are not conflicting 
 
 test('the document contract rejects a complete result with contradictory scalar fields and no conflict issue', (): void => {
 	const result: SupportingDocument = interpretSupportingDocument(invoice());
-	const other: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; } = structuredClone(result.sections[0].amounts[0]);
+	const other: AmountField = structuredClone(result.sections[0].amounts[0]);
 	other.id = 'synthetic-contradictory-total'; other.candidates[0].coefficient = '9999';
 	result.sections[0].amounts.push(other);
 	assert.equal(result.status, 'complete');
@@ -310,9 +320,10 @@ test('page continuation and repeated totals preserve evidence without double-cou
     const result: SupportingDocument = interpretSupportingDocument(input);
     assert.equal(result.sections.length, 1);
     assert.deepEqual(result.sections[0].pageIds, ['page-1', 'page-2']);
-    assert.ok(amounts(result.sections[0], 'billed-total').every((value: { coefficient: string; scale: number; currency: string | null; }): boolean => value.coefficient === '7325'));
+    assert.ok(amounts(result.sections[0], 'billed-total').every((value: DocumentAmount): boolean => value.coefficient === '7325'));
     assert.ok(!result.issues.some((issue: DocumentIssue): boolean => issue.code.includes('conflict')));
-    assert.ok(result.sections[0].amounts.filter((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.role === 'billed-total').flatMap((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): SourceEvidence[] => field.evidence).some((evidence: SourceEvidence): boolean => evidence.pageId === 'page-2'));
+    assert.ok(result.sections[0].amounts.filter((field: AmountField): boolean => field.role === 'billed-total')
+        .flatMap((field: AmountField): SourceEvidence[] => field.evidence).some((evidence: SourceEvidence): boolean => evidence.pageId === 'page-2'));
     assert.equal(formatDocumentTotal(result), formatMoney({ coefficient: '7325', scale: 2, currency: 'EUR' }));
 });
 
@@ -332,7 +343,8 @@ test('two-digit years and invalid dates stay unresolved without inventing a cent
         const result: SupportingDocument = interpretSupportingDocument(document(['Invoice', `Invoice Date: ${raw}`, 'Total: EUR 1.00']));
         assert.equal(result.status, 'partial');
         assert.deepEqual(dates(result.sections[0], 'issue'), []);
-        assert.ok(result.sections[0].dates.some((field: { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.evidence.some((evidence: SourceEvidence): boolean => evidence.rawText.includes(raw))));
+        assert.ok(result.sections[0].dates.some((field: DocumentSection['dates'][number]): boolean =>
+            field.evidence.some((evidence: SourceEvidence): boolean => evidence.rawText.includes(raw))));
     }
 });
 
@@ -340,7 +352,7 @@ test('a dollar symbol or source country does not establish USD, and missing curr
     const result: SupportingDocument = interpretSupportingDocument(document(['Invoice', 'Merchant: Bay Workshop, USA', 'Invoice Number: SYNTHETIC-DOLLAR', 'Invoice Date: 2032-05-20', 'Total: $19.95']));
     assert.equal(result.status, 'partial');
     assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '1995', scale: 2, currency: null }]);
-    assert.ok(!result.sections[0].currencies.flatMap((field: { role: "unknown" | "informational-fx" | "settlement"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): string[] => field.candidates).includes('USD'));
+    assert.ok(!result.sections[0].currencies.flatMap((field: DocumentSection['currencies'][number]): string[] => field.candidates).includes('USD'));
     assert.ok(result.issues.some((issue: DocumentIssue): boolean => /currency/i.test(`${issue.code} ${issue.field}`)));
 });
 
@@ -368,7 +380,7 @@ test('reads an unlabeled printed total from an arithmetically consistent invoice
 	add('84.00', 552, 287, 18);
 
 	const result: SupportingDocument = interpretSupportingDocument(input);
-	const [field]: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }[] = result.sections[0].amounts.filter((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.role === 'billed-total');
+	const [field]: AmountField[] = result.sections[0].amounts.filter((field: AmountField): boolean => field.role === 'billed-total');
 	assert.ok(field);
 	assert.deepEqual(field.candidates, [{ coefficient: '8400', scale: 2, currency: 'GBP' }]);
 	assert.ok(field.evidence.some((item: SourceEvidence): boolean => item.rawText === '84.00'));
@@ -444,11 +456,11 @@ test('currency declarations stay inside their own section', (): void => {
 test('conflicting totals remain candidates with an issue while distinct payments remain separate events', (): void => {
     const result: SupportingDocument = interpretSupportingDocument(invoice('Invoice Total: EUR 73.35', 'Payment: EUR -20.00', 'Payment: EUR -53.25'));
     assert.equal(result.status, 'partial');
-    assert.deepEqual(amounts(result.sections[0], 'billed-total').map((value: { coefficient: string; scale: number; currency: string | null; }): string => value.coefficient).sort(), ['7325', '7335']);
+    assert.deepEqual(amounts(result.sections[0], 'billed-total').map((value: DocumentAmount): string => value.coefficient).sort(), ['7325', '7335']);
     const conflicts: DocumentIssue[] = result.issues.filter((issue: DocumentIssue): boolean => issue.code.includes('conflict'));
     assert.ok(conflicts.length);
     assert.ok(!conflicts.some((issue: DocumentIssue): boolean => (issue.field ?? '').includes('payment')));
-    assert.deepEqual(amounts(result.sections[0], 'payment').map((value: { coefficient: string; scale: number; currency: string | null; }): string => value.coefficient).sort(), ['-2000', '-5325']);
+    assert.deepEqual(amounts(result.sections[0], 'payment').map((value: DocumentAmount): string => value.coefficient).sort(), ['-2000', '-5325']);
     assert.equal(formatDocumentTotal(result), null);
 });
 
@@ -472,8 +484,10 @@ test('unrecognised languages and damaged glyphs retain raw evidence rather than 
     assert.equal(result.status, 'partial');
     assert.deepEqual(result.input, input);
     assert.ok(result.issues.length);
-    assert.ok(!result.sections.flatMap((section: DocumentSection): { role: "unknown" | "invoice" | "receipt" | "payment" | "order" | "customer" | "account" | "table" | "related-invoice"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }[] => section.references).flatMap((field: { role: "unknown" | "invoice" | "receipt" | "payment" | "order" | "customer" | "account" | "table" | "related-invoice"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): string[] => field.candidates).includes('SYNTHETIC-BROKEN'));
-    assert.ok(!result.sections.flatMap((section: DocumentSection): { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }[] => section.amounts).flatMap((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): { coefficient: string; scale: number; currency: string | null; }[] => field.candidates).some((value: { coefficient: string; scale: number; currency: string | null; }): boolean => value.coefficient === '-311'));
+    assert.ok(!result.sections.flatMap((section: DocumentSection): DocumentSection['references'][number][] => section.references)
+        .flatMap((field: DocumentSection['references'][number]): string[] => field.candidates).includes('SYNTHETIC-BROKEN'));
+    assert.ok(!result.sections.flatMap((section: DocumentSection): AmountField[] => section.amounts)
+        .flatMap((field: AmountField): DocumentAmount[] => field.candidates).some((value: DocumentAmount): boolean => value.coefficient === '-311'));
 });
 
 test('OCR words, split labels and mixed extraction methods retain positioned evidence and deterministic interpretation', (): void => {
@@ -564,7 +578,7 @@ test('reads receipt tax categories below the total and excludes tax registration
         { coefficient: '495', scale: 2, currency: 'EUR' },
         { coefficient: '83', scale: 2, currency: 'EUR' }
     ]);
-    assert.ok(result.sections[0].amounts.filter((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.role === 'tax').every((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): number => field.evidence.length));
+    assert.ok(result.sections[0].amounts.filter((field: AmountField): boolean => field.role === 'tax').every((field: AmountField): number => field.evidence.length));
     assert.ok(result.input?.pages[0].spans.some((span: PositionedSpan): boolean => span.text === 'VAT: 103000000'));
     assert.deepEqual(amounts(result.sections[0], 'billed-total'), [{ coefficient: '7000', scale: 2, currency: 'EUR' }]);
 
@@ -585,7 +599,7 @@ test('recovers one missing leading digit from aligned receipt items and retains 
     add('19:51', 35, 188, 42); add('Total', 90, 187, 50); add('08.20', 371, 189, 75);
 
     const result: SupportingDocument = interpretSupportingDocument(input);
-    const recovered: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; } = result.sections[0].amounts.find((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.role === 'billed-total')!;
+    const recovered: AmountField = result.sections[0].amounts.find((field: AmountField): boolean => field.role === 'billed-total')!;
     assert.deepEqual(recovered.candidates, [{ coefficient: '10820', scale: 2, currency: 'EUR' }]);
     assert.ok(recovered.evidence.some((item: SourceEvidence): boolean => item.rawText.includes('08.20')));
     assert.ok(recovered.evidence.some((item: SourceEvidence): boolean => item.rawText.includes('29.50')));

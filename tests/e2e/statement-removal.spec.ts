@@ -3,6 +3,8 @@ import { copyFile, mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promis
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Locator, type Page, type PlaywrightWorkerArgs } from '@playwright/test';
 
+interface IWorkspaceDialogPlan { openFiles: string[]; saveFile: string }
+
 async function launch(playwright: PlaywrightWorkerArgs['playwright'], profile: string, openFiles: string[], saveFile: string): Promise<ElectronApplication> {
 	const application: ElectronApplication = await playwright._electron.launch({
 		executablePath: path.resolve(process.platform === 'win32' ? 'release/win-unpacked/ReceiptMatch.exe' : 'release/linux-unpacked/receiptmatch'),
@@ -13,7 +15,7 @@ async function launch(playwright: PlaywrightWorkerArgs['playwright'], profile: s
 	});
 	try {
 		await application.firstWindow({ timeout: 30_000 });
-		await application.evaluate(({ BrowserWindow, dialog }: typeof Electron.CrossProcessExports, plan: { openFiles: string[]; saveFile: string }): void => {
+		await application.evaluate(({ BrowserWindow, dialog }: typeof Electron.CrossProcessExports, plan: IWorkspaceDialogPlan): void => {
 			BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
 			dialog.showOpenDialog = (): Promise<Electron.OpenDialogReturnValue> => {
 				const selected: string | undefined = plan.openFiles.shift();

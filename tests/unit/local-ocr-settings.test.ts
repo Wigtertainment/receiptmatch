@@ -10,7 +10,7 @@ import { NUEXTRACT_ASSETS, type IModelAsset } from '../../electron/local-ocr-ass
 import * as vulkan from '../../electron/local-ocr-vulkan.js';
 import { localOcrRequestSchema, type INuExtractSettingsStatus } from '../../src/shared/local-ocr-settings.js';
 
-vi.mock('../../electron/local-ocr-assets.js', async (load: <T>() => Promise<T>): Promise<{ NUEXTRACT_ASSETS: IModelAsset[] }> => {
+vi.mock('../../electron/local-ocr-assets.js', async (load: <T>() => Promise<T>): Promise<Record<'NUEXTRACT_ASSETS', IModelAsset[]>> => {
     const actual: typeof import('../../electron/local-ocr-assets.js') = await load();
     return { NUEXTRACT_ASSETS: actual.NUEXTRACT_ASSETS.map((asset: IModelAsset): IModelAsset => ({ ...asset, bytes: 1 })) };
 });

@@ -22,7 +22,9 @@ import type { ObjectEncodingOptions } from 'node:fs';
 import type { Mode } from 'node:fs';
 import type { PathLike } from 'node:fs';
 
-async function fixture(context: TestContext): Promise<{ root: string; originals: string; destination: string; }> {
+interface IExportFixture { root: string; originals: string; destination: string }
+
+async function fixture(context: TestContext): Promise<IExportFixture> {
 	const root: string = await fs.mkdtemp(path.join(await fs.realpath(tmpdir()), 'receiptmatch-document-export-'));
 	context.onTestFinished((): Promise<void> => fs.rm(root, { recursive: true, force: true }));
 	const originals: string = path.join(root, 'originals', 'documents');
@@ -37,10 +39,10 @@ function approved(filePath: string, content: string, counterparty: string, forma
 }
 
 test('exports only current approvals using effective bookings and leaves the workspace file untouched', async (context: TestContext & object): Promise<void> => {
-	const { root, originals, destination }: { root: string; originals: string; destination: string; } = await fixture(context);
+	const { root, originals, destination }: IExportFixture = await fixture(context);
 	const workspacePath: string = path.join(root, 'workspace.receiptmatch');
 	const bank: StoredBankImport = retainedBank(root);
-	const [{ transactionId: first }, { transactionId: second }]: { rowId: string; transactionId: string; }[] = bank.transactions;
+	const [{ transactionId: first }, { transactionId: second }]: StoredBankImport['transactions'][number][] = bank.transactions;
 	const documents: StoredSupportingDocument[] = [retainedDocument(originals, 'approved.pdf'), retainedDocument(originals, 'stale.pdf')];
 	await Promise.all(documents.map((document: StoredSupportingDocument): Promise<void> => fs.writeFile(document.filePath, path.basename(document.filePath))));
 	await createWorkspace(workspacePath, newMetadata(), [bank], [documentRun(originals, documents)], new Map([[first, documents[0].id], [second, documents[1].id]]));
@@ -75,7 +77,7 @@ test('exports only current approvals using effective bookings and leaves the wor
 });
 
 test('reports collisions and source failures independently and preserves the JPEG extension', async (context: TestContext & object): Promise<void> => {
-	const { originals, destination }: { root: string; originals: string; destination: string; } = await fixture(context);
+	const { originals, destination }: IExportFixture = await fixture(context);
 	const first: IApprovedExportDocument = approved(path.join(originals, 'first.pdf'), 'first', 'Same');
 	const second: IApprovedExportDocument = approved(path.join(originals, 'second.pdf'), 'second', 'Same');
 	const changed: IApprovedExportDocument = approved(path.join(originals, 'changed.pdf'), 'old', 'Changed');
@@ -99,7 +101,7 @@ test('reports collisions and source failures independently and preserves the JPE
 });
 
 test('rejects original directories and linked destinations, and leaves existing hard-linked files intact', async (context: TestContext & object): Promise<void> => {
-	const { originals, destination }: { root: string; originals: string; destination: string; } = await fixture(context);
+	const { originals, destination }: IExportFixture = await fixture(context);
 	const item: IApprovedExportDocument = approved(path.join(originals, 'original.pdf'), 'original', 'Original');
 	const source: string = item.source!.filePath;
 	await fs.writeFile(source, 'original');
@@ -121,7 +123,7 @@ test('rejects original directories and linked destinations, and leaves existing 
 });
 
 test('protects imported and relocated originals from use as a document export directory', async (context: TestContext & object): Promise<void> => {
-	const { root, originals, destination }: { root: string; originals: string; destination: string; } = await fixture(context);
+	const { root, originals, destination }: IExportFixture = await fixture(context);
 	const original: string = path.join(originals, 'original.pdf');
 	const movedDirectory: string = path.join(destination, 'documents');
 	const relocatedPath: string = path.join(movedDirectory, 'renamed.pdf');
@@ -144,7 +146,7 @@ test('protects imported and relocated originals from use as a document export di
 });
 
 test('removes an incomplete copy and keeps exporting after a write failure', async (context: TestContext & object): Promise<void> => {
-	const { originals, destination }: { root: string; originals: string; destination: string; } = await fixture(context);
+	const { originals, destination }: IExportFixture = await fixture(context);
 	const broken: IApprovedExportDocument = approved(path.join(originals, 'broken.pdf'), 'broken', 'Broken');
 	const healthy: IApprovedExportDocument = approved(path.join(originals, 'healthy.pdf'), 'healthy', 'Healthy');
 	const sources: string[] = [broken.source!.filePath, healthy.source!.filePath];

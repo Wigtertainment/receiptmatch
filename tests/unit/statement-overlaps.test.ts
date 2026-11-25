@@ -1,5 +1,4 @@
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
-import type { SourceEvidence } from "../../src/shared/bank-import.js";
 import type { IStatementOverlap } from "../../src/shared/statement-overlaps.js";
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -8,11 +7,14 @@ import type { TransactionCandidate } from '../../src/shared/bank-import.js';
 import { indexStatementOverlaps, type IStatementOverlaps } from '../../src/shared/statement-overlaps.js';
 import { retainedBank } from './document-fixtures.js';
 
-function imported(accountReference: string | null = 'SYNTHETIC-ACCOUNT-A'): { record: StoredBankImport; row: TransactionCandidate; id: string; } {
+interface IImportedTransaction { record: StoredBankImport; row: TransactionCandidate; id: string }
+type AccountSection = StoredBankImport['result']['accountSections'][number];
+
+function imported(accountReference: string | null = 'SYNTHETIC-ACCOUNT-A'): IImportedTransaction {
 	const record: StoredBankImport = retainedBank(process.cwd());
 	record.result.transactions = record.result.transactions.slice(0, 1);
 	record.transactions = record.transactions.slice(0, 1);
-	const account: { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; } = record.result.accountSections[0];
+	const account: AccountSection = record.result.accountSections[0];
 	account.accountReference = accountReference ? { label: 'Account identifier', value: accountReference, evidence: account.evidence } : null;
 	const [row]: TransactionCandidate[] = record.result.transactions;
 	return { record, row, id: record.transactions[0].transactionId };
@@ -43,7 +45,9 @@ test('matches equivalent booking details only across compatible accounts and sep
 	const otherDay: ReturnType<typeof imported> = imported();
 	otherDay.row.bookingDate.value = '2032-02-27';
 
-	const all: (statementId: string) => IStatementOverlaps = indexStatementOverlaps([original, repeated, sameAmount, otherAccount, otherBank, otherCurrency, opposite, otherDay].map((item: { record: StoredBankImport; row: TransactionCandidate; id: string; }): StoredBankImport => item.record));
+	const all: (statementId: string) => IStatementOverlaps = indexStatementOverlaps(
+		[original, repeated, sameAmount, otherAccount, otherBank, otherCurrency, opposite, otherDay].map((item: IImportedTransaction): StoredBankImport => item.record)
+	);
 	assert.deepEqual(all(original.record.id).get(original.id), [{
 		statementId: repeated.record.id, transactionId: repeated.id, filePath: repeated.record.filePath, transactionNumber: 1, basis: 'details', accountConfirmed: true,
 	}]);
@@ -66,7 +70,9 @@ test('uses a bank transaction ID without treating ordinary payment references as
 	const knownAccount: ReturnType<typeof imported> = imported();
 	reference(knownAccount.row, 'SYNTHETIC-TRANSACTION-ID');
 
-	const all: (statementId: string) => IStatementOverlaps = indexStatementOverlaps([original, repeated, samePaymentReference, distinctId, knownAccount, otherAccount].map((item: { record: StoredBankImport; row: TransactionCandidate; id: string; }): StoredBankImport => item.record));
+	const all: (statementId: string) => IStatementOverlaps = indexStatementOverlaps(
+		[original, repeated, samePaymentReference, distinctId, knownAccount, otherAccount].map((item: IImportedTransaction): StoredBankImport => item.record)
+	);
 	assert.deepEqual(all(original.record.id).get(original.id)?.map((candidate: IStatementOverlap): (string | boolean)[] => [candidate.transactionId, candidate.basis, candidate.accountConfirmed]), [
 		[repeated.id, 'transaction-id', false], [knownAccount.id, 'transaction-id', false], [otherAccount.id, 'transaction-id', false],
 	]);
@@ -93,8 +99,8 @@ test('treats masked account references as unverified even when they agree', (): 
 
 test('uses each row’s account section and only returns matches from another statement', (): void => {
 	const first: ReturnType<typeof imported> = imported(), otherStatement: ReturnType<typeof imported> = imported();
-	const [accountA]: { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; }[] = first.record.result.accountSections;
-	const accountB: { sectionId: string; accountReference: { value: string; label: string; evidence: SourceEvidence[]; }; currency: { value: string; evidence: SourceEvidence[]; }; evidence: SourceEvidence[]; } = { ...accountA, sectionId: 'another-account', accountReference: { ...accountA.accountReference!, value: 'SYNTHETIC-ACCOUNT-B' } };
+	const [accountA]: AccountSection[] = first.record.result.accountSections;
+	const accountB: AccountSection = { ...accountA, sectionId: 'another-account', accountReference: { ...accountA.accountReference!, value: 'SYNTHETIC-ACCOUNT-B' } };
 	first.record.result.accountSections.push(accountB);
 	const sameStatementRow: TransactionCandidate = { ...first.row, rowId: 'same-statement-row' };
 	const otherAccountRow: TransactionCandidate = { ...first.row, rowId: 'another-account-row', accountSectionId: accountB.sectionId };

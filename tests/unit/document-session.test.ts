@@ -1,6 +1,3 @@
-import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
-import type { ImportIssue } from "../../src/shared/bank-import.js";
-import type { SupportingDocument } from "../../src/shared/supporting-document.js";
 import type { IWorkspaceState } from "../../src/shared/protocol.js";
 import type BetterSqlite3 from 'better-sqlite3';
 import { test } from "vitest";
@@ -10,16 +7,19 @@ import path from "node:path";
 import { WorkspaceSession, type IWorkspaceDialogs } from "../../electron/workspace-session.js";
 import type { IDocumentImportOptions, IDocumentImportService } from "../../electron/documents/service.js";
 import { createWorkspace, newMetadata } from "../../electron/store.js";
-import type { StoredDocumentImport } from "../../src/shared/workspace-documents.js";
+import type { DocumentFileResult, StoredDocumentImport } from "../../src/shared/workspace-documents.js";
 import { documentRun } from "./document-fixtures.js";
+
+interface IDialogPlan { saves: (string | null)[]; opens: (string | null)[]; choices: ('save' | 'discard' | 'cancel')[] }
+interface IDialogScript { plan: IDialogPlan; handlers: IWorkspaceDialogs }
 
 async function directory(): Promise<string> {
 	await mkdir("artifacts", { recursive: true });
 	return mkdtemp(path.resolve("artifacts/doc-session-"));
 }
 
-function dialogs(): { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: IWorkspaceDialogs; } {
-	const plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[] } = { saves: [], opens: [], choices: [] };
+function dialogs(): IDialogScript {
+	const plan: IDialogPlan = { saves: [], opens: [], choices: [] };
 	const handlers: IWorkspaceDialogs = {
 		save: async (): Promise<string | null> => Promise.resolve(plan.saves.shift() ?? null),
 		open: async (): Promise<string | null> => Promise.resolve(plan.opens.shift() ?? null),
@@ -32,16 +32,16 @@ test("document analysis remains unsaved until explicit save and reopens with imm
 	const root: string = await directory(),
 		file: string = path.join(root, "documents.receiptmatch"),
 		first: StoredDocumentImport = documentRun(root),
-		script: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: IWorkspaceDialogs; } = dialogs();
+		script: IDialogScript = dialogs();
 	let next: StoredDocumentImport | null = first;
 	const sources: IDocumentImportOptions["existingSources"][] = [];
-	const service: IDocumentImportService = {
+	const documentImportService: IDocumentImportService = {
 		run: async (options: IDocumentImportOptions): Promise<StoredDocumentImport | null> => {
 			sources.push(options.existingSources);
 			return Promise.resolve(next);
 		},
 	};
-	const session: WorkspaceSession = new WorkspaceSession(script.handlers, undefined, undefined, service);
+	const session: WorkspaceSession = new WorkspaceSession(script.handlers, undefined, undefined, documentImportService);
 	await session.dispatch({ type: "new" });
 	const result: IWorkspaceState = await session.dispatch({ type: "import-documents" });
 	assert.equal(result.documentOutcome?.status, "finished");
@@ -54,7 +54,7 @@ test("document analysis remains unsaved until explicit save and reopens with imm
 	await session.dispatch({ type: "save" });
 	assert.equal(session.state().workspace?.dirty, false);
 	next = documentRun(root, []);
-	const document: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; } = first.files[0];
+	const document: DocumentFileResult = first.files[0];
 	assert.equal(document.status, "imported");
 	if (document.status !== "imported") {
 		return;
@@ -69,7 +69,7 @@ test("document analysis remains unsaved until explicit save and reopens with imm
 	assert.equal(sources[1].length, 1);
 	assert.equal(session.state().workspace?.dirty, true, "the new run report is an explicit unsaved change");
 	await session.dispatch({ type: "save" });
-	const reopen: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: IWorkspaceDialogs; } = dialogs();
+	const reopen: IDialogScript = dialogs();
 	reopen.plan.opens.push(file);
 	const restored: WorkspaceSession = new WorkspaceSession(reopen.handlers);
 	await restored.dispatch({ type: "open" });
@@ -79,7 +79,7 @@ test("document analysis remains unsaved until explicit save and reopens with imm
 
 test("cancelled document runs retain completed files while concurrent actions and late progress cannot overwrite the workspace", async (): Promise<void> => {
 	const root: string = await directory(),
-		script: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: IWorkspaceDialogs; } = dialogs(),
+		script: IDialogScript = dialogs(),
 		run: StoredDocumentImport = documentRun(root);
 	run.status = "cancelled";
 	let finish!: (value: StoredDocumentImport) => void, captured!: IDocumentImportOptions;
@@ -122,7 +122,7 @@ test("cancelled folder selection stays clean and failed saves or invalid Open pr
 	const root: string = await directory(),
 		file: string = path.join(root, "saved.receiptmatch");
 	await createWorkspace(file, newMetadata());
-	const script: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: IWorkspaceDialogs; } = dialogs();
+	const script: IDialogScript = dialogs();
 	script.plan.opens.push(file);
 	let next: StoredDocumentImport | null = null;
 	const session: WorkspaceSession = new WorkspaceSession(script.handlers, undefined, undefined, { run: async (): Promise<StoredDocumentImport | null> => Promise.resolve(next) });
@@ -139,7 +139,7 @@ test("cancelled folder selection stays clean and failed saves or invalid Open pr
 	assert.deepEqual(session.documentImports(), expected);
 	assert.equal(session.state().workspace?.dirty, true);
 	const original: NonSharedBuffer = await readFile(file);
-	const { default: external }: { default: typeof BetterSqlite3 } = await import("better-sqlite3");
+	const { default: external }: Record<'default', typeof BetterSqlite3> = await import("better-sqlite3");
 	const db: BetterSqlite3.Database = new external(file);
 	db.exec("UPDATE workspace SET name='External edit'");
 	db.close();
@@ -153,7 +153,7 @@ test("cancelled folder selection stays clean and failed saves or invalid Open pr
 
 test("invalid document skips and reused identities are rejected without retaining a report", async (): Promise<void> => {
 	const root: string = await directory(),
-		script: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: IWorkspaceDialogs; } = dialogs();
+		script: IDialogScript = dialogs();
 	let candidate: StoredDocumentImport = documentRun(root, []);
 	const session: WorkspaceSession = new WorkspaceSession(script.handlers, undefined, undefined, { run: async (): Promise<StoredDocumentImport> => Promise.resolve(candidate) });
 	await session.dispatch({ type: "new" });

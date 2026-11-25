@@ -1,7 +1,6 @@
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
-import type { BankImportInput, ImportIssue } from "../../src/shared/bank-import.js";
-import type { SupportingDocument } from "../../src/shared/supporting-document.js";
-import type { ExtractionProgress, ExtractionResult } from "../../src/shared/pdf-extraction.js";
+import type { ImportIssue } from "../../src/shared/bank-import.js";
+import type { ExtractionResult } from "../../src/shared/pdf-extraction.js";
 import { test, vi, type Mock } from "vitest";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
@@ -12,7 +11,8 @@ import path from "node:path";
 import { FolderDocumentImportService } from "../../electron/documents/service.js";
 import { StatementImportService } from "../../electron/import/service.js";
 import { importIssue } from "../../src/shared/bank-import.js";
-import { storedDocumentImportSchema, type DocumentFormat, type IDocumentImportProgress, type StoredDocumentImport } from "../../src/shared/workspace-documents.js";
+import { storedDocumentImportSchema, type DocumentFileResult, type DocumentFormat, type IDocumentImportProgress, type IWorkspaceSource,
+	type StoredDocumentImport } from "../../src/shared/workspace-documents.js";
 import { extractedDocument } from "./document-fixtures.js";
 import type { Mode } from 'node:fs';
 import type { BigIntStats } from 'node:fs';
@@ -21,6 +21,9 @@ import type { StatOptions } from 'node:fs';
 import type { Dir } from 'node:fs';
 import type { OpenDirOptions } from 'node:fs';
 import type { PathLike } from 'node:fs';
+import type { IExtractionOptions } from '../../electron/extraction/host.js';
+
+type FingerprintedSource = IWorkspaceSource & Record<'sha256', string>;
 
 async function directory(): Promise<string> {
 	await mkdir("artifacts", { recursive: true });
@@ -30,7 +33,7 @@ async function directory(): Promise<string> {
 const sha: (bytes: Uint8Array) => string = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 
 function imported(run: StoredDocumentImport): StoredSupportingDocument[] {
-	return run.files.flatMap((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): StoredSupportingDocument[] => (file.status === "imported" ? [file.record] : []));
+	return run.files.flatMap((file: DocumentFileResult): StoredSupportingDocument[] => (file.status === "imported" ? [file.record] : []));
 }
 
 test("a nested mixed folder preserves originals, records failures and skips identical bytes before extraction", async (): Promise<void> => {
@@ -43,9 +46,9 @@ test("a nested mixed folder preserves originals, records failures and skips iden
 	const before: NonSharedBuffer[] = await Promise.all(names.map((name: string): Promise<NonSharedBuffer> => readFile(path.join(root, name))));
 	const calls: string[] = [],
 		progress: IDocumentImportProgress[] = [];
-	const service: FolderDocumentImportService = new FolderDocumentImportService({
+	const documentImportService: FolderDocumentImportService = new FolderDocumentImportService({
 		choose: async (): Promise<string> => Promise.resolve(root),
-		extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, format: "png" | "pdf" | "jpeg"): Promise<({ status: "complete"; input: BankImportInput; } & { status: "complete"; }) | { status: "failed"; issues: ImportIssue[]; }> => {
+		extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, format: "png" | "pdf" | "jpeg"): Promise<Extract<ExtractionResult, Record<'status', 'complete' | 'failed'>>> => {
 			calls.push(Buffer.from(bytes).toString());
 			if (Buffer.from(bytes).toString().includes("broken")) {
 				return Promise.resolve({ status: "failed", issues: [importIssue("synthetic-failure", "Synthetic corrupt file.")] });
@@ -53,26 +56,28 @@ test("a nested mixed folder preserves originals, records failures and skips iden
 			return Promise.resolve(extractedDocument(bytes, id, format));
 		},
 	});
-	const run: StoredDocumentImport | null = await service.run({ existingSources: [], onProgress: (value: IDocumentImportProgress): number => progress.push(value) });
+	const run: StoredDocumentImport | null = await documentImportService.run({ existingSources: [], onProgress: (value: IDocumentImportProgress): number => progress.push(value) });
 	assert.ok(run);
 	assert.equal(run.status, "finished");
 	assert.equal(run.files.length, 7);
 	assert.equal(imported(run).length, 4);
-	assert.equal(run.files.filter((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): file is { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } => file.status === "skipped").length, 1);
-	assert.equal(run.files.filter((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): file is { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; } => file.status === "failed").length, 1);
-	assert.equal(run.files.filter((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): file is { status: "unsupported"; filePath: string; issues: ImportIssue[]; } => file.status === "unsupported").length, 1);
+	assert.equal(run.files.filter((file: DocumentFileResult): boolean => file.status === "skipped").length, 1);
+	assert.equal(run.files.filter((file: DocumentFileResult): boolean => file.status === "failed").length, 1);
+	assert.equal(run.files.filter((file: DocumentFileResult): boolean => file.status === "unsupported").length, 1);
 	assert.equal(calls.length, 5);
 	assert.ok(!calls.includes("d-copy.pdf"));
 	assert.deepEqual(new Set(imported(run).map((record: StoredSupportingDocument): "png" | "pdf" | "jpeg" => record.format)), new Set(["pdf", "png", "jpeg"]));
 	assert.equal(storedDocumentImportSchema.safeParse(run).success, true);
 	assert.ok(progress.some((value: IDocumentImportProgress): string | false | null => value.phase === "extracting" && value.filePath));
 	assert.deepEqual(await Promise.all(names.map((name: string): Promise<NonSharedBuffer> => readFile(path.join(root, name)))), before);
-	const sources: { id: string; filePath: string; sha256: string; }[] = imported(run).map((record: StoredSupportingDocument): { id: string; filePath: string; sha256: string; } => ({ id: record.result.input!.source.sourceId, filePath: record.filePath, sha256: record.result.input!.source.sha256 }));
+	const sources: FingerprintedSource[] = imported(run).map((record: StoredSupportingDocument): FingerprintedSource => ({
+		id: record.result.input!.source.sourceId, filePath: record.filePath, sha256: record.result.input!.source.sha256,
+	}));
 	calls.length = 0;
-	const repeated: StoredDocumentImport | null = await service.run({ existingSources: sources });
+	const repeated: StoredDocumentImport | null = await documentImportService.run({ existingSources: sources });
 	assert.ok(repeated);
 	assert.equal(imported(repeated).length, 0);
-	assert.equal(repeated.files.filter((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): file is { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } => file.status === "skipped").length, 5);
+	assert.equal(repeated.files.filter((file: DocumentFileResult): boolean => file.status === "skipped").length, 5);
 	assert.equal(calls.length, 1, "previously failed content must be retried");
 });
 
@@ -80,13 +85,19 @@ test("legacy and bank source hashes are deduplicated, including bank import afte
 	const root: string = await directory(),
 		source: string = path.join(root, "already.pdf");
 	await writeFile(source, "existing content");
-	const catalog: { id: string; filePath: string; sha256: string; }[] = [{ id: "legacy-source", filePath: path.join(root, "elsewhere.pdf"), sha256: sha(await readFile(source)) }];
-	const service: FolderDocumentImportService = new FolderDocumentImportService({ choose: async (): Promise<string> => Promise.resolve(root), extract: async (): Promise<never> => Promise.resolve().then((): never => assert.fail("Duplicate reached extraction.")) });
-	const run: StoredDocumentImport | null = await service.run({ existingSources: catalog });
+	const catalog: FingerprintedSource[] = [{ id: "legacy-source", filePath: path.join(root, "elsewhere.pdf"), sha256: sha(await readFile(source)) }];
+	const documentImportService: FolderDocumentImportService = new FolderDocumentImportService({
+		choose: async (): Promise<string> => Promise.resolve(root),
+		extract: async (): Promise<never> => Promise.resolve().then((): never => assert.fail("Duplicate reached extraction.")),
+	});
+	const run: StoredDocumentImport | null = await documentImportService.run({ existingSources: catalog });
 	assert.ok(run);
 	assert.deepEqual(run.files, [{ status: "skipped", filePath: source, sha256: catalog[0].sha256, existingSourceId: "legacy-source" }]);
-	const bank: StatementImportService = new StatementImportService({ choose: async (): Promise<string> => Promise.resolve(source), extract: async (): Promise<never> => Promise.resolve().then((): never => assert.fail("Cross-domain duplicate reached bank extraction.")) });
-	assert.deepEqual(await bank.run({ existing: [], existingSources: catalog }), { status: "skipped", importId: null, existingSourceId: "legacy-source" });
+	const statementImportService: StatementImportService = new StatementImportService({
+		choose: async (): Promise<string> => Promise.resolve(source),
+		extract: async (): Promise<never> => Promise.resolve().then((): never => assert.fail("Cross-domain duplicate reached bank extraction.")),
+	});
+	assert.deepEqual(await statementImportService.run({ existing: [], existingSources: catalog }), { status: "skipped", importId: null, existingSourceId: "legacy-source" });
 });
 
 test("cancellation keeps completed files, discards the pending file and ignores late extraction progress", async (): Promise<void> => {
@@ -102,9 +113,9 @@ test("cancellation keeps completed files, discards the pending file and ignores 
 	const pending: Promise<void> = new Promise<void>((resolve: (value: void | PromiseLike<void>) => void): void => {
 		release = resolve;
 	});
-	const service: FolderDocumentImportService = new FolderDocumentImportService({
+	const documentImportService: FolderDocumentImportService = new FolderDocumentImportService({
 		choose: async (): Promise<string> => Promise.resolve(root),
-		extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, format: "png" | "pdf" | "jpeg", options: { signal?: AbortSignal; onProgress?: (progress: ExtractionProgress) => void }): Promise<{ status: "complete"; input: BankImportInput; } & { status: "complete"; }> => {
+		extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, format: "png" | "pdf" | "jpeg", options: IExtractionOptions): Promise<ReturnType<typeof extractedDocument>> => {
 			if (Buffer.from(bytes).toString() === "second") {
 				secondStarted();
 				await pending;
@@ -113,7 +124,9 @@ test("cancellation keeps completed files, discards the pending file and ignores 
 			return extractedDocument(bytes, id, format);
 		},
 	});
-	const running: Promise<StoredDocumentImport | null> = service.run({ existingSources: [], signal: controller.signal, onProgress: (value: IDocumentImportProgress): number => progress.push(value) });
+	const running: Promise<StoredDocumentImport | null> = documentImportService.run({
+		existingSources: [], signal: controller.signal, onProgress: (value: IDocumentImportProgress): number => progress.push(value),
+	});
 	await started;
 	controller.abort();
 	const count: number = progress.length;
@@ -148,13 +161,18 @@ test("directory links are reported without following them and unreadable sibling
 	}));
 	syncBuiltinESMExports();
 	try {
-		const service: FolderDocumentImportService = new FolderDocumentImportService({ choose: async (): Promise<string> => Promise.resolve(folder), extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, format: "png" | "pdf" | "jpeg"): Promise<{ status: "complete"; input: BankImportInput; } & { status: "complete"; }> => Promise.resolve(extractedDocument(bytes, id, format)) });
-		const run: StoredDocumentImport | null = await service.run({ existingSources: [] });
+		const documentImportService: FolderDocumentImportService = new FolderDocumentImportService({
+			choose: async (): Promise<string> => Promise.resolve(folder),
+			extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, format: DocumentFormat): Promise<ReturnType<typeof extractedDocument>> =>
+				Promise.resolve(extractedDocument(bytes, id, format)),
+		});
+		const run: StoredDocumentImport | null = await documentImportService.run({ existingSources: [] });
 		assert.ok(run);
 		assert.equal(imported(run).length, 1);
-		assert.ok(run.directoryIssues.some((issue: { directoryPath: string; code: string; message: string; }): boolean => issue.directoryPath.endsWith("denied")));
-		assert.ok(run.files.some((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): boolean => file.status === "unsupported" && file.filePath === link) || run.directoryIssues.some((issue: { directoryPath: string; code: string; message: string; }): boolean => issue.directoryPath === link));
-		assert.ok(!run.files.some((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): boolean => (file.status === "imported" ? file.record.filePath : file.filePath).includes("outside.pdf")));
+		assert.ok(run.directoryIssues.some((issue: StoredDocumentImport['directoryIssues'][number]): boolean => issue.directoryPath.endsWith("denied")));
+		assert.ok(run.files.some((file: DocumentFileResult): boolean => file.status === "unsupported" && file.filePath === link) ||
+			run.directoryIssues.some((issue: StoredDocumentImport['directoryIssues'][number]): boolean => issue.directoryPath === link));
+		assert.ok(!run.files.some((file: DocumentFileResult): boolean => (file.status === "imported" ? file.record.filePath : file.filePath).includes("outside.pdf")));
 	} finally {
 		patched.mockRestore();
 		syncBuiltinESMExports();
@@ -167,10 +185,10 @@ test("invalid provenance and malformed progress are isolated as per-file failure
 	await writeFile(path.join(root, "a.pdf"), "first");
 	await writeFile(path.join(root, "z.pdf"), "last");
 	for (const defect of ["hash", "source", "version", "progress"] as const) {
-		const service: FolderDocumentImportService = new FolderDocumentImportService({
+		const documentImportService: FolderDocumentImportService = new FolderDocumentImportService({
 			choose: async (): Promise<string> => Promise.resolve(root),
-			extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, format: "png" | "pdf" | "jpeg", options: { signal?: AbortSignal; onProgress?: (progress: ExtractionProgress) => void }): Promise<{ status: "complete"; input: BankImportInput; } & { status: "complete"; }> => {
-				const result: { status: "complete"; input: BankImportInput; } & { status: "complete"; } = extractedDocument(bytes, id, format);
+			extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, format: "png" | "pdf" | "jpeg", options: IExtractionOptions): Promise<ReturnType<typeof extractedDocument>> => {
+				const result: ReturnType<typeof extractedDocument> = extractedDocument(bytes, id, format);
 				if (Buffer.from(bytes).toString() === "first") {
 					if (defect === "hash") {
 						result.input.source.sha256 = "f".repeat(64);
@@ -188,7 +206,7 @@ test("invalid provenance and malformed progress are isolated as per-file failure
 				return Promise.resolve(result);
 			},
 		});
-		const run: StoredDocumentImport | null = await service.run({ existingSources: [] });
+		const run: StoredDocumentImport | null = await documentImportService.run({ existingSources: [] });
 		assert.ok(run);
 		assert.equal(run.files[0].status, "failed", defect);
 		assert.equal(imported(run).length, 1, defect);
@@ -200,9 +218,9 @@ test("folder import uses standard provenance for embedded PDF text, scanned PDFs
 	for (const name of ["a.png", "b.pdf", "c.jpg", "d.pdf", "e.jpeg", "f.pdf"]) {
 		await writeFile(path.join(root, name), name);
 	}
-	const service: FolderDocumentImportService = new FolderDocumentImportService({
+	const documentImportService: FolderDocumentImportService = new FolderDocumentImportService({
 		choose: async (): Promise<string> => Promise.resolve(root),
-		extract: (bytes: Uint8Array, id: string, format: DocumentFormat, options: { signal?: AbortSignal; onProgress?: (progress: ExtractionProgress) => void }): Promise<ExtractionResult> => {
+		extract: (bytes: Uint8Array, id: string, format: DocumentFormat, options: IExtractionOptions): Promise<ExtractionResult> => {
 			assert.equal("localOcr" in options, false);
 			const result: ReturnType<typeof extractedDocument> = extractedDocument(bytes, id, format);
 			const name: string = Buffer.from(bytes).toString();
@@ -220,7 +238,7 @@ test("folder import uses standard provenance for embedded PDF text, scanned PDFs
 			return Promise.resolve(result);
 		},
 	});
-	const run: StoredDocumentImport | null = await service.run({ existingSources: [] });
+	const run: StoredDocumentImport | null = await documentImportService.run({ existingSources: [] });
 	assert.ok(run);
 	assert.deepEqual(run.files.map((file: StoredDocumentImport['files'][number]): string => file.status), ["imported", "imported", "failed", "imported", "imported", "failed"]);
 	for (const file of run.files) {
@@ -240,10 +258,10 @@ test("a transient ancestor replacement cannot replace the file identity selected
 	await writeFile(source, "selected original");
 	await writeFile(healthy, "healthy sibling");
 	await writeFile(external, "outside content must not reach extraction");
-	const originalLstat: { (path: PathLike, opts?: StatOptions & { bigint?: false | undefined; }): Promise<Stats>; (path: PathLike, opts: StatOptions & { bigint: true; }): Promise<BigIntStats>; (path: PathLike, opts?: StatOptions): Promise<Stats | BigIntStats>; } = fsPromises.lstat,
+	const originalLstat: typeof fsPromises.lstat = fsPromises.lstat,
 		originalOpen: (path: PathLike, flags?: string | number, mode?: Mode) => Promise<fsPromises.FileHandle> = fsPromises.open;
 	let selections: number = 0;
-	const statPatch: Mock<{ (path: PathLike, opts?: StatOptions & { bigint?: false | undefined; }): Promise<Stats>; (path: PathLike, opts: StatOptions & { bigint: true; }): Promise<BigIntStats>; (path: PathLike, opts?: StatOptions): Promise<Stats | BigIntStats>; }> = vi.spyOn(fsPromises, "lstat").mockImplementation((async (selected: PathLike, options?: StatOptions): Promise<Stats | BigIntStats> => {
+	const statPatch: Mock<typeof fsPromises.lstat> = vi.spyOn(fsPromises, "lstat").mockImplementation((async (selected: PathLike, options?: StatOptions): Promise<Stats | BigIntStats> => {
 		let requested: PathLike = selected;
 		if (String(selected) === source && [2, 3].includes(++selections)) {
 			requested = external;
@@ -256,14 +274,14 @@ test("a transient ancestor replacement cannot replace the file identity selected
 	syncBuiltinESMExports();
 	const extracted: string[] = [];
 	try {
-		const service: FolderDocumentImportService = new FolderDocumentImportService({
+		const documentImportService: FolderDocumentImportService = new FolderDocumentImportService({
 			choose: async (): Promise<string> => Promise.resolve(folder),
-			extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, format: "png" | "pdf" | "jpeg"): Promise<{ status: "complete"; input: BankImportInput; } & { status: "complete"; }> => {
+			extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, format: "png" | "pdf" | "jpeg"): Promise<ReturnType<typeof extractedDocument>> => {
 				extracted.push(Buffer.from(bytes).toString());
 				return Promise.resolve(extractedDocument(bytes, id, format));
 			},
 		});
-		const run: StoredDocumentImport | null = await service.run({ existingSources: [] });
+		const run: StoredDocumentImport | null = await documentImportService.run({ existingSources: [] });
 		assert.ok(run);
 		assert.equal(run.files[0].status, "failed");
 		if (run.files[0].status === "failed") {

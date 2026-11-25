@@ -14,6 +14,7 @@ import { compareDocuments } from '../../electron/source-comparison.js';
 import type { SupportingDocument } from '../../src/shared/supporting-document.js';
 import { WorkspaceSession, type IReceiptAiDependencies, type IWorkspaceDialogs } from '../../electron/workspace-session.js';
 import { documentRun, extractedDocument, retainedDocument } from './document-fixtures.js';
+import type { OriginalAdoptionRequest } from '../../src/shared/original-preview.js';
 
 async function modelAnalysis(source: IReceiptAiSource): Promise<ReceiptAiResult> {
     const bytes: NonSharedBuffer = await readFile(source.filePath);
@@ -75,7 +76,7 @@ test('rejects failed receipts even if they have a verified fingerprint', async (
         const failedPath: string = path.join(root, 'unreadable.pdf');
         const bytes: string = 'synthetic failed document';
         await writeFile(failedPath, bytes);
-        const failed: Extract<StoredDocumentImport['files'][number], { status: 'failed' }> = {
+        const failed: Extract<StoredDocumentImport['files'][number], Record<'status', 'failed'>> = {
             status: 'failed', filePath: failedPath, format: 'pdf', analysis: null, sha256: createHash('sha256').update(bytes).digest('hex'),
             issues: [importIssue('unreadable', 'Initial OCR failed.')]
         };
@@ -144,7 +145,7 @@ test('isolates unverified AI values and invalidates the preview when it is disca
         assert.equal(result.status, 'ready');
         assert.deepEqual(result.changes, [{ label: 'Reference number', before: null, after: 'UNVERIFIED-ACCOUNT', unrecognized: true }]);
         assert.match(result.blockingConflict ?? '', /no proposed changes could be verified/i);
-        const adoption: { token: string; loadRevision: number; acknowledgeConflicts: true } = { token: result.token, loadRevision: request.loadRevision, acknowledgeConflicts: true };
+        const adoption: OriginalAdoptionRequest & Record<'acknowledgeConflicts', true> = { token: result.token, loadRevision: request.loadRevision, acknowledgeConflicts: true };
         assert.equal((await session.acceptReceiptAnalysis(adoption)).status, 'failed');
         session.discardReceiptAnalysis({ token: result.token, loadRevision: request.loadRevision });
         const stale: Awaited<ReturnType<WorkspaceSession['acceptReceiptAnalysis']>> = await session.acceptReceiptAnalysis(adoption);

@@ -1,6 +1,6 @@
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
-import type { SourceEvidence, TransactionCandidate } from "../../src/shared/bank-import.js";
+import type { TransactionCandidate } from "../../src/shared/bank-import.js";
 import type { IMatchSummary } from "../../src/shared/workspace-matching.js";
 import type { IWorkspaceState } from "../../src/shared/protocol.js";
 import assert from 'node:assert/strict';
@@ -12,11 +12,25 @@ import Database from 'better-sqlite3';
 import { test, type TestContext } from 'vitest';
 import { createWorkspace, loadWorkspace, newMetadata, SCHEMA_VERSION, type ISavedWorkspace } from '../../electron/store.js';
 import { WorkspaceSession } from '../../electron/workspace-session.js';
-import { approvalSelectionFor } from '../../src/shared/match-approvals.js';
+import { approvalSelectionFor, type ReviewApprovalState } from '../../src/shared/match-approvals.js';
 import type { WorkspaceCommand } from '../../src/shared/protocol.js';
 import { documentRun, retainedBank, retainedDocument } from './document-fixtures.js';
 
-async function fixture(context: TestContext): Promise<{ root: string; file: string; banks: StoredBankImport[]; firstId: string; secondId: string; thirdId: string; receipts: StoredSupportingDocument[]; session: WorkspaceSession; decide: (decision: Extract<WorkspaceCommand, { type: "set-duplicate-decision"; }>["decision"], transactionId?: string, otherTransactionId?: string, revision?: number) => Promise<IWorkspaceState>; summaries: () => Map<string, IMatchSummary>; }> {
+type DuplicateDecision = Extract<WorkspaceCommand, Record<'type', 'set-duplicate-decision'>>['decision'];
+interface IDuplicateSessionFixture {
+	root: string;
+	file: string;
+	banks: StoredBankImport[];
+	firstId: string;
+	secondId: string;
+	thirdId: string;
+	receipts: StoredSupportingDocument[];
+	session: WorkspaceSession;
+	decide: (decision: DuplicateDecision, transactionId?: string, otherTransactionId?: string, revision?: number) => Promise<IWorkspaceState>;
+	summaries: () => Map<string, IMatchSummary>;
+}
+
+async function fixture(context: TestContext): Promise<IDuplicateSessionFixture> {
 	const root: string = await mkdtemp(path.join(tmpdir(), 'receiptmatch-duplicates-'));
 	context.onTestFinished((): Promise<void> => rm(root, { recursive: true, force: true }));
 	const file: string = path.join(root, 'test.receiptmatch');
@@ -30,7 +44,7 @@ async function fixture(context: TestContext): Promise<{ root: string; file: stri
 	const [firstId, secondId, thirdId]: string[] = banks.map((bank: StoredBankImport): string => bank.transactions[0].transactionId);
 	const receipts: StoredSupportingDocument[] = [retainedDocument(root, 'first.pdf'), retainedDocument(root, 'second.pdf')];
 	const session: WorkspaceSession = new WorkspaceSession({ open: async (): Promise<string> => Promise.resolve(file), save: async (): Promise<string> => Promise.resolve(file), unsaved: async (): Promise<"discard"> => Promise.resolve('discard') });
-	const decide: (decision: Extract<WorkspaceCommand, { type: "set-duplicate-decision"; }>["decision"], transactionId?: string, otherTransactionId?: string, revision?: number) => Promise<IWorkspaceState> = (decision: Extract<WorkspaceCommand, { type: 'set-duplicate-decision' }>['decision'],
+	const decide: IDuplicateSessionFixture['decide'] = (decision: DuplicateDecision,
 		transactionId: string = firstId, otherTransactionId: string = secondId, revision: number = session.state().workspace!.matchRevision): Promise<IWorkspaceState> =>
 		session.dispatch({ type: 'set-duplicate-decision', revision, transactionId, otherTransactionId, decision });
 
@@ -42,7 +56,7 @@ test('archives an excluded review, revokes only its approval and restores the re
 	const { root, file, banks, firstId, secondId, receipts, session, decide, summaries }: Awaited<ReturnType<typeof fixture>> = await fixture(context);
 	const [firstDocument, secondDocument]: string[] = receipts.map((receipt: StoredSupportingDocument): string => receipt.id);
 	const decisions: Map<string, string> = new Map([[firstId, firstDocument], [secondId, secondDocument]]);
-	const approvals: Map<string, { associationRevision: number; approval: { batchId: `${string}-${string}-${string}-${string}-${string}`; approvedAt: string; transactionId: string; documentId: string; transactionRevision: number; documentRevision: number; associationRevision: number; }; }> = new Map([...decisions].map(([id, doc]: [string, string]): [string, { associationRevision: number; approval: { batchId: `${string}-${string}-${string}-${string}-${string}`; approvedAt: string; transactionId: string; documentId: string; transactionRevision: number; documentRevision: number; associationRevision: number; }; }] => [id, {
+	const approvals: Map<string, ReviewApprovalState> = new Map([...decisions].map(([id, doc]: [string, string]): [string, ReviewApprovalState] => [id, {
 		associationRevision: 1, approval: { ...approvalSelectionFor(id, doc), batchId: randomUUID(), approvedAt: '2032-06-01T12:00:00Z' },
 	}]));
 	await createWorkspace(file, newMetadata(), banks, [documentRun(root, receipts)], decisions, new Map(), new Map(), approvals);
@@ -133,7 +147,7 @@ test('rejects excluding multiple bookings from one statement against a single le
 test.for(['account', 'reference'])('rejects bridging conflicting known %s identities through a leading booking with missing evidence', async (field: string, context: TestContext & object): Promise<void> => {
 	const { file, banks, firstId, secondId, thirdId, session, decide, summaries }: Awaited<ReturnType<typeof fixture>> = await fixture(context);
 	for (const [index, bank] of banks.entries()) {
-		const account: { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; } = bank.result.accountSections[0], row: TransactionCandidate = bank.result.transactions[0];
+		const account: StoredBankImport['result']['accountSections'][number] = bank.result.accountSections[0], row: TransactionCandidate = bank.result.transactions[0];
 		account.accountReference = field === 'account' && index !== 0 ? { label: 'Account identifier', value: `ACCOUNT-${index}`, evidence: account.evidence } : null;
 		row.references = field === 'reference' && index !== 0 ? [{ label: 'Transaction ID', value: `TRANSACTION-${index}`, evidence: row.evidence }] : [];
 	}

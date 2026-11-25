@@ -5,14 +5,18 @@ import { embeddedTextGeometry, ocrWordGeometry, type IGeometryResult } from '../
 import { extractionResultSchema } from '../../src/shared/pdf-extraction.js';
 import { statement } from './bank-fixtures.js';
 
-function near(actual: { x: number; y: number; width: number; height: number } | null, expected: { x: number; y: number; width: number; height: number }): void {
+type Region = NonNullable<IGeometryResult['region']>;
+type Viewport = Parameters<typeof embeddedTextGeometry>[2];
+type PageDimensions = Parameters<typeof ocrWordGeometry>[1];
+
+function near(actual: Region | null, expected: Region): void {
     assert.ok(actual);
     for (const key of ['x', 'y', 'width', 'height'] as const) {
         assert.ok(Math.abs(actual[key] - expected[key]) < 0.000001, `${key}: ${actual[key]} vs ${expected[key]}`);
     }
 }
-const item: { transform: number[]; width: number; height: number; } = { transform: [12, 0, 0, 12, 30, 60], width: 40, height: 12 };
-const font: { ascent: number; descent: number; } = { ascent: 0.8, descent: -0.2 };
+const item: Parameters<typeof embeddedTextGeometry>[0] = { transform: [12, 0, 0, 12, 30, 60], width: 40, height: 12 };
+const font: Required<Pick<Parameters<typeof embeddedTextGeometry>[1], 'ascent' | 'descent'>> = { ascent: 0.8, descent: -0.2 };
 
 test('embedded geometry applies visible crop, all page rotations and font ascent/descent rather than height-minus-y', (): void => {
     for (const [transform, width, height, expected] of [
@@ -32,7 +36,7 @@ test('embedded geometry applies visible crop, all page rotations and font ascent
 });
 
 test('crop clipping and missing font metrics remain explicit; invalid and unsupported geometry is rejected', (): void => {
-    const viewport: { width: number; height: number; transform: number[]; } = { width: 200, height: 100, transform: [1, 0, 0, -1, -10, 110] };
+    const viewport: Viewport = { width: 200, height: 100, transform: [1, 0, 0, -1, -10, 110] };
     const clipped: IGeometryResult = embeddedTextGeometry({ ...item, transform: [12, 0, 0, 12, 5, 60] }, font, viewport);
     near(clipped.region, { x: 0, y: 40.4, width: 35, height: 12 });
     assert.equal(clipped.clipped, true);
@@ -45,7 +49,7 @@ test('crop clipping and missing font metrics remain explicit; invalid and unsupp
 });
 
 test('unusable font metrics retain text with explicitly approximate geometry while invalid transforms still fail', (): void => {
-    const viewport: { width: number; height: number; transform: number[]; } = { width: 200, height: 100, transform: [1, 0, 0, -1, -10, 110] };
+    const viewport: Viewport = { width: 200, height: 100, transform: [1, 0, 0, -1, -10, 110] };
     for (const metrics of [{ ascent: NaN }, { descent: Infinity }, { ascent: -1, descent: 1 }, { ascent: 0.2, descent: 0.3 }]) {
         const result: IGeometryResult = embeddedTextGeometry(item, metrics, viewport);
         assert.equal(result.approximate, true);
@@ -58,8 +62,8 @@ test('unusable font metrics retain text with explicitly approximate geometry whi
 });
 
 test('OCR word boxes use independent actual raster ratios including ceil dimensions and visible clipping', (): void => {
-    const page: { width: number; height: number; } = { width: 100.25, height: 80.25 };
-    const canvas: { width: number; height: number; } = { width: 201, height: 161 };
+    const page: PageDimensions = { width: 100.25, height: 80.25 };
+    const canvas: PageDimensions = { width: 201, height: 161 };
     const result: IGeometryResult = ocrWordGeometry({ x0: 20.1, y0: 16.1, x1: 100.5, y1: 80.5 }, page, canvas);
     near(result.region, { x: 10.025, y: 8.025, width: 40.1, height: 32.1 });
     assert.equal(result.clipped, false);

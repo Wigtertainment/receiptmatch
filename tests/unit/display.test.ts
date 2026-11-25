@@ -2,9 +2,12 @@ import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { formatCalendarDate, formatMoney } from '../../src/shared/display.js';
+import type { Money } from '../../src/shared/money.js';
+
+type RenderedValues = Record<'date' | 'money', string>;
 
 test('money display uses locale separators and explicit currencies while preserving every decimal digit', (): void => {
-    const amount: { coefficient: string; currency: string; scale: number; } = { coefficient: '-123456', currency: 'EUR', scale: 2 };
+    const amount: Money = { coefficient: '-123456', currency: 'EUR', scale: 2 };
     assert.equal(formatMoney(amount, 'en-US'), '-EUR\u00a01,234.56');
     assert.equal(formatMoney(amount, 'de-DE'), '-1.234,56\u00a0EUR');
     assert.equal(formatMoney({ coefficient: '-1', currency: 'USD', scale: 2 }, 'en-US'), '-USD\u00a00.01');
@@ -35,7 +38,7 @@ test('calendar display keeps the same booking day in distant host time zones', (
         const code: string = "const {formatCalendarDate,formatMoney}=await import(process.argv[1]);console.log(JSON.stringify({date:formatCalendarDate('2032-02-28','en-US'),money:formatMoney({coefficient:'900719925474099301',currency:'EUR',scale:2},'en-US')}));";
         const run: SpawnSyncReturns<string> = spawnSync(process.execPath, ['--input-type=module', '-e', code, moduleUrl], { encoding: 'utf8', env: { ...process.env, TZ: zone }, timeout: 10000, windowsHide: true });
         assert.equal(run.status, 0, run.stderr);
-        const value: { date: string; money: string; } = JSON.parse(run.stdout) as { date: string; money: string };
+        const value: RenderedValues = JSON.parse(run.stdout) as RenderedValues;
         assert.equal(value.date, '02/28/2032');
         assert.equal(value.money, 'EUR\u00a09,007,199,254,740,993.01');
     }

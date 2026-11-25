@@ -23,7 +23,7 @@ async function withStaging(run: (staging: string) => Promise<void>): Promise<voi
 
 test('streams a verified model file through an approved redirect and reports cumulative bytes', (): Promise<void> => withStaging(async (staging: string): Promise<void> => {
     const cdn: "https://us.aws.cdn.hf.co/asset?signature=example" = 'https://us.aws.cdn.hf.co/asset?signature=example';
-    const fetchModel: Mock<{ (input: RequestInfo | URL, init?: RequestInit): Promise<Response>; (input: string | URL | Request, init?: RequestInit): Promise<Response>; }> = vi.fn<typeof fetch>()
+    const fetchModel: Mock<typeof fetch> = vi.fn<typeof fetch>()
         .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: cdn } }))
         .mockResolvedValueOnce(new Response(new Uint8Array(data)))
         .mockResolvedValueOnce(new Response(new Uint8Array(data)));
@@ -39,7 +39,7 @@ test('streams a verified model file through an approved redirect and reports cum
 }));
 
 test('rejects an unapproved redirect and a corrupt payload', (): Promise<void> => withStaging(async (staging: string): Promise<void> => {
-    const fetchModel: Mock<{ (input: RequestInfo | URL, init?: RequestInit): Promise<Response>; (input: string | URL | Request, init?: RequestInit): Promise<Response>; }> = vi.fn<typeof fetch>()
+    const fetchModel: Mock<typeof fetch> = vi.fn<typeof fetch>()
         .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: 'https://huggingface.co.example.com/asset' } }))
         .mockResolvedValueOnce(new Response(new Uint8Array(data).fill(0)));
     vi.stubGlobal('fetch', fetchModel);

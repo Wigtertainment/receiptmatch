@@ -1,6 +1,5 @@
-import type { StoredDocumentImport, StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
-import type { BankImportInput, ImportIssue } from "../../src/shared/bank-import.js";
-import type { SupportingDocument } from "../../src/shared/supporting-document.js";
+import type { DocumentFileResult, StoredDocumentImport, StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
+import type { BankImportInput } from "../../src/shared/bank-import.js";
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
 import { test, vi } from "vitest";
 import assert from "node:assert/strict";
@@ -12,6 +11,25 @@ import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERS
 import { importIssue } from "../../src/shared/bank-import.js";
 import { storedDocumentImportSchema } from "../../src/shared/workspace-documents.js";
 import { documentRun, extractedDocument, retainedDocument, retainedBank } from "./document-fixtures.js";
+
+interface IAnalysisFixtureWarning {
+	code: string;
+	severity: 'warning';
+	message: string;
+	sectionId: null;
+	fieldId: null;
+	field: null;
+	evidence: never[];
+}
+
+interface IFailedAnalysisFixture {
+	contractVersion: '1';
+	parserVersion: '1';
+	status: 'failed';
+	input: BankImportInput;
+	sections: never[];
+	issues: IAnalysisFixtureWarning[];
+}
 
 async function directory(): Promise<string> {
 	await mkdir("artifacts", { recursive: true });
@@ -55,7 +73,7 @@ test("document runs preserve exact fields, complete source evidence, failures an
 	const loaded: ISavedWorkspace = await loadWorkspace(file);
 	assert.equal(saved.schemaVersion, SCHEMA_VERSION);
 	assert.deepEqual(loaded.documentImports, [run]);
-	const retained: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; } = loaded.documentImports[0].files[0];
+	const retained: DocumentFileResult = loaded.documentImports[0].files[0];
 	assert.equal(retained.status, "imported");
 	if (retained.status === "imported") {
 		assert.equal(retained.record.result.sections[0].amounts[0].candidates[0].coefficient, "900719925474099327");
@@ -104,8 +122,8 @@ for (const version of [1, 2]) {
 test("failed interpretation retains raw extraction and its identity but permits retrying the same content", async (): Promise<void> => {
 	const root: string = await directory(),
 		file: string = path.join(root, "retry.receiptmatch");
-	const extracted: { status: "complete"; input: BankImportInput; } & { status: "complete"; } = extractedDocument(Buffer.from("retry-content"), randomUUID());
-	const analysis: { contractVersion: "1"; parserVersion: "1"; status: "failed"; input: BankImportInput; sections: never[]; issues: { code: string; severity: "warning"; message: string; sectionId: null; fieldId: null; field: null; evidence: never[]; }[]; } = {
+	const extracted: ReturnType<typeof extractedDocument> = extractedDocument(Buffer.from("retry-content"), randomUUID());
+	const analysis: IFailedAnalysisFixture = {
 		contractVersion: "1" as const,
 		parserVersion: "1" as const,
 		status: "failed" as const,
@@ -227,7 +245,7 @@ test("document schema refuses outside paths, successful failed-analysis claims a
 	const root: string = path.resolve("artifacts/schema-documents"),
 		run: StoredDocumentImport = documentRun(root);
 	assert.equal(storedDocumentImportSchema.safeParse(run).success, true);
-	const imported: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; } = run.files[0];
+	const imported: DocumentFileResult = run.files[0];
 	assert.equal(imported.status, "imported");
 	if (imported.status !== "imported") {
 		return;

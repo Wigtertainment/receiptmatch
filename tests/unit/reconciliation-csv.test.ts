@@ -10,7 +10,7 @@ import path from 'node:path';
 import { test, type TestContext } from 'vitest';
 import { reconciliationCsvColumns, reconciliationRows, serializeReconciliationCsv } from '../../electron/reconciliation-csv.js';
 import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, type ISavedWorkspace } from '../../electron/store.js';
-import { advanceReviewRevision, approvalSelectionFor } from '../../src/shared/match-approvals.js';
+import { advanceReviewRevision, approvalSelectionFor, type MatchApproval } from '../../src/shared/match-approvals.js';
 import type { DocumentExportOutcome } from '../../src/shared/document-export.js';
 import { row, statement } from './bank-fixtures.js';
 import { documentRun, retainedBank, retainedDocument } from './document-fixtures.js';
@@ -23,11 +23,11 @@ test('projects saved bookings, approval and copy outcomes, and unresolved rows w
 		...row(385, '25 Feb 2032', '', null, null).filter((span: PositionedSpan): string => span.text));
 	const bank: StoredBankImport = retainedBank(root, input);
 	bank.filePath = 'C:\\synthetic\\bank.pdf';
-	const [{ transactionId: first }, { transactionId: second }]: { rowId: string; transactionId: string; }[] = bank.transactions;
-	const [{ draftId: promoted }, { draftId: unresolved }]: { rowId: string; draftId: string; }[] = bank.drafts;
+	const [{ transactionId: first }, { transactionId: second }]: StoredBankImport['transactions'][number][] = bank.transactions;
+	const [{ draftId: promoted }, { draftId: unresolved }]: StoredBankImport['drafts'][number][] = bank.drafts;
 	const document: StoredSupportingDocument = retainedDocument(root, 'Résumé.pdf');
 	const replacement: StoredSupportingDocument = retainedDocument(root, 'replacement.pdf');
-	const approval: { batchId: `${string}-${string}-${string}-${string}-${string}`; approvedAt: string; transactionId: string; documentId: string; transactionRevision: number; documentRevision: number; associationRevision: number; } = { ...approvalSelectionFor(first, document.id), batchId: randomUUID(), approvedAt: '2032-02-29T12:00:00.000Z' };
+	const approval: MatchApproval = { ...approvalSelectionFor(first, document.id), batchId: randomUUID(), approvedAt: '2032-02-29T12:00:00.000Z' };
 	const file: string = path.join(root, 'workspace.receiptmatch');
 	await createWorkspace(file, newMetadata(), [bank], [documentRun(root, [document, replacement])], new Map([[first, document.id], [second, null]]),
 		new Map([[promoted, { rowId: promoted, revision: 2, accountAmount: { currency: 'EUR', coefficient: '-90071992547409932700', scale: 4 } }]]),

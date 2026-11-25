@@ -1,4 +1,4 @@
-import type { BankImportInput, BankImportResult, PositionedSpan, SourceEvidence, TransactionCandidate, UnresolvedDraft } from "../../src/shared/bank-import.js";
+import type { BankImportInput, BankImportResult, PositionedSpan, TransactionCandidate, UnresolvedDraft } from "../../src/shared/bank-import.js";
 import { test, vi, type Mock, type MockInstance, type TestContext } from 'vitest';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
@@ -7,7 +7,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { createWorkspace, fingerprint, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERSION, type ISavedWorkspace } from '../../electron/store.js';
+import { createWorkspace, fingerprint, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERSION, type ISavedWorkspace, type WorkspaceMetadata } from '../../electron/store.js';
 import { parseBankStatement } from '../../electron/import/registry.js';
 import type { BankCorrection } from '../../src/shared/bank-corrections.js';
 import { advanceReviewRevision, approvalSelectionFor, type ReviewApprovalState } from '../../src/shared/match-approvals.js';
@@ -16,6 +16,8 @@ import type { StoredDocumentImport, StoredSupportingDocument } from '../../src/s
 import { storedBankImportSchema, type StoredBankImport } from '../../src/shared/workspace-import.js';
 import { row, statement } from './bank-fixtures.js';
 import { documentRun, retainedDocument } from './document-fixtures.js';
+
+interface ILegacyWorkspace { file: string; legacyAccountId: ReturnType<typeof randomUUID>; saved: ISavedWorkspace }
 
 async function directory(): Promise<string> {
   await mkdir('artifacts', { recursive: true }); return mkdtemp(path.resolve('artifacts/import-store-'));
@@ -33,13 +35,15 @@ function record(root: string, partial: boolean = false): StoredBankImport {
   assert.equal(result.status, partial ? 'partial' : 'complete');
   return storedBankImportSchema.parse({
     id, importedAt: '2032-03-01T12:00:00.000Z', filePath: path.join(root, `${id}.pdf`), result,
-    accounts: result.accountSections.map((value: { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; }): { sectionId: string; accountId: `${string}-${string}-${string}-${string}-${string}`; statementId: `${string}-${string}-${string}-${string}-${string}`; } => ({ sectionId: value.sectionId, accountId: randomUUID(), statementId: randomUUID() })),
-    transactions: result.transactions.map((value: TransactionCandidate): { rowId: string; transactionId: `${string}-${string}-${string}-${string}-${string}`; } => ({ rowId: value.rowId, transactionId: randomUUID() })),
-    drafts: result.unresolvedDrafts.map((value: UnresolvedDraft): { rowId: string; draftId: `${string}-${string}-${string}-${string}-${string}`; } => ({ rowId: value.rowId, draftId: randomUUID() }))
+    accounts: result.accountSections.map((value: BankImportResult['accountSections'][number]): StoredBankImport['accounts'][number] => ({
+      sectionId: value.sectionId, accountId: randomUUID(), statementId: randomUUID()
+    })),
+    transactions: result.transactions.map((value: TransactionCandidate): StoredBankImport['transactions'][number] => ({ rowId: value.rowId, transactionId: randomUUID() })),
+    drafts: result.unresolvedDrafts.map((value: UnresolvedDraft): StoredBankImport['drafts'][number] => ({ rowId: value.rowId, draftId: randomUUID() }))
   });
 }
 
-async function legacy(root: string): Promise<{ file: string; legacyAccountId: `${string}-${string}-${string}-${string}-${string}`; saved: ISavedWorkspace; }> {
+async function legacy(root: string): Promise<ILegacyWorkspace> {
   const file: string = path.join(root, 'legacy.receiptmatch'); await createWorkspace(file, newMetadata());
   const legacyAccountId: `${string}-${string}-${string}-${string}-${string}` = randomUUID();
   const db: Database.Database = new Database(file); db.pragma('foreign_keys=ON');
@@ -63,7 +67,8 @@ function baseRows(file: string): Record<string, unknown[]> {
 }
 
 test('version 1 opens without writes; its first explicit metadata-only save atomically upgrades without changing financial records', async (): Promise<void> => {
-  const root: string = await directory(); const { file, saved }: { file: string; legacyAccountId: `${string}-${string}-${string}-${string}-${string}`; saved: ISavedWorkspace; } = await legacy(root); const before: NonSharedBuffer = await readFile(file); const financial: Record<string, unknown[]> = baseRows(file);
+  const root: string = await directory(); const { file, saved }: ILegacyWorkspace = await legacy(root);
+  const before: NonSharedBuffer = await readFile(file); const financial: Record<string, unknown[]> = baseRows(file);
   assert.equal(saved.schemaVersion, 1); assert.deepEqual(saved.imports, []);
   const opened: ISavedWorkspace = await loadWorkspace(file); assert.deepEqual(await readFile(file), before); assert.equal(opened.schemaVersion, 1);
   const upgraded: ISavedWorkspace = await saveWorkspace(opened, { ...opened.metadata, name: 'Explicitly upgraded' });
@@ -87,7 +92,7 @@ test('partial imports preserve drafts, field evidence, adapter versions, stable 
     assert.deepEqual(projected, { coefficient: '-9007199254740993', currency: 'EUR', scale: 2, statement_id: retained.accounts[0].statementId });
     const source: unknown = db.prepare('SELECT path,fingerprint FROM sources WHERE id=?').get(retained.result.sourceProvenance!.sourceId);
     assert.deepEqual(source, { path: retained.filePath, fingerprint: retained.result.sourceProvenance!.sha256 });
-    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, retained.result.transactions.length);
+    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as Record<'count', number>).count, retained.result.transactions.length);
   } finally {
     db.close();
   }
@@ -97,7 +102,8 @@ test('partial imports preserve drafts, field evidence, adapter versions, stable 
 });
 
 test('explicit append to a version 1 file preserves every legacy transaction, document and manual approval', async (): Promise<void> => {
-  const root: string = await directory(); const { file, saved }: { file: string; legacyAccountId: `${string}-${string}-${string}-${string}-${string}`; saved: ISavedWorkspace; } = await legacy(root); const before: Record<string, unknown[]> = baseRows(file); const retained: StoredBankImport = record(root, true);
+  const root: string = await directory(); const { file, saved }: ILegacyWorkspace = await legacy(root);
+  const before: Record<string, unknown[]> = baseRows(file); const retained: StoredBankImport = record(root, true);
   const appended: ISavedWorkspace = await saveWorkspace(saved, { ...saved.metadata, name: 'With imports' }, [retained]);
   assert.equal(appended.schemaVersion, SCHEMA_VERSION); assert.deepEqual((await loadWorkspace(file)).imports, [retained]);
   const after: Record<string, unknown[]> = baseRows(file);
@@ -118,9 +124,9 @@ test('default two-argument saves preserve imports and repeated appends never dup
   assert.deepEqual((await loadWorkspace(file)).imports, [first, second]); assert.deepEqual(repeated.imports, [first, second]);
   const db: Database.Database = new Database(file, { readonly: true });
   try {
-    assert.equal((db.prepare('SELECT count(*) AS count FROM bank_imports').get() as { count: number }).count, 2);
-    assert.equal((db.prepare('SELECT count(*) AS count FROM sources').get() as { count: number }).count, 2);
-    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, first.transactions.length + second.transactions.length);
+    assert.equal((db.prepare('SELECT count(*) AS count FROM bank_imports').get() as Record<'count', number>).count, 2);
+    assert.equal((db.prepare('SELECT count(*) AS count FROM sources').get() as Record<'count', number>).count, 2);
+    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as Record<'count', number>).count, first.transactions.length + second.transactions.length);
   } finally {
     db.close();
   }
@@ -285,7 +291,7 @@ test('a failure deleting the bank import manifest rolls back the removal', async
 });
 
 test('duplicate content and global identities are rejected against legacy rows, the workspace and other new imports without writes', async (): Promise<void> => {
-  const root: string = await directory(); const { file, saved, legacyAccountId }: { file: string; legacyAccountId: `${string}-${string}-${string}-${string}-${string}`; saved: ISavedWorkspace; } = await legacy(root);
+  const root: string = await directory(); const { file, saved, legacyAccountId }: ILegacyWorkspace = await legacy(root);
   const variants: StoredBankImport[][] = [];
   const legacyCollision: StoredBankImport = record(root); legacyCollision.transactions[0].transactionId = legacyAccountId; variants.push([legacyCollision]);
   const workspaceCollision: StoredBankImport = record(root, true); workspaceCollision.drafts[0].draftId = saved.metadata.id; variants.push([workspaceCollision]);
@@ -299,17 +305,17 @@ test('duplicate content and global identities are rejected against legacy rows, 
 });
 
 test('invalid mappings reject before writes and failed creation does not leave a workspace', async (): Promise<void> => {
-  const root: string = await directory(); const { file, saved }: { file: string; legacyAccountId: `${string}-${string}-${string}-${string}-${string}`; saved: ISavedWorkspace; } = await legacy(root); const invalid: StoredBankImport = record(root); invalid.transactions.pop();
+  const root: string = await directory(); const { file, saved }: ILegacyWorkspace = await legacy(root); const invalid: StoredBankImport = record(root); invalid.transactions.pop();
   const before: NonSharedBuffer = await readFile(file); await assert.rejects((): Promise<ISavedWorkspace> => saveWorkspace(saved, saved.metadata, [invalid])); assert.deepEqual(await readFile(file), before);
   const target: string = path.join(root, 'invalid.receiptmatch'); await assert.rejects((): Promise<ISavedWorkspace> => createWorkspace(target, newMetadata(), [invalid]));
   await assert.rejects((): Promise<NonSharedBuffer> => readFile(target), { code: 'ENOENT' });
-  const metadata: { id: string; name: string; createdAt: string; savedAt: string | null; } = newMetadata(); const collision: StoredBankImport = record(root); collision.id = metadata.id;
+  const metadata: WorkspaceMetadata = newMetadata(); const collision: StoredBankImport = record(root); collision.id = metadata.id;
   await assert.rejects((): Promise<ISavedWorkspace> => createWorkspace(target, metadata, [collision]), /identity/);
   await assert.rejects((): Promise<NonSharedBuffer> => readFile(target), { code: 'ENOENT' });
 });
 
 test('external changes block stale saves in both version 1 and imported version 2 files without changing the newer bytes', async (): Promise<void> => {
-  const root: string = await directory(); const old: { file: string; legacyAccountId: `${string}-${string}-${string}-${string}-${string}`; saved: ISavedWorkspace; } = await legacy(root);
+  const root: string = await directory(); const old: ILegacyWorkspace = await legacy(root);
   const current: ISavedWorkspace = await createWorkspace(path.join(root, 'current.receiptmatch'), newMetadata(), [record(root, true)]);
   for (const saved of [old.saved, current]) {
     const db: Database.Database = new Database(saved.filePath); try {
@@ -368,7 +374,9 @@ test('broken manifests and mismatched normalized source, account, statement and 
 });
 
 test('an actual append failure rolls back migration, projections and metadata together', async (): Promise<void> => {
-  const root: string = await directory(); const { file, saved }: { file: string; legacyAccountId: `${string}-${string}-${string}-${string}-${string}`; saved: ISavedWorkspace; } = await legacy(root); const before: NonSharedBuffer = await readFile(file); const original: (db: Database.Database, sql: string) => Database.Statement = Function.prototype.call.bind(Reflect.get(Database.prototype, 'prepare')) as (db: Database.Database, sql: string) => Database.Statement;
+  const root: string = await directory(); const { file, saved }: ILegacyWorkspace = await legacy(root); const before: NonSharedBuffer = await readFile(file);
+  const original: (db: Database.Database, sql: string) => Database.Statement =
+    Function.prototype.call.bind(Reflect.get(Database.prototype, 'prepare')) as (db: Database.Database, sql: string) => Database.Statement;
   const probe: import("vitest").MockInstance<typeof Database.prototype.prepare> = vi.spyOn(Database.prototype, 'prepare').mockImplementation(function(this: Database.Database, sql: string): Database.Statement<unknown[], unknown> {
     const query: Database.Statement<unknown[], unknown> = original(this, sql);
     if (sql.startsWith('INSERT INTO bank_imports')) {
@@ -399,7 +407,7 @@ test('concurrent append saves cannot merge or overwrite one another silently', a
 for (const operation of ['load', 'save', 'create'] as const) {
   test(`${operation} rejects an atomic pathname replacement between the protected descriptor and SQLite open`, async (): Promise<void> => {
   const root: string = await directory(); const file: string = path.join(root, 'selected.receiptmatch'); const replacement: string = path.join(root, 'replacement.receiptmatch');
-  const parked: string = path.join(root, 'original-inode.receiptmatch'); const metadata: { id: string; name: string; createdAt: string; savedAt: string | null; } = newMetadata();
+  const parked: string = path.join(root, 'original-inode.receiptmatch'); const metadata: WorkspaceMetadata = newMetadata();
   const current: ISavedWorkspace | null = operation === 'create' ? null : await createWorkspace(file, { ...metadata, name: 'Original revision' });
   if (operation === 'create') {
     const foreign: Database.Database = new Database(replacement); foreign.exec("CREATE TABLE untouched(value TEXT); INSERT INTO untouched VALUES('external original');"); foreign.close();

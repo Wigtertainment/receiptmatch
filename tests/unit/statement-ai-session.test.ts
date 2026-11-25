@@ -13,6 +13,8 @@ import { parseBankStatement } from '../../electron/import/registry.js';
 import { WorkspaceSession, type IWorkspaceDialogs } from '../../electron/workspace-session.js';
 import { row, statement } from './bank-fixtures.js';
 
+interface IStatementSessionFixture { session: WorkspaceSession; dialogs: IWorkspaceDialogs; record: StoredBankImport; savedFile: string }
+
 const pdf: string = 'Synthetic statement snapshot for session tests';
 
 function proposal(filePath: string): StoredBankImport {
@@ -30,15 +32,13 @@ function proposal(filePath: string): StoredBankImport {
         drafts: result.unresolvedDrafts.map((item: StoredBankImport['result']['unresolvedDrafts'][number]): StoredBankImport['drafts'][number] => ({ rowId: item.rowId, draftId: randomUUID() })) };
 }
 
-function fixture(root: string, recognize?: IStatementFallback['run'], cancelSelection?: () => boolean): {
-    session: WorkspaceSession; dialogs: IWorkspaceDialogs; record: StoredBankImport; savedFile: string;
-} {
+function fixture(root: string, recognize?: IStatementFallback['run'], cancelSelection?: () => boolean): IStatementSessionFixture {
     const record: StoredBankImport = proposal(path.join(root, 'unknown.pdf'));
     const savedFile: string = path.join(root, 'workspace.receiptmatch');
     const dialogs: IWorkspaceDialogs = {
         save: (): Promise<string> => Promise.resolve(savedFile), open: (): Promise<string> => Promise.resolve(savedFile), unsaved: (): Promise<'discard'> => Promise.resolve('discard')
     };
-    const service: IBankImportService = { run(options: IBankImportOptions): Promise<BankImportAttempt> {
+    const statementImportService: IBankImportService = { run(options: IBankImportOptions): Promise<BankImportAttempt> {
         if (cancelSelection?.()) {
             return Promise.resolve({ status: 'cancelled' });
         }
@@ -49,7 +49,7 @@ function fixture(root: string, recognize?: IStatementFallback['run'], cancelSele
             filePath: record.filePath, run: recognize ?? ((): Promise<StatementFallbackResult> => Promise.resolve({ status: 'proposed', record }))
         } });
     } };
-    return { session: new WorkspaceSession(dialogs, undefined, service), dialogs, record, savedFile };
+    return { session: new WorkspaceSession(dialogs, undefined, statementImportService), dialogs, record, savedFile };
 }
 
 function pending(state: IWorkspaceState, stage: StatementFallbackState['stage']): StatementFallbackState {

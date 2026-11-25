@@ -300,7 +300,9 @@ test('registry considers every adapter, refuses ambiguous matches, validates res
     assert.equal(parseBankStatement(statement(), [other]).issues[0].code, 'adapter-failed');
     const badResult: IBankAdapter = {
         ...other,
-        parse: (input: BankImportInput): { status: "complete"; transactions: never[]; issues: ImportIssue[]; contractVersion: "1"; adapter: { bankId: string; adapterId: string; version: string; layoutId: string; layoutVersion: string; } | null; sourceProvenance: { sourceId: string; sha256: string; extractionRunId: string; extractionVersion: string; pages: { pageId: string; pageNumber: number; width: number; height: number; }[]; } | null; accountSections: { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; }[]; unresolvedDrafts: UnresolvedDraft[]; } => ({ ...revolutAdapter.parse(input), status: 'complete', transactions: [], issues: [importIssue('invalid', 'Should not be complete.')] })
+        parse: (input: BankImportInput): BankImportResult => ({
+            ...revolutAdapter.parse(input), status: 'complete', transactions: [], issues: [importIssue('invalid', 'Should not be complete.')]
+        })
     };
     assert.equal(parseBankStatement(statement(), [badResult]).issues[0].code, 'invalid-adapter-result');
     const wrongSource: IBankAdapter = {

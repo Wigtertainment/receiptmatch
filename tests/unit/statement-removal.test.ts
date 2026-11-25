@@ -19,18 +19,20 @@ import type { IMatchSummary } from '../../src/shared/workspace-matching.js';
 import { statement } from './bank-fixtures.js';
 import { documentRun, retainedBank, retainedDocument } from './document-fixtures.js';
 
-async function fixture(context: TestContext): Promise<{ root: string; file: string }> {
+interface IStatementRemovalFixture { root: string; file: string }
+
+async function fixture(context: TestContext): Promise<IStatementRemovalFixture> {
     const root: string = await mkdtemp(path.join(tmpdir(), 'receiptmatch-statement-removal-'));
     context.onTestFinished((): Promise<void> => rm(root, { recursive: true, force: true }));
     return { root, file: path.join(root, 'test.receiptmatch') };
 }
 
-function createSession(file: string, service?: StatementImportService): WorkspaceSession {
+function createSession(file: string, statementImportService?: StatementImportService): WorkspaceSession {
     return new WorkspaceSession({
         open: (): Promise<string> => Promise.resolve(file),
         save: (): Promise<string> => Promise.resolve(file),
         unsaved: (): Promise<'discard'> => Promise.resolve('discard')
-    }, undefined, service);
+    }, undefined, statementImportService);
 }
 
 function workspace(session: WorkspaceSession): IWorkspaceView {

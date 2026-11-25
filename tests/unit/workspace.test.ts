@@ -7,15 +7,19 @@ import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { createWorkspace, fingerprint, loadWorkspace, moneySchema, newMetadata, saveWorkspace, SCHEMA_VERSION, type ISavedWorkspace } from '../../electron/store.js';
+import { createWorkspace, fingerprint, loadWorkspace, moneySchema, newMetadata, saveWorkspace, SCHEMA_VERSION,
+  type ISavedWorkspace, type WorkspaceMetadata } from '../../electron/store.js';
 import { WorkspaceSession, type IWorkspaceDialogs } from '../../electron/workspace-session.js';
+
+interface IDialogPlan { saves: (string | null)[]; opens: (string | null)[]; choices: ('save' | 'discard' | 'cancel')[] }
+interface IDialogScript { plan: IDialogPlan; dialogs: IWorkspaceDialogs }
 
 async function directory(): Promise<string> {
   await mkdir('artifacts', { recursive: true }); return mkdtemp(path.resolve('artifacts/unit-'));
 }
 
-function scriptedDialogs(): { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; dialogs: IWorkspaceDialogs; } {
-  const plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ('save' | 'discard' | 'cancel')[] } = { saves: [], opens: [], choices: [] };
+function scriptedDialogs(): IDialogScript {
+  const plan: IDialogPlan = { saves: [], opens: [], choices: [] };
   const dialogs: IWorkspaceDialogs = { save: async (): Promise<string | null> => Promise.resolve(plan.saves.shift() ?? null), open: async (): Promise<string | null> => Promise.resolve(plan.opens.shift() ?? null), unsaved: async (): Promise<"discard" | "save" | "cancel"> => Promise.resolve(plan.choices.shift() ?? 'cancel') };
   return { plan, dialogs };
 }
@@ -35,7 +39,7 @@ test('workspace stores exact canonical amounts, source references and independen
   await saveWorkspace(loaded, { ...loaded.metadata, name: 'Business — November' });
   const reopened: ISavedWorkspace = await loadWorkspace(file); assert.equal(reopened.metadata.name, 'Business — November');
   const read: Database.Database = new Database(file, { readonly: true });
-  assert.equal((read.prepare('SELECT coefficient FROM transactions WHERE id=?').get('t1') as { coefficient: string }).coefficient, '9007199254740993');
+  assert.equal((read.prepare('SELECT coefficient FROM transactions WHERE id=?').get('t1') as Record<'coefficient', string>).coefficient, '9007199254740993');
   assert.deepEqual(read.prepare('SELECT confidence,approved_revision FROM associations ORDER BY id').all(), [{ confidence: 'uncertain', approved_revision: '1:1:1' }, { confidence: 'reliable', approved_revision: null }, { confidence: 'reliable', approved_revision: null }]);
   read.close(); assert.equal(await fingerprint(original), originalHash);
   assert.equal(BigInt(moneySchema.parse({ coefficient: '9007199254740993', currency: 'EUR', scale: 2 }).coefficient), 9007199254740993n);
@@ -73,11 +77,12 @@ test('two concurrent saves from the same revision cannot silently overwrite one 
 
 for (const operation of ['create', 'save'] as const) {
   test(`${operation} captures its committed fingerprint while competing SQLite writers remain excluded`, async (): Promise<void> => {
-  const root: string = await directory(); const file: string = path.join(root, 'protected.receiptmatch'); const metadata: { name: string; id: string; createdAt: string; savedAt: string | null; } = { ...newMetadata(), name: 'Protected revision' };
+  const root: string = await directory(); const file: string = path.join(root, 'protected.receiptmatch');
+  const metadata: WorkspaceMetadata = { ...newMetadata(), name: 'Protected revision' };
   const existing: ISavedWorkspace | null = operation === 'save' ? await createWorkspace(file, newMetadata()) : null;
-  const originalRead: { (fd: number, buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: fsModule.ReadPosition | null): number; (fd: number, buffer: NodeJS.ArrayBufferView, opts?: fsModule.ReadOptions): number; } = fsModule.readSync; let reads: number = 0; let attempts: number = 0;
+  const originalRead: typeof fsModule.readSync = fsModule.readSync; let reads: number = 0; let attempts: number = 0;
   const captureRead: 1 | 3 = operation === 'create' ? 1 : 3;
-  const probe: Mock<{ (fd: number, buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: fsModule.ReadPosition | null): number; (fd: number, buffer: NodeJS.ArrayBufferView, opts?: fsModule.ReadOptions): number; }> = vi.spyOn(fsModule, 'readSync').mockImplementation(((selected: number, ...rest: [buffer: NodeJS.ArrayBufferView, options?: fsModule.ReadOptions] | [buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: fsModule.ReadPosition | null]): number => {
+  const probe: Mock<typeof fsModule.readSync> = vi.spyOn(fsModule, 'readSync').mockImplementation(((selected: number, ...rest: [buffer: NodeJS.ArrayBufferView, options?: fsModule.ReadOptions] | [buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: fsModule.ReadPosition | null]): number => {
     if (rest[2] === 65536 && rest[3] === 0 && fsModule.fstatSync(Number(selected)).ino === fsModule.statSync(file).ino && ++reads === captureRead) {
       attempts++;
       const other: SpawnSyncReturns<string> = spawnSync(process.execPath, ['-e', "const Database=require('better-sqlite3');let db;try{db=new Database(process.argv[1],{timeout:0});db.prepare('UPDATE workspace SET name=?').run('External writer');process.exitCode=2;}catch(error){if(error.code==='SQLITE_BUSY'){console.log(error.code);}else{console.error(error);process.exitCode=3;}}finally{db?.close();}", file], { encoding: 'utf8', timeout: 10000, windowsHide: true });
@@ -98,7 +103,7 @@ for (const operation of ['create', 'save'] as const) {
 }
 
 test('cancelled and failed saves block replacement/close and retain the unsaved workspace', async (): Promise<void> => {
-  const root: string = await directory(); const { plan, dialogs }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; dialogs: IWorkspaceDialogs; } = scriptedDialogs(); const session: WorkspaceSession = new WorkspaceSession(dialogs);
+  const root: string = await directory(); const { plan, dialogs }: IDialogScript = scriptedDialogs(); const session: WorkspaceSession = new WorkspaceSession(dialogs);
   await session.dispatch({ type: 'new' }); await session.dispatch({ type: 'rename', name: 'Current work' }); const id: string = session.state().workspace!.id;
   plan.choices.push('save'); plan.saves.push(null); await session.dispatch({ type: 'new' });
   assert.equal(session.state().workspace!.id, id); assert.equal(session.state().workspace!.dirty, true);
@@ -114,7 +119,7 @@ test('cancelled and failed saves block replacement/close and retain the unsaved 
 });
 
 test('discard only replaces current work after Open succeeds; cancelled/invalid Open preserves it', async (): Promise<void> => {
-  const root: string = await directory(); const { plan, dialogs }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; dialogs: IWorkspaceDialogs; } = scriptedDialogs(); const session: WorkspaceSession = new WorkspaceSession(dialogs);
+  const root: string = await directory(); const { plan, dialogs }: IDialogScript = scriptedDialogs(); const session: WorkspaceSession = new WorkspaceSession(dialogs);
   await session.dispatch({ type: 'new' }); await session.dispatch({ type: 'rename', name: 'Keep me' }); const id: string = session.state().workspace!.id;
   plan.choices.push('discard'); plan.opens.push(null); await session.dispatch({ type: 'open' }); assert.equal(session.state().workspace!.id, id);
   plan.choices.push('discard'); plan.opens.push(path.join(root, 'missing.receiptmatch')); await session.dispatch({ type: 'open' }); assert.equal(session.state().workspace!.name, 'Keep me'); assert.equal(session.state().workspace!.dirty, true);

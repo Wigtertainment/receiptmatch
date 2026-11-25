@@ -1,4 +1,4 @@
-import type { BankImportInput, PositionedSpan } from "../../src/shared/bank-import.js";
+import type { PositionedSpan } from "../../src/shared/bank-import.js";
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
 import type { IOriginalPreviewResult } from "../../src/shared/original-preview.js";
 import { createHash, randomUUID } from 'node:crypto';
@@ -11,6 +11,17 @@ import { createWorkspace, newMetadata } from '../../electron/store.js';
 import type { StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
 import { span } from '../unit/bank-fixtures.js';
 import { documentRun, extractedDocument, retainedBank } from '../unit/document-fixtures.js';
+
+interface ISelectedOpenDialog { canceled: false; filePaths: string[] }
+interface ICancelledOpenDialog { canceled: true; filePaths: never[] }
+interface IUnsupportedPreviewRequest {
+    kind: "statement";
+    id: `${string}-${string}-${string}-${string}-${string}`;
+    loadRevision: number;
+    filePath: string;
+}
+type PreviewLaunch = [Page, Awaited<ReturnType<Locator['click']>>];
+interface IPreviewPolicyProbe { stylesAllowed: boolean; offline: boolean }
 
 async function pdf(pages: string[][]): Promise<Uint8Array<ArrayBufferLike>> {
     const file: PDFDocument = await PDFDocument.create();
@@ -27,7 +38,7 @@ async function pdf(pages: string[][]): Promise<Uint8Array<ArrayBufferLike>> {
 async function original(root: string, filename: string, format: StoredSupportingDocument['format'], bytes: Uint8Array, lines: string[]): Promise<StoredSupportingDocument> {
     const filePath: string = path.join(root, filename);
     await writeFile(filePath, bytes);
-    const { input }: { status: "complete"; input: BankImportInput; } & { status: "complete"; } = extractedDocument(bytes, randomUUID(), format);
+    const { input }: ReturnType<typeof extractedDocument> = extractedDocument(bytes, randomUUID(), format);
     input.pages[0].spans = lines.map((line: string, index: number): PositionedSpan => span(line, 35, 55 + index * 30, 280, format === 'pdf' ? 'embedded-text' : 'local-ocr'));
     return { id: randomUUID(), filePath, format, importedAt: '2032-05-20T12:00:00.000Z', result: interpretSupportingDocument(input) };
 }
@@ -65,23 +76,24 @@ test('opens local originals independently from statements, documents and match s
         const workspaceFile: string = path.join(root, 'preview.receiptmatch');
         await createWorkspace(workspaceFile, newMetadata(), [bank], [documentRun(root, [receipt, ...pictures])]);
         await app.evaluate(({ dialog }: typeof Electron.CrossProcessExports, selections: (string | null)[]): void => {
-            dialog.showOpenDialog = async (): Promise<{ canceled: false; filePaths: string[]; } | { canceled: true; filePaths: never[]; }> => {
+            dialog.showOpenDialog = async (): Promise<ISelectedOpenDialog | ICancelledOpenDialog> => {
                 if (!selections.length) {
                     throw new Error('Unexpected file dialog.');
                 }
                 const filePath: string | null | undefined = selections.shift();
                 return Promise.resolve(filePath ? { canceled: false, filePaths: [filePath] } : { canceled: true, filePaths: [] });
             };
-            dialog.showMessageBox = async (): Promise<{ response: number; checkboxChecked: false; }> => Promise.resolve(({ response: 1, checkboxChecked: false }));
+            dialog.showMessageBox = async (): Promise<Pick<Electron.MessageBoxReturnValue, 'response'> & Record<'checkboxChecked', false>> =>
+                Promise.resolve(({ response: 1, checkboxChecked: false }));
         }, [workspaceFile, movedPng, null, changedReceipt, movedReceipt, movedStatement, workspaceFile]);
         await main.getByRole('button', { name: 'Open workspace', exact: false }).click();
         const invalid: IOriginalPreviewResult = await main.evaluate(async (): Promise<IOriginalPreviewResult> => {
-            const payload: { kind: "statement"; id: `${string}-${string}-${string}-${string}-${string}`; loadRevision: number; filePath: string; } = { kind: 'statement' as const, id: crypto.randomUUID(), loadRevision: 1, filePath: 'unrelated.pdf' };
+            const payload: IUnsupportedPreviewRequest = { kind: 'statement' as const, id: crypto.randomUUID(), loadRevision: 1, filePath: 'unrelated.pdf' };
             return window.receiptmatch.openOriginal(payload);
         });
         expect(invalid.error).toMatch(/not supported/);
         const openPreview: (page: Page, name: string) => Promise<Page> = async (page: Page, name: string): Promise<Page> => {
-            const [preview]: [Page, void] = await Promise.all([app.waitForEvent('window'), page.getByRole('button', { name: `Open original ${name}`, exact: true }).click()]);
+            const [preview]: PreviewLaunch = await Promise.all([app.waitForEvent('window'), page.getByRole('button', { name: `Open original ${name}`, exact: true }).click()]);
             await expect.poll((): string => preview.url()).toBe('receiptmatch-extraction://preview/index.html');
             return preview;
         };
@@ -114,7 +126,7 @@ test('opens local originals independently from statements, documents and match s
         await wheelZoom(statement, -100);
         await expect(pdfPage).toHaveAttribute('width', '660');
         await expect(pdfZoom).toContainText('110%');
-        expect(await statement.evaluate(async (): Promise<{ stylesAllowed: boolean; offline: boolean; }> => {
+        expect(await statement.evaluate(async (): Promise<IPreviewPolicyProbe> => {
             const root: Element | null = document.querySelector('app-preview-controls');
             const styles: HTMLStyleElement[] = [...document.querySelectorAll('style')].filter((style: HTMLStyleElement): boolean => style.textContent?.includes('wig-button-min-height'));
             const offline: boolean = await fetch('https://example.invalid/').then((): boolean => false, (): boolean => true);
@@ -135,7 +147,7 @@ test('opens local originals independently from statements, documents and match s
         await expect(previewButton).toHaveText('');
         await expect(previewButton).toHaveCSS('width', '44px');
         await expect(previewButton).toHaveCSS('height', '44px');
-        const [png]: [Page, void] = await Promise.all([app.waitForEvent('window'), previewButton.press('Enter')]);
+        const [png]: PreviewLaunch = await Promise.all([app.waitForEvent('window'), previewButton.press('Enter')]);
         await expect.poll((): string => png.url()).toBe('receiptmatch-extraction://preview/index.html');
         await expect(png.getByRole('img')).toBeVisible();
         await expect.poll((): Promise<number> => png.getByRole('img').evaluate((image: HTMLElement | SVGElement): number => (image as HTMLImageElement).naturalWidth)).toBe(600);

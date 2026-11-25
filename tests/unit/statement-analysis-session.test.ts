@@ -16,7 +16,7 @@ import type { StoredBankImport } from '../../src/shared/workspace-import.js';
 import type { StoredDocumentImport, StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
 import { documentRun, retainedBank, retainedDocument } from './document-fixtures.js';
 
-interface Fixture { root: string; file: string; original: StoredBankImport; versions: StatementAnalysisVersion[]; }
+interface IFixture { root: string; file: string; original: StoredBankImport; versions: StatementAnalysisVersion[]; }
 
 function saveVersions(current: ISavedWorkspace, versions: StatementAnalysisVersion[]): Promise<ISavedWorkspace> {
     return saveWorkspace(current, current.metadata, current.imports, current.documentImports, current.matchDecisions, current.bankCorrections,
@@ -32,7 +32,7 @@ function proposed(record: StoredBankImport, date: string): BankImportResult {
     return result;
 }
 
-async function fixture(context: TestContext): Promise<Fixture> {
+async function fixture(context: TestContext): Promise<IFixture> {
     const parent: string = await realpath(tmpdir());
     const root: string = await mkdtemp(path.join(parent, 'receiptmatch-statement-versions-'));
     context.onTestFinished(async (): Promise<void> => {
@@ -57,7 +57,7 @@ function dialogs(file: string, destination: string = file): IWorkspaceDialogs {
 }
 
 test('session, corrections and reconciliation export use the latest statement analysis after reopen', async (context: TestContext): Promise<void> => {
-    const { root, file, original, versions }: Fixture = await fixture(context);
+    const { root, file, original, versions }: IFixture = await fixture(context);
     const latest: StoredBankImport = versions[1].record;
     const id: string = latest.transactions[0].transactionId;
     const session: WorkspaceSession = new WorkspaceSession(dialogs(file));
@@ -100,7 +100,7 @@ test('session, corrections and reconciliation export use the latest statement an
 });
 
 test('removing a statement also removes its analysis history and latest booking decisions', async (context: TestContext): Promise<void> => {
-    const { file, original, versions }: Fixture = await fixture(context);
+    const { file, original, versions }: IFixture = await fixture(context);
     const session: WorkspaceSession = new WorkspaceSession(dialogs(file));
     await session.dispatch({ type: 'open' });
     await session.dispatch({ type: 'set-transaction-ignored', revision: session.state().workspace!.matchRevision,
@@ -119,7 +119,7 @@ test('removing a statement also removes its analysis history and latest booking 
 });
 
 test('a new workspace clears statement analysis versions without altering the previously saved workspace', async (context: TestContext): Promise<void> => {
-    const { root, file, versions }: Fixture = await fixture(context);
+    const { root, file, versions }: IFixture = await fixture(context);
     const destination: string = path.join(root, 'new.receiptmatch');
     const session: WorkspaceSession = new WorkspaceSession(dialogs(file, destination));
     await session.dispatch({ type: 'open' });
@@ -131,7 +131,7 @@ test('a new workspace clears statement analysis versions without altering the pr
 });
 
 test('new statement and document imports cannot reuse retired analysis row identities', async (context: TestContext): Promise<void> => {
-    const { root, file, versions }: Fixture = await fixture(context);
+    const { root, file, versions }: IFixture = await fixture(context);
     const retired: string = versions[0].record.transactions[0].transactionId;
     const bank: StoredBankImport = retainedBank(root);
     bank.transactions[0].transactionId = retired;
@@ -155,7 +155,7 @@ test('new statement and document imports cannot reuse retired analysis row ident
 });
 
 test('known original bank scope preserves duplicate decisions and permits reviewing overlaps after reanalysis', async (context: TestContext): Promise<void> => {
-    const { root, original }: Fixture = await fixture(context);
+    const { root, original }: IFixture = await fixture(context);
     const other: StoredBankImport = retainedBank(root);
     const file: string = path.join(root, 'duplicates.receiptmatch');
     await createWorkspace(file, newMetadata(), [original, other]);

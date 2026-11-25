@@ -1,5 +1,5 @@
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
-import type { StoredBankImport } from "../../src/shared/workspace-import.js";
+import type { BankImportRunResult, StoredBankImport } from "../../src/shared/workspace-import.js";
 import type { BankImportInput, PositionedSpan } from "../../src/shared/bank-import.js";
 import type { TransactionMatch } from "../../src/shared/workspace-matching.js";
 import type { MatchApprovalSelection } from "../../src/shared/match-approvals.js";
@@ -21,13 +21,27 @@ import { writeReconciliationExport } from '../../electron/reconciliation-export.
 import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, type ISavedWorkspace } from '../../electron/store.js';
 import { WorkspaceSession } from '../../electron/workspace-session.js';
 import { defaultExportFilenamePattern } from '../../src/shared/export-filename.js';
-import { advanceReviewRevision, approvalSelectionFor, type ReviewApprovalState } from '../../src/shared/match-approvals.js';
-import { duplicatePairKey } from '../../src/shared/transaction-duplicates.js';
+import { advanceReviewRevision, approvalSelectionFor, type MatchApproval, type ReviewApprovalState } from '../../src/shared/match-approvals.js';
+import { duplicatePairKey, type DuplicateDecision } from '../../src/shared/transaction-duplicates.js';
 import { documentRun, retainedBank, retainedDocument } from './document-fixtures.js';
 import { statement } from './bank-fixtures.js';
 import type { PathLike } from 'node:fs';
 
-async function fixture(context: TestContext, approve: boolean = true): Promise<{ destination: string; file: string; snapshot: ISavedWorkspace; first: string; second: string; document: StoredSupportingDocument; }> {
+type ApprovedReview = Omit<ReviewApprovalState, 'approval'> & Record<'approval', MatchApproval>;
+interface IArchivedDuplicateDecision extends Pick<DuplicateDecision, 'firstId' | 'secondId'> {
+	primaryId: string;
+	archivedReview: Record<'documentId', string>;
+}
+interface IReconciliationFixture {
+	destination: string;
+	file: string;
+	snapshot: ISavedWorkspace;
+	first: string;
+	second: string;
+	document: StoredSupportingDocument;
+}
+
+async function fixture(context: TestContext, approve: boolean = true): Promise<IReconciliationFixture> {
 	const root: string = await fs.mkdtemp(path.join(await fs.realpath(tmpdir()), 'receiptmatch-reconciliation-export-'));
 	context.onTestFinished((): Promise<void> => fs.rm(root, { recursive: true, force: true }));
 	const originals: string = path.join(root, 'originals');
@@ -35,12 +49,12 @@ async function fixture(context: TestContext, approve: boolean = true): Promise<{
 	await Promise.all([fs.mkdir(originals), fs.mkdir(destination)]);
 	const file: string = path.join(root, 'workspace.receiptmatch');
 	const bank: StoredBankImport = retainedBank(originals);
-	const [{ transactionId: first }, { transactionId: second }]: { rowId: string; transactionId: string; }[] = bank.transactions;
+	const [{ transactionId: first }, { transactionId: second }]: StoredBankImport['transactions'][number][] = bank.transactions;
 	const document: StoredSupportingDocument = retainedDocument(originals, 'present.pdf', 'verified bytes');
 	const missing: StoredSupportingDocument = retainedDocument(originals, 'missing.pdf');
 	await fs.writeFile(document.filePath, 'verified bytes');
 	const decisions: Map<string, string> = new Map([[first, document.id], [second, missing.id]]);
-	const approvals: Map<string, { associationRevision: number; approval: { batchId: `${string}-${string}-${string}-${string}-${string}`; approvedAt: string; transactionId: string; documentId: string; transactionRevision: number; documentRevision: number; associationRevision: number; }; }> = new Map([...decisions].map(([transactionId, documentId]: [string, string]): [string, { associationRevision: number; approval: { batchId: `${string}-${string}-${string}-${string}-${string}`; approvedAt: string; transactionId: string; documentId: string; transactionRevision: number; documentRevision: number; associationRevision: number; }; }] => [transactionId, {
+	const approvals: Map<string, ApprovedReview> = new Map([...decisions].map(([transactionId, documentId]: [string, string]): [string, ApprovedReview] => [transactionId, {
 		associationRevision: 1, approval: { ...approvalSelectionFor(transactionId, documentId), batchId: randomUUID(), approvedAt: '2032-03-01T12:00:00.000Z' },
 	}]));
 	const snapshot: ISavedWorkspace = await createWorkspace(file, newMetadata(), [bank], [documentRun(originals, [document, missing])], decisions, new Map(), new Map(),
@@ -136,8 +150,8 @@ test('exports the primary booking and its approved document without the confirme
 	const first: StoredBankImport = retainedBank(originals);
 	const second: StoredBankImport = retainedBank(originals);
 	second.filePath = path.join(originals, 'overlapping-statement.pdf');
-	const [{ transactionId: primaryId }]: { rowId: string; transactionId: string; }[] = first.transactions;
-	const [{ transactionId: excludedId }]: { rowId: string; transactionId: string; }[] = second.transactions;
+	const [{ transactionId: primaryId }]: StoredBankImport['transactions'][number][] = first.transactions;
+	const [{ transactionId: excludedId }]: StoredBankImport['transactions'][number][] = second.transactions;
 	const document: StoredSupportingDocument = retainedDocument(originals, 'primary.pdf', 'primary bytes');
 	const archived: StoredSupportingDocument = retainedDocument(originals, 'archived.pdf', 'archived bytes');
 	const input: BankImportInput = document.result.input!;
@@ -146,12 +160,15 @@ test('exports the primary booking and its approved document without the confirme
 	}));
 	document.result = interpretSupportingDocument(input);
 	await Promise.all([fs.writeFile(document.filePath, 'primary bytes'), fs.writeFile(archived.filePath, 'archived bytes')]);
-	const approvals: Map<string, ReviewApprovalState> = new Map<string, ReviewApprovalState>([[primaryId, document.id], [excludedId, archived.id]].map(([transactionId, documentId]: string[]): [string, { associationRevision: number; approval: { batchId: `${string}-${string}-${string}-${string}-${string}`; approvedAt: string; transactionId: string; documentId: string; transactionRevision: number; documentRevision: number; associationRevision: number; }; }] => [transactionId, {
-		associationRevision: 1, approval: { ...approvalSelectionFor(transactionId, documentId), batchId: randomUUID(), approvedAt: '2032-03-01T12:00:00.000Z' },
-	}]));
+	const approvals: Map<string, ReviewApprovalState> = new Map<string, ReviewApprovalState>([[primaryId, document.id], [excludedId, archived.id]]
+		.map(([transactionId, documentId]: string[]): [string, ApprovedReview] => [transactionId, {
+			associationRevision: 1, approval: { ...approvalSelectionFor(transactionId, documentId), batchId: randomUUID(), approvedAt: '2032-03-01T12:00:00.000Z' },
+		}]));
 	approvals.set(excludedId, advanceReviewRevision(approvals.get(excludedId)));
 	const [firstId, secondId]: string[] = [primaryId, excludedId].sort();
-	const duplicates: Map<string, { firstId: string; secondId: string; primaryId: string; archivedReview: { documentId: string; }; }> = new Map([[duplicatePairKey(firstId, secondId), { firstId, secondId, primaryId, archivedReview: { documentId: archived.id } }]]);
+	const duplicates: Map<string, IArchivedDuplicateDecision> = new Map([
+		[duplicatePairKey(firstId, secondId), { firstId, secondId, primaryId, archivedReview: { documentId: archived.id } }]
+	]);
 	const file: string = path.join(root, 'workspace.receiptmatch');
 	await createWorkspace(file, newMetadata(), [first, second], [documentRun(originals, [document, archived])],
 		new Map([[primaryId, document.id]]), new Map(), new Map(), approvals, duplicates);
@@ -161,7 +178,8 @@ test('exports the primary booking and its approved document without the confirme
 	assert.ok(snapshot.matches.some((match: TransactionMatch): boolean => match.transactionId === excludedId));
 	const rows: import('../../electron/reconciliation-csv.js').ReconciliationRow[] = reconciliationRows(snapshot);
 	assert.deepEqual(rows.map((row: import('../../electron/reconciliation-csv.js').ReconciliationRow): string => row.transaction_id), [
-		...first.transactions.map((row: { rowId: string; transactionId: string; }): string => row.transactionId), ...second.transactions.slice(1).map((row: { rowId: string; transactionId: string; }): string => row.transactionId),
+		...first.transactions.map((row: StoredBankImport['transactions'][number]): string => row.transactionId),
+		...second.transactions.slice(1).map((row: StoredBankImport['transactions'][number]): string => row.transactionId),
 	]);
 	assert.equal(rows[0].match_status, 'reliable');
 	assert.equal(rows[0].approval_status, 'approved');
@@ -303,8 +321,8 @@ test('applies and removes a local ignore rule across workspaces and keeps indepe
 	differentDescriptionInput.pages[0].spans.find((span: PositionedSpan): boolean => span.text === 'To: Orchard Workshop')!.text = 'To: Orchard Workshop Annex';
 	const differentDescription: StoredBankImport = retainedBank(root, differentDescriptionInput);
 	const future: string = path.join(root, 'future.receiptmatch');
-	const [{ transactionId: matching }]: { rowId: string; transactionId: string; }[] = nextBank.transactions;
-	const [{ transactionId: independentlyIgnored }]: { rowId: string; transactionId: string; }[] = differentCurrency.transactions;
+	const [{ transactionId: matching }]: StoredBankImport['transactions'][number][] = nextBank.transactions;
+	const [{ transactionId: independentlyIgnored }]: StoredBankImport['transactions'][number][] = differentCurrency.transactions;
 	const banks: StoredBankImport[] = [nextBank, differentCurrency, differentDirection, differentDescription];
 	for (const [index, bank] of banks.entries()) {
 		bank.filePath = path.join(root, 'bank-' + index + '.pdf');
@@ -317,7 +335,8 @@ test('applies and removes a local ignore rule across workspaces and keeps indepe
 	newlyImported.filePath = path.join(root, 'newly-imported.pdf');
 	const open: (workspaceFile: string) => Promise<WorkspaceSession> = async (workspaceFile: string): Promise<WorkspaceSession> => {
 		const session: WorkspaceSession = new WorkspaceSession({ open: async (): Promise<string> => Promise.resolve(workspaceFile), save: async (): Promise<string> => Promise.resolve(workspaceFile), unsaved: async (): Promise<"discard"> => Promise.resolve('discard') },
-			undefined, { run: async (): Promise<{ status: "imported"; record: StoredBankImport; }> => Promise.resolve(({ status: 'imported', record: newlyImported })) }, undefined, undefined, rules);
+			undefined, { run: async (): Promise<Extract<BankImportRunResult, Record<'status', 'imported'>>> => Promise.resolve(({ status: 'imported', record: newlyImported })) },
+			undefined, undefined, rules);
 		assert.equal((await session.dispatch({ type: 'open' })).error, null);
 		return session;
 	};

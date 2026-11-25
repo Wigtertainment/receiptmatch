@@ -10,13 +10,14 @@ import { reconciliationRows } from '../../electron/reconciliation-csv.js';
 import { createWorkspace, loadWorkspace, newMetadata, SCHEMA_VERSION, type ISavedWorkspace } from '../../electron/store.js';
 import { WorkspaceSession, type IWorkspaceDialogs } from '../../electron/workspace-session.js';
 import { importIssue, type BankImportResult } from '../../src/shared/bank-import.js';
-import { documentFieldReviewKey, type DocumentFieldReview } from '../../src/shared/document-field-reviews.js';
-import type { StatementAiPreviewResult, StatementAiRequest, StatementAiResult } from '../../src/shared/statement-ai.js';
+import { documentFieldReviewKey, type DocumentFieldReview, type DocumentFieldReviewTarget } from '../../src/shared/document-field-reviews.js';
+import type { StatementAiAcceptRequest, StatementAiPreviewResult, StatementAiRequest, StatementAiResult } from '../../src/shared/statement-ai.js';
 import type { IMatchSummary } from '../../src/shared/workspace-matching.js';
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
 import { documentRun, retainedBank, retainedDocument } from './document-fixtures.js';
 
-interface Fixture { session: WorkspaceSession; original: StoredBankImport; file: string; request: StatementAiRequest; root: string; receiptId: string }
+type ReadyStatementPreview = Extract<StatementAiPreviewResult, Record<'status', 'ready'>>;
+interface IFixture { session: WorkspaceSession; original: StoredBankImport; file: string; request: StatementAiRequest; root: string; receiptId: string }
 
 function proposal(source: IStatementAiSource, date: string = '2032-02-26'): StatementAiResult {
     const result: BankImportResult = structuredClone(source.original.result);
@@ -37,7 +38,7 @@ function missingDate(record: StoredBankImport): void {
 }
 
 async function fixture(context: TestContext, analyze: IStatementAiService['analyze'] = (source: IStatementAiSource): Promise<StatementAiResult> => Promise.resolve(proposal(source)),
-    prepare?: (record: StoredBankImport) => void): Promise<Fixture> {
+    prepare?: (record: StoredBankImport) => void): Promise<IFixture> {
     const root: string = await mkdtemp(path.join(tmpdir(), 'receiptmatch-statement-reanalysis-'));
     context.onTestFinished(async (): Promise<void> => rm(root, { recursive: true, force: true }));
     const original: StoredBankImport = retainedBank(root);
@@ -55,7 +56,7 @@ async function fixture(context: TestContext, analyze: IStatementAiService['analy
     return { session, original, file, root, receiptId: receipt.id, request: { importId: original.id, loadRevision: session.state().workspace!.loadRevision } };
 }
 
-function ready(result: StatementAiPreviewResult): Extract<StatementAiPreviewResult, { status: 'ready' }> {
+function ready(result: StatementAiPreviewResult): ReadyStatementPreview {
     assert.equal(result.status, 'ready');
     return result;
 }
@@ -65,11 +66,11 @@ function summary(session: WorkspaceSession, id: string): IMatchSummary {
 }
 
 test('complete adapter statements produce an isolated preview and append one analysis only after acceptance', async (context: TestContext): Promise<void> => {
-    const { session, original, file, request }: Fixture = await fixture(context);
+    const { session, original, file, request }: IFixture = await fixture(context);
     assert.equal(original.result.status, 'complete');
     const before: ReturnType<WorkspaceSession['state']> = session.state();
     const fingerprint: Buffer = await readFile(file);
-    const preview: Extract<StatementAiPreviewResult, { status: 'ready' }> = ready(await session.reanalyzeStatement(request));
+    const preview: ReadyStatementPreview = ready(await session.reanalyzeStatement(request));
     assert.equal(preview.summary.beforeTransactions, 2);
     assert.equal(preview.summary.afterTransactions, 2);
     assert.equal(preview.summary.unchanged, 1);
@@ -79,7 +80,7 @@ test('complete adapter statements produce an isolated preview and append one ana
     preview.result.transactions[0].bookingDate.value = '2032-01-01';
     await session.dispatch({ type: 'save' });
     assert.deepEqual((await loadWorkspace(file)).statementAnalysisVersions, []);
-    const acceptance: { token: string; loadRevision: number; acknowledgeConflicts: boolean } = { token: preview.token, loadRevision: request.loadRevision, acknowledgeConflicts: true };
+    const acceptance: StatementAiAcceptRequest = { token: preview.token, loadRevision: request.loadRevision, acknowledgeConflicts: true };
     assert.deepEqual(await session.acceptStatementAnalysis(acceptance), { status: 'adopted' });
     const active: StoredBankImport = session.bankImports()[0];
     assert.equal(active.id, original.id);
@@ -97,12 +98,12 @@ test('complete adapter statements produce an isolated preview and append one ana
     assert.deepEqual(reconciliationRows(saved).map((row: ReturnType<typeof reconciliationRows>[number]): string => row.transaction_id), active.transactions.map((row: StoredBankImport['transactions'][number]): string => row.transactionId));
     await session.dispatch({ type: 'open' });
     assert.deepEqual(session.bankImports(), [active]);
-    const next: Extract<StatementAiPreviewResult, { status: 'ready' }> = ready(await session.reanalyzeStatement({ ...request, loadRevision: session.state().workspace!.loadRevision }));
+    const next: ReadyStatementPreview = ready(await session.reanalyzeStatement({ ...request, loadRevision: session.state().workspace!.loadRevision }));
     assert.ok(next.blockingConflict);
 });
 
 test('partial statements can promote an unresolved booking without importing another statement', async (context: TestContext): Promise<void> => {
-    const { session, original, request }: Fixture = await fixture(context, (source: IStatementAiSource): Promise<StatementAiResult> => {
+    const { session, original, request }: IFixture = await fixture(context, (source: IStatementAiSource): Promise<StatementAiResult> => {
         const result: BankImportResult = structuredClone(source.original.result);
         const row: BankImportResult['unresolvedDrafts'][number] = result.unresolvedDrafts[0];
         result.transactions.push({ rowId: row.rowId, accountSectionId: row.accountSectionId, valueDate: row.valueDate, reportedOriginalAmount: row.reportedOriginalAmount,
@@ -115,7 +116,7 @@ test('partial statements can promote an unresolved booking without importing ano
         result.localRecognition = { model: 'nuextract3', parserVersion: '1' };
         return Promise.resolve({ status: 'ready', model: 'nuextract3', result });
     }, missingDate);
-    const preview: Extract<StatementAiPreviewResult, { status: 'ready' }> = ready(await session.reanalyzeStatement(request));
+    const preview: ReadyStatementPreview = ready(await session.reanalyzeStatement(request));
     assert.equal(preview.summary.afterDrafts, 0);
     assert.equal((await session.acceptStatementAnalysis({ token: preview.token, loadRevision: request.loadRevision, acknowledgeConflicts: true })).status, 'adopted');
     assert.equal(session.bankImports().length, 1);
@@ -124,16 +125,16 @@ test('partial statements can promote an unresolved booking without importing ano
 });
 
 test('discarded, superseded and workspace-stale tokens cannot apply a statement preview', async (context: TestContext): Promise<void> => {
-    const { session, request, original }: Fixture = await fixture(context);
-    const first: Extract<StatementAiPreviewResult, { status: 'ready' }> = ready(await session.reanalyzeStatement(request));
+    const { session, request, original }: IFixture = await fixture(context);
+    const first: ReadyStatementPreview = ready(await session.reanalyzeStatement(request));
     session.discardStatementAnalysis({ token: first.token, loadRevision: request.loadRevision });
     assert.equal((await session.acceptStatementAnalysis({ token: first.token, loadRevision: request.loadRevision, acknowledgeConflicts: true })).status, 'failed');
-    const second: Extract<StatementAiPreviewResult, { status: 'ready' }> = ready(await session.reanalyzeStatement(request));
-    const third: Extract<StatementAiPreviewResult, { status: 'ready' }> = ready(await session.reanalyzeStatement(request));
+    const second: ReadyStatementPreview = ready(await session.reanalyzeStatement(request));
+    const third: ReadyStatementPreview = ready(await session.reanalyzeStatement(request));
     assert.equal((await session.acceptStatementAnalysis({ token: second.token, loadRevision: request.loadRevision, acknowledgeConflicts: true })).status, 'failed');
     await session.dispatch({ type: 'correct-bank-row', revision: session.state().workspace!.matchRevision, rowId: original.transactions[1].transactionId, changes: { bookingDate: '2032-02-24' } });
     assert.equal((await session.acceptStatementAnalysis({ token: third.token, loadRevision: request.loadRevision, acknowledgeConflicts: true })).status, 'failed');
-    const fourth: Extract<StatementAiPreviewResult, { status: 'ready' }> = ready(await session.reanalyzeStatement(request));
+    const fourth: ReadyStatementPreview = ready(await session.reanalyzeStatement(request));
     await session.dispatch({ type: 'new' });
     assert.equal((await session.acceptStatementAnalysis({ token: fourth.token, loadRevision: request.loadRevision, acknowledgeConflicts: true })).status, 'failed');
     assert.equal((await session.reanalyzeStatement({ ...request, importId: randomUUID() })).status, 'failed');
@@ -141,43 +142,43 @@ test('discarded, superseded and workspace-stale tokens cannot apply a statement 
 
 test('acceptance rechecks original bytes and resolved relink path', async (context: TestContext): Promise<void> => {
     const observed: string[] = [];
-    const { session, request, original, root }: Fixture = await fixture(context, (source: IStatementAiSource): Promise<StatementAiResult> => {
+    const { session, request, original, root }: IFixture = await fixture(context, (source: IStatementAiSource): Promise<StatementAiResult> => {
         observed.push(source.filePath);
         return Promise.resolve(proposal(source));
     });
-    const preview: Extract<StatementAiPreviewResult, { status: 'ready' }> = ready(await session.reanalyzeStatement(request));
+    const preview: ReadyStatementPreview = ready(await session.reanalyzeStatement(request));
     await writeFile(original.filePath, 'Changed PDF');
     assert.equal((await session.acceptStatementAnalysis({ token: preview.token, loadRevision: request.loadRevision, acknowledgeConflicts: true })).status, 'failed');
     await writeFile(original.filePath, 'Synthetic statement for reanalysis lifecycle tests');
-    const beforeRelink: Extract<StatementAiPreviewResult, { status: 'ready' }> = ready(await session.reanalyzeStatement(request));
+    const beforeRelink: ReadyStatementPreview = ready(await session.reanalyzeStatement(request));
     await rename(original.filePath, path.join(root, 'relocated.pdf'));
     assert.equal((await session.relinkOriginal({ kind: 'statement', id: original.id, loadRevision: request.loadRevision })).status, 'linked');
     assert.equal((await session.acceptStatementAnalysis({ token: beforeRelink.token, loadRevision: request.loadRevision, acknowledgeConflicts: true })).status, 'failed');
-    const relinked: Extract<StatementAiPreviewResult, { status: 'ready' }> = ready(await session.reanalyzeStatement(request));
+    const relinked: ReadyStatementPreview = ready(await session.reanalyzeStatement(request));
     assert.equal(observed.at(-1), path.join(root, 'relocated.pdf'));
     assert.equal((await session.acceptStatementAnalysis({ token: relinked.token, loadRevision: request.loadRevision, acknowledgeConflicts: true })).status, 'adopted');
 });
 
 test('manual corrections and decisions block changed rows while unchanged corrections survive the preview', async (context: TestContext): Promise<void> => {
-    const { session, request, original }: Fixture = await fixture(context);
+    const { session, request, original }: IFixture = await fixture(context);
     await session.dispatch({ type: 'correct-bank-row', revision: session.state().workspace!.matchRevision, rowId: original.transactions[1].transactionId, changes: { bookingDate: '2032-02-24' } });
-    const preview: Extract<StatementAiPreviewResult, { status: 'ready' }> = ready(await session.reanalyzeStatement(request));
+    const preview: ReadyStatementPreview = ready(await session.reanalyzeStatement(request));
     assert.equal(preview.result.transactions[1].bookingDate.value, '2032-02-24');
     assert.equal(preview.changes.find((change: typeof preview.changes[number]): boolean => change.before?.id === original.transactions[1].transactionId)?.after?.row.bookingDate?.value, '2032-02-24');
     await session.dispatch({ type: 'review-match', revision: session.state().workspace!.matchRevision, transactionId: original.transactions[0].transactionId, review: { status: 'completed-without-document' } });
-    const blocked: Extract<StatementAiPreviewResult, { status: 'ready' }> = ready(await session.reanalyzeStatement(request));
+    const blocked: ReadyStatementPreview = ready(await session.reanalyzeStatement(request));
     assert.ok(blocked.blockingConflict);
     assert.equal((await session.acceptStatementAnalysis({ token: blocked.token, loadRevision: request.loadRevision, acknowledgeConflicts: true })).status, 'failed');
     assert.deepEqual(session.bankImports(), [original]);
 });
 
 test('surviving assignments remain but approvals require explicit acknowledgement and renewed review', async (context: TestContext): Promise<void> => {
-    const { session, request, original, receiptId, file }: Fixture = await fixture(context);
+    const { session, request, original, receiptId, file }: IFixture = await fixture(context);
     const id: string = original.transactions[1].transactionId;
     await session.dispatch({ type: 'review-match', revision: session.state().workspace!.matchRevision, transactionId: id, review: { status: 'assigned', documentId: receiptId } });
     await session.dispatch({ type: 'approve-matches', loadRevision: request.loadRevision, selections: [summary(session, id).approvalSelection!] });
     assert.equal(summary(session, id).approvalStatus.status, 'approved');
-    const preview: Extract<StatementAiPreviewResult, { status: 'ready' }> = ready(await session.reanalyzeStatement(request));
+    const preview: ReadyStatementPreview = ready(await session.reanalyzeStatement(request));
     assert.match(preview.conflicts.join(' '), /approved matches/i);
     assert.equal((await session.acceptStatementAnalysis({ token: preview.token, loadRevision: request.loadRevision, acknowledgeConflicts: false })).status, 'failed');
     assert.equal((await session.acceptStatementAnalysis({ token: preview.token, loadRevision: request.loadRevision, acknowledgeConflicts: true })).status, 'adopted');
@@ -191,7 +192,7 @@ test('surviving assignments remain but approvals require explicit acknowledgemen
 
 test('model failures and in-flight cancellation leave the active analysis and saved workspace untouched', async (context: TestContext): Promise<void> => {
     let attempt: number = 0;
-    const { session, request, file, original }: Fixture = await fixture(context, async (_source: IStatementAiSource, options: Parameters<IStatementAiService['analyze']>[1]): Promise<StatementAiResult> => {
+    const { session, request, file, original }: IFixture = await fixture(context, async (_source: IStatementAiSource, options: Parameters<IStatementAiService['analyze']>[1]): Promise<StatementAiResult> => {
         if (++attempt === 1) {
             return { status: 'unavailable', error: 'Install NuExtract3.' };
         }
@@ -215,14 +216,14 @@ test('model failures and in-flight cancellation leave the active analysis and sa
 });
 
 test('corrected draft approvals are revoked when another statement row changes and remain revoked after reopen', async (context: TestContext): Promise<void> => {
-    const { session, request, original, receiptId }: Fixture = await fixture(context,
+    const { session, request, original, receiptId }: IFixture = await fixture(context,
         (source: IStatementAiSource): Promise<StatementAiResult> => Promise.resolve(proposal(source)), missingDate);
     const id: string = original.drafts[0].draftId;
     await session.dispatch({ type: 'correct-bank-row', revision: session.state().workspace!.matchRevision, rowId: id, changes: { bookingDate: '2032-02-28' } });
     await session.dispatch({ type: 'review-match', revision: session.state().workspace!.matchRevision, transactionId: id, review: { status: 'assigned', documentId: receiptId } });
     await session.dispatch({ type: 'approve-matches', loadRevision: request.loadRevision, selections: [summary(session, id).approvalSelection!] });
     assert.equal(summary(session, id).approvalStatus.status, 'approved');
-    const preview: Extract<StatementAiPreviewResult, { status: 'ready' }> = ready(await session.reanalyzeStatement(request));
+    const preview: ReadyStatementPreview = ready(await session.reanalyzeStatement(request));
     assert.equal(preview.summary.beforeDrafts, 0);
     assert.equal(preview.summary.afterDrafts, 0);
     assert.equal(preview.summary.afterTransactions, 2);
@@ -234,29 +235,29 @@ test('corrected draft approvals are revoked when another statement row changes a
 });
 
 test('saved protections remain in force until their removal is saved', async (context: TestContext): Promise<void> => {
-    const { session, request, original }: Fixture = await fixture(context);
+    const { session, request, original }: IFixture = await fixture(context);
     const id: string = original.transactions[0].transactionId;
     await session.dispatch({ type: 'set-transaction-ignored', revision: session.state().workspace!.matchRevision, transactionId: id, ignored: true });
     assert.equal((await session.dispatch({ type: 'save' })).error, null);
     await session.dispatch({ type: 'set-transaction-ignored', revision: session.state().workspace!.matchRevision, transactionId: id, ignored: false });
-    const blocked: Extract<StatementAiPreviewResult, { status: 'ready' }> = ready(await session.reanalyzeStatement(request));
+    const blocked: ReadyStatementPreview = ready(await session.reanalyzeStatement(request));
     assert.ok(blocked.blockingConflict);
     assert.equal((await session.acceptStatementAnalysis({ token: blocked.token, loadRevision: request.loadRevision, acknowledgeConflicts: true })).status, 'failed');
     assert.equal((await session.dispatch({ type: 'save' })).error, null);
-    const preview: Extract<StatementAiPreviewResult, { status: 'ready' }> = ready(await session.reanalyzeStatement(request));
+    const preview: ReadyStatementPreview = ready(await session.reanalyzeStatement(request));
     assert.equal(preview.blockingConflict, undefined);
     assert.equal((await session.acceptStatementAnalysis({ token: preview.token, loadRevision: request.loadRevision, acknowledgeConflicts: true })).status, 'adopted');
     assert.equal((await session.dispatch({ type: 'save' })).error, null);
 });
 
 test('schema 16 document confirmations survive statement reanalysis, migration and reopening together', async (context: TestContext): Promise<void> => {
-    const { session, request, original, receiptId, file }: Fixture = await fixture(context);
+    const { session, request, original, receiptId, file }: IFixture = await fixture(context);
     const imported: ReturnType<WorkspaceSession['documentImports']>[number]['files'][number] = session.documentImports()[0].files[0];
     assert.equal(imported.status, 'imported');
     const receipt: ReturnType<typeof retainedDocument> = imported.record;
     const sectionId: string = receipt.result.sections[0].sectionId;
     const fieldId: string = receipt.result.sections[0].merchants[0].id;
-    const target: { documentId: string; sectionId: string; fieldId: string } = { documentId: receiptId, sectionId, fieldId };
+    const target: DocumentFieldReviewTarget = { documentId: receiptId, sectionId, fieldId };
     const confirmed: Awaited<ReturnType<WorkspaceSession['dispatch']>> = await session.dispatch({ type: 'set-document-field-confirmed',
         revision: session.state().workspace!.matchRevision, ...target, confirmed: true });
     assert.equal(confirmed.error, null);
@@ -275,7 +276,7 @@ test('schema 16 document confirmations survive statement reanalysis, migration a
     assert.deepEqual(await readFile(file), oldBytes);
     assert.equal((await loadWorkspace(file)).schemaVersion, 16);
     const currentRequest: StatementAiRequest = { ...request, loadRevision: session.state().workspace!.loadRevision };
-    const preview: Extract<StatementAiPreviewResult, { status: 'ready' }> = ready(await session.reanalyzeStatement(currentRequest));
+    const preview: ReadyStatementPreview = ready(await session.reanalyzeStatement(currentRequest));
     assert.equal((await session.acceptStatementAnalysis({ token: preview.token, loadRevision: currentRequest.loadRevision, acknowledgeConflicts: true })).status, 'adopted');
     assert.equal((await session.dispatch({ type: 'save' })).error, null);
     const saved: ISavedWorkspace = await loadWorkspace(file);

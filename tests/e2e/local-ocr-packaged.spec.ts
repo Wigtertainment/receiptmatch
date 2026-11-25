@@ -9,6 +9,9 @@ import type { LocalOcrStatus } from '../../src/shared/local-ocr-settings.js';
 import type { IWorkspaceState } from '../../src/shared/protocol.js';
 import type { DocumentFileResult, StoredDocumentImport, StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
 
+interface ILocalOcrFiles { server: boolean; python: boolean; oldCli: boolean; oldScript: boolean }
+interface ILocalOcrImportPaths { folder: string; workspace: string }
+
 const legacyVersion: string = 'pdfjs-6.5.438+paddleocr-vl-1.6-gguf-spotting+document-2';
 
 async function createReceipt(directory: string): Promise<void> {
@@ -61,7 +64,7 @@ async function verifyRecognitionSettings(page: Page): Promise<void> {
 }
 
 async function verifyResources(application: ElectronApplication): Promise<void> {
-    const resources: { server: boolean; python: boolean; oldCli: boolean; oldScript: boolean } = await application.evaluate((): { server: boolean; python: boolean; oldCli: boolean; oldScript: boolean } => {
+    const resources: ILocalOcrFiles = await application.evaluate((): ILocalOcrFiles => {
         const fs: typeof import('node:fs') = process.getBuiltinModule('node:fs');
         const paths: typeof import('node:path') = process.getBuiltinModule('node:path');
         const installed: string = paths.join(process.resourcesPath, 'local-ocr-runtimes');
@@ -77,7 +80,7 @@ async function verifyResources(application: ElectronApplication): Promise<void> 
 }
 
 async function dialogs(application: ElectronApplication, folder: string, workspace: string): Promise<void> {
-    await application.evaluate(({ BrowserWindow, dialog }: typeof Electron.CrossProcessExports, config: { folder: string; workspace: string }): void => {
+    await application.evaluate(({ BrowserWindow, dialog }: typeof Electron.CrossProcessExports, config: ILocalOcrImportPaths): void => {
         BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
         dialog.showOpenDialog = (_window: Electron.BaseWindow | Electron.OpenDialogOptions, options?: Electron.OpenDialogOptions): Promise<Electron.OpenDialogReturnValue> => {
             return Promise.resolve({ canceled: false, filePaths: [options?.properties?.includes('openDirectory') ? config.folder : config.workspace] });

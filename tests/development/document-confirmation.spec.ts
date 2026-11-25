@@ -51,8 +51,8 @@ test('confirms document fields in both views, preserves evidence and persists wi
 			env: { ...process.env, ELECTRON_START_URL: '' }, chromiumSandbox: true });
 		await app.evaluate(({ dialog, BrowserWindow }: typeof Electron.CrossProcessExports, file: string): void => {
 			BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
-			dialog.showOpenDialog = async (): Promise<{ canceled: false; filePaths: string[] }> => Promise.resolve({ canceled: false, filePaths: [file] });
-			dialog.showMessageBox = async (): Promise<{ response: number; checkboxChecked: false }> => Promise.resolve({ response: 1, checkboxChecked: false });
+			dialog.showOpenDialog = async (): Promise<Electron.OpenDialogReturnValue> => Promise.resolve({ canceled: false, filePaths: [file] });
+			dialog.showMessageBox = async (): Promise<Electron.MessageBoxReturnValue> => Promise.resolve({ response: 1, checkboxChecked: false });
 		}, workspaceFile);
 		page = await app.firstWindow();
 		await page.getByRole('button', { name: 'Open workspace', exact: true }).press('Enter');
@@ -98,7 +98,9 @@ test('confirms document fields in both views, preserves evidence and persists wi
 		const missing: Locator = await openField(drawer, 'Order reference');
 		await expect(missing.getByRole('button', { name: 'Confirm value', exact: true })).toHaveCount(0);
 		await expect(missing.locator('.field-confirmation-help')).toContainText('Add a value');
-		const [preview]: [Page, void] = await Promise.all([app!.waitForEvent('window'), drawer.getByRole('button', { name: 'Open original review.pdf', exact: true }).press('Enter')]);
+		const [preview]: [Page, Awaited<ReturnType<Locator['press']>>] = await Promise.all([
+			app!.waitForEvent('window'), drawer.getByRole('button', { name: 'Open original review.pdf', exact: true }).press('Enter')
+		]);
 		await expect(preview.locator('canvas')).toBeVisible();
 		await preview.close();
 		await drawer.getByRole('button', { name: 'Close document details', exact: true }).press('Enter');

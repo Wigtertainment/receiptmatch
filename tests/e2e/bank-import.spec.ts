@@ -1,4 +1,4 @@
-import type { BankImportInput, ImportIssue, TransactionCandidate } from "../../src/shared/bank-import.js";
+import type { BankImportInput, TransactionCandidate } from "../../src/shared/bank-import.js";
 import type { MatchApproval } from "../../src/shared/match-approvals.js";
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
 import type { IMatchSummary } from "../../src/shared/workspace-matching.js";
@@ -16,59 +16,70 @@ import { storedBankImportSchema, type StoredBankImport } from '../../src/shared/
 import { createWorkspace, newMetadata, SCHEMA_VERSION } from '../../electron/store.js';
 import type { extractPdfBytes } from '../../electron/extraction/host.js';
 import type { WorkspaceCommand, IWorkspaceState } from '../../src/shared/protocol.js';
+import type { ExtractionResult } from '../../src/shared/pdf-extraction.js';
 
-type SingletonProbe = typeof globalThis & { importSingletonProbe?: ReturnType<typeof extractPdfBytes> };
-interface DialogPlan {
+interface IImportSingletonProbe { importSingletonProbe?: ReturnType<typeof extractPdfBytes> }
+interface ITestCheck { name: string; status: 'passed'; milliseconds: number }
+interface IApplicationWindow { application: ElectronApplication; page: Page }
+interface IBankImportFixtureArgs { bankImport: IBankImportTest }
+type BankImportContext = IBankImportFixtureArgs & PlaywrightTestArgs & PlaywrightTestOptions & PlaywrightWorkerArgs & PlaywrightWorkerOptions;
+interface IUnsupportedImportCommand { readonly type: "import-statement"; readonly filePath: string }
+interface ICancelledImportProbe { state: IWorkspaceState; guarded: IWorkspaceState[] | undefined; cancelled: boolean }
+interface IGeneratedTransactionIdentity { rowId: string; transactionId: `${string}-${string}-${string}-${string}-${string}` }
+
+type SingletonProbe = typeof globalThis & IImportSingletonProbe;
+interface IDialogPlan {
 	opens?: (string | null)[];
 	saves?: (string | null)[];
 	choices?: number[];
 }
-interface ImportReport {
+interface IImportReport {
 	runId: string;
 	startedAt: string;
 	finishedAt?: string;
 	status: 'running' | 'passed' | 'failed';
 	platform: NodeJS.Platform;
 	syntheticOnly: true;
-	checks: { name: string; status: 'passed'; milliseconds: number }[];
+	checks: ITestCheck[];
 	limits?: string[];
 	error?: string;
 	stack?: string;
 }
-interface BankImportTest {
+interface IBankImportTest {
 	root: string;
-	report: ImportReport;
-	launch: () => Promise<{ application: ElectronApplication; page: Page }>;
+	report: IImportReport;
+	launch: () => Promise<IApplicationWindow>;
 	close: () => Promise<void>;
 	check: (name: string, action: () => Promise<void>) => Promise<void>;
 }
-async function mockDialogs(application: ElectronApplication, { opens = [], saves = [], choices = [] }: DialogPlan): Promise<void> {
+async function mockDialogs(application: ElectronApplication, { opens = [], saves = [], choices = [] }: IDialogPlan): Promise<void> {
 	await application.evaluate(
-		({ dialog }: typeof Electron.CrossProcessExports, plan: { opens: (string | null)[]; saves: (string | null)[]; choices: number[]; }): void => {
-			dialog.showOpenDialog = async (): Promise<{ canceled: boolean; filePaths: string[]; }> => {
+		({ dialog }: typeof Electron.CrossProcessExports, plan: Required<IDialogPlan>): void => {
+			dialog.showOpenDialog = async (): Promise<Electron.OpenDialogReturnValue> => {
 				const selected: string | null | undefined = plan.opens.shift();
 				return Promise.resolve({ canceled: !selected, filePaths: selected ? [selected] : [] });
 			};
-			dialog.showSaveDialog = async (): Promise<{ canceled: boolean; filePath: string; }> => {
+			dialog.showSaveDialog = async (): Promise<Electron.SaveDialogReturnValue> => {
 				const selected: string = plan.saves.shift() ?? '';
 				return Promise.resolve({ canceled: !selected, filePath: selected });
 			};
-			dialog.showMessageBox = async (): Promise<{ response: number; checkboxChecked: false; }> => Promise.resolve(({ response: plan.choices.shift() ?? 2, checkboxChecked: false }));
+			dialog.showMessageBox = async (): Promise<Pick<Electron.MessageBoxReturnValue, 'response'> & Record<'checkboxChecked', false>> =>
+				Promise.resolve(({ response: plan.choices.shift() ?? 2, checkboxChecked: false }));
 		},
 		{ opens, saves, choices }
 	);
 }
 
-const test: TestType<PlaywrightTestArgs & PlaywrightTestOptions & { bankImport: BankImportTest; }, PlaywrightWorkerArgs & PlaywrightWorkerOptions> = base.extend<{ bankImport: BankImportTest }>({
-	bankImport: async ({ playwright }: { bankImport: BankImportTest; } & PlaywrightTestArgs & PlaywrightTestOptions & PlaywrightWorkerArgs & PlaywrightWorkerOptions, use: (r: BankImportTest) => Promise<void>, testInfo: TestInfo): Promise<void> => {
+const test: TestType<PlaywrightTestArgs & PlaywrightTestOptions & IBankImportFixtureArgs, PlaywrightWorkerArgs & PlaywrightWorkerOptions> = base.extend<IBankImportFixtureArgs>({
+	bankImport: async ({ playwright }: BankImportContext, use: (r: IBankImportTest) => Promise<void>, testInfo: TestInfo): Promise<void> => {
 		await mkdir('artifacts', { recursive: true });
 		const root: string = await mkdtemp(path.resolve('artifacts/import-'));
 		const reportPath: string = path.resolve(`artifacts/import-${process.platform}.json`);
-		const report: ImportReport = { runId: randomUUID(), startedAt: new Date().toISOString(), status: 'running', platform: process.platform, syntheticOnly: true, checks: [] };
+		const report: IImportReport = { runId: randomUUID(), startedAt: new Date().toISOString(), status: 'running', platform: process.platform, syntheticOnly: true, checks: [] };
 		await writeFile(reportPath, JSON.stringify(report, null, 2));
 		let activeApplication: ElectronApplication | undefined;
 
-		async function launch(): Promise<{ application: ElectronApplication; page: Page; }> {
+		async function launch(): Promise<IApplicationWindow> {
 			const application: ElectronApplication = await playwright._electron.launch({
 				executablePath: path.resolve(process.platform === 'win32' ? 'release/win-unpacked/ReceiptMatch.exe' : 'release/linux-unpacked/receiptmatch'),
 				args: ['--hidden', '--disable-gpu', `--user-data-dir=${path.join(root, `profile-${randomUUID()}`)}`],
@@ -145,10 +156,10 @@ async function fixture(file: string, partial: boolean = false, title: string = '
 }
 test.describe.configure({ timeout: 180_000 });
 
-test('packaged Electron bank import', async ({ bankImport: { root, report, launch, close, check } }: PlaywrightTestArgs & PlaywrightTestOptions & { bankImport: BankImportTest; } & PlaywrightWorkerArgs & PlaywrightWorkerOptions): Promise<void> => {
+test('packaged Electron bank import', async ({ bankImport: { root, report, launch, close, check } }: BankImportContext): Promise<void> => {
 	let application: ElectronApplication;
 	let page: Page;
-	async function dialogs(plan: DialogPlan): Promise<void> {
+	async function dialogs(plan: IDialogPlan): Promise<void> {
 		await mockDialogs(application, plan);
 	}
 
@@ -191,7 +202,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 	await check('only-active-workspace-frame-can-use-path-free-import-api', async (): Promise<void> => {
 		assert.deepEqual(await records(), []);
 		assert.equal((await command({ type: 'import-statement' })).workspace, null);
-		const unsupportedCommand: { readonly type: "import-statement"; readonly filePath: string; } = { type: 'import-statement', filePath: original } as const;
+		const unsupportedCommand: IUnsupportedImportCommand = { type: 'import-statement', filePath: original } as const;
 		const denied: IWorkspaceState = await command(unsupportedCommand);
 		assert.match(denied.error ?? '', /not supported/);
 		const probe: unknown = await application.evaluate(async ({ app, BrowserWindow }: typeof Electron.CrossProcessExports): Promise<unknown> => {
@@ -242,7 +253,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		assert.equal(imported.result.transactions[0].reportedOriginalAmount?.value.coefficient, '-150001');
 		assert.equal(imported.result.transactions[1].accountAmount?.value.coefficient, '2507');
 		assert.equal(imported.result.sourceProvenance?.sha256, originalHash);
-		const singleton: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; } | undefined = await application.evaluate((): Promise<{ status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }> | undefined => (globalThis as SingletonProbe).importSingletonProbe);
+		const singleton: ExtractionResult | undefined = await application.evaluate((): Promise<ExtractionResult> | undefined => (globalThis as SingletonProbe).importSingletonProbe);
 		assert.equal(singleton?.status, 'failed');
 		assert.equal(singleton.issues[0].code, 'busy');
 	});
@@ -325,8 +336,8 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		assert.deepEqual(await records(), retained);
 		const db: Database.Database = new Database(file, { readonly: true });
 		try {
-			assert.equal(db.prepare<[], { n: number }>('SELECT COUNT(*) AS n FROM transactions').get()?.n, 6);
-			assert.equal(db.prepare<[], { n: number }>('SELECT COUNT(*) AS n FROM bank_imports').get()?.n, 3);
+			assert.equal(db.prepare<[], Record<'n', number>>('SELECT COUNT(*) AS n FROM transactions').get()?.n, 6);
+			assert.equal(db.prepare<[], Record<'n', number>>('SELECT COUNT(*) AS n FROM bank_imports').get()?.n, 3);
 		} finally {
 			db.close();
 		}
@@ -353,7 +364,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		await writeFile(selected, await scan.save());
 		const before: string = await fingerprint(file);
 		await dialogs({ opens: [selected] });
-		const result: { state: IWorkspaceState; guarded: IWorkspaceState[] | undefined; cancelled: boolean; } = await page.evaluate(async (): Promise<{ state: IWorkspaceState; guarded: IWorkspaceState[] | undefined; cancelled: boolean; }> => {
+		const result: ICancelledImportProbe = await page.evaluate(async (): Promise<ICancelledImportProbe> => {
 			let guarded: Promise<IWorkspaceState[]> | undefined;
 			let cancelling: Promise<IWorkspaceState> | undefined;
 			const unsubscribe: () => void = window.receiptmatch.subscribe((state: IWorkspaceState): void => {
@@ -411,7 +422,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		try {
 			assert.equal(db.pragma('user_version', { simple: true }), SCHEMA_VERSION);
 			assert.equal(
-				db.prepare<[string], { coefficient: string }>('SELECT coefficient FROM transactions WHERE id=?').get('legacy-transaction')?.coefficient,
+				db.prepare<[string], Record<'coefficient', string>>('SELECT coefficient FROM transactions WHERE id=?').get('legacy-transaction')?.coefficient,
 				'9007199254740993'
 			);
 			assert.deepEqual(db.prepare('SELECT confidence,approved_revision FROM associations WHERE id=?').get('legacy-association'), {
@@ -465,8 +476,8 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 	await check('batch-approval-rejects-a-changed-selection-and-preserves-approved-status-after-reopening', async (): Promise<void> => {
 		const source: StoredBankImport | undefined = structuredClone(retained.find((record: StoredBankImport): boolean => record.filePath === original));
 		assert.ok(source);
-		const [assigned, second]: { rowId: string; transactionId: string; }[] = source.transactions;
-		const completed: { rowId: string; transactionId: `${string}-${string}-${string}-${string}-${string}`; } = { rowId: 'completed-without-document', transactionId: randomUUID() };
+		const [assigned, second]: StoredBankImport['transactions'][number][] = source.transactions;
+		const completed: IGeneratedTransactionIdentity = { rowId: 'completed-without-document', transactionId: randomUUID() };
 		const seed: TransactionCandidate = source.result.transactions[0];
 		source.result.transactions.push({ ...seed, rowId: completed.rowId, references: [], description: { ...seed.description, value: 'Synthetic no document' } });
 		source.transactions.push(completed);

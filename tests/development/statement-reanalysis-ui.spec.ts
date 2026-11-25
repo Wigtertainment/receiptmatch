@@ -14,15 +14,24 @@ import type { StoredBankImport } from '../../src/shared/workspace-import.js';
 import { retainedBank } from '../unit/document-fixtures.js';
 import { statement } from '../unit/bank-fixtures.js';
 
-type Preview = Extract<StatementAiPreviewResult, { status: 'ready' }>;
+type Preview = Extract<StatementAiPreviewResult, Record<'status', 'ready'>>;
 type Mode = 'ready' | 'blocked' | 'progress' | 'error' | 'accept-error';
-interface UiFixture {
+interface IUiFixture {
     mode: Mode; state: IWorkspaceState; current: StoredBankImport; suggested: StoredBankImport; preview: Preview;
     discarded: string[]; accepted: StatementAiAcceptRequest[]; pending?: (value: StatementAiPreviewResult) => void;
 }
-interface MainGlobals { statementAiUi?: UiFixture }
+interface IMainGlobals { statementAiUi?: IUiFixture }
+interface ISeededStatement { file: string; original: StoredBankImport; suggested: StoredBankImport; preview: Preview }
+interface IStatementMockInput { fixture: IUiFixture; status: LocalOcrStatus }
+interface IMalformedStatementResponse { analysis: StatementAiPreviewResult; accept: OriginalAdoptionResult; discardDenied: boolean }
+interface IMalformedStatementBridge {
+    reanalyzeStatement(value: unknown): Promise<StatementAiPreviewResult>;
+    acceptStatementAnalysis(value: unknown): Promise<OriginalAdoptionResult>;
+    discardStatementAnalysis(value: unknown): Promise<void>;
+}
+interface IStatementTrace { discarded: number; accepted: StatementAiAcceptRequest[] }
 
-async function seed(root: string): Promise<{ file: string; original: StoredBankImport; suggested: StoredBankImport; preview: Preview }> {
+async function seed(root: string): Promise<ISeededStatement> {
     await mkdir(root, { recursive: true });
     const original: StoredBankImport = retainedBank(root);
     const pdf: PDFDocument = await PDFDocument.create();
@@ -44,12 +53,12 @@ async function seed(root: string): Promise<{ file: string; original: StoredBankI
         previous: original.result, token: randomUUID(), changes: plan.changes, summary: plan.summary, conflicts: ['Existing approvals will need review after this change.'] } };
 }
 
-async function mockAnalysis(application: ElectronApplication, fixture: UiFixture): Promise<void> {
+async function mockAnalysis(application: ElectronApplication, fixture: IUiFixture): Promise<void> {
     const status: LocalOcrStatus = { installed: true, cpuAvailable: true, device: 'cpu', effectiveDevice: 'cpu', modelDownloadBytes: 3459015168,
         vulkanDownloadBytes: 38023440, gpu: 'unchecked', download: null, busy: false, failedDownload: null };
-    await application.evaluate(({ ipcMain, BrowserWindow }: typeof Electron.CrossProcessExports, input: { fixture: UiFixture; status: LocalOcrStatus }): void => {
-        const fixture: UiFixture = input.fixture;
-        (globalThis as MainGlobals).statementAiUi = fixture;
+    await application.evaluate(({ ipcMain, BrowserWindow }: typeof Electron.CrossProcessExports, input: IStatementMockInput): void => {
+        const fixture: IUiFixture = input.fixture;
+        (globalThis as IMainGlobals).statementAiUi = fixture;
         const publish: () => void = (): void => {
             BrowserWindow.getAllWindows()[0].webContents.send('workspace:state', fixture.state);
         };
@@ -111,13 +120,13 @@ async function mockAnalysis(application: ElectronApplication, fixture: UiFixture
 
 async function setMode(application: ElectronApplication, mode: Mode): Promise<void> {
     await application.evaluate((_electron: typeof Electron.CrossProcessExports, mode: Mode): void => {
-        (globalThis as MainGlobals).statementAiUi!.mode = mode;
+        (globalThis as IMainGlobals).statementAiUi!.mode = mode;
     }, mode);
 }
 
 async function nativeChecks(page: Page, importId: string, loadRevision: number): Promise<void> {
-    const malformed: { analysis: StatementAiPreviewResult; accept: OriginalAdoptionResult; discardDenied: boolean } = await page.evaluate(async (request: StatementAiRequest): Promise<{ analysis: StatementAiPreviewResult; accept: OriginalAdoptionResult; discardDenied: boolean }> => {
-        const bridge: { reanalyzeStatement(value: unknown): Promise<StatementAiPreviewResult>; acceptStatementAnalysis(value: unknown): Promise<OriginalAdoptionResult>; discardStatementAnalysis(value: unknown): Promise<void> } = window.receiptmatch;
+    const malformed: IMalformedStatementResponse = await page.evaluate(async (request: StatementAiRequest): Promise<IMalformedStatementResponse> => {
+        const bridge: IMalformedStatementBridge = window.receiptmatch;
         return { analysis: await bridge.reanalyzeStatement({ ...request, unexpected: true }),
             accept: await bridge.acceptStatementAnalysis({ token: request.importId, loadRevision: request.loadRevision, acknowledgeConflicts: true, unexpected: true }),
             discardDenied: await bridge.discardStatementAnalysis({ token: request.importId, loadRevision: request.loadRevision, unexpected: true }).then((): boolean => false, (): boolean => true) };
@@ -163,8 +172,8 @@ test('reviews local AI statement changes safely, keeps drafts on discard and sup
         await application.evaluate(({ BrowserWindow, dialog }: typeof Electron.CrossProcessExports, file: string): void => {
             BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
             BrowserWindow.getAllWindows()[0].setContentSize(1120, 900);
-            dialog.showOpenDialog = async (): Promise<{ canceled: false; filePaths: string[] }> => Promise.resolve({ canceled: false, filePaths: [file] });
-            dialog.showMessageBox = async (): Promise<{ response: number; checkboxChecked: false }> => Promise.resolve({ response: 1, checkboxChecked: false });
+            dialog.showOpenDialog = async (): Promise<Electron.OpenDialogReturnValue> => Promise.resolve({ canceled: false, filePaths: [file] });
+            dialog.showMessageBox = async (): Promise<Electron.MessageBoxReturnValue> => Promise.resolve({ response: 1, checkboxChecked: false });
         }, prepared.file);
         const page: Page = await application.firstWindow();
         await page.getByRole('button', { name: 'Open workspace', exact: true }).click();
@@ -180,7 +189,7 @@ test('reviews local AI statement changes safely, keeps drafts on discard and sup
             await action.hover();
             await expect(page.getByRole('tooltip', { name: tooltip, exact: true })).toBeVisible();
         }
-        const [previewWindow]: [Page, void] = await Promise.all([application.waitForEvent('window'), original.press('Enter')]);
+        const [previewWindow]: [Page, Awaited<ReturnType<Locator['press']>>] = await Promise.all([application.waitForEvent('window'), original.press('Enter')]);
         await expect(previewWindow.getByRole('img', { name: 'Page 1 of 1', exact: true })).toBeVisible();
         await previewWindow.close();
         await remove.hover();
@@ -223,7 +232,7 @@ test('reviews local AI statement changes safely, keeps drafts on discard and sup
         await setMode(application, 'ready');
         dialog = await review(page, analyze);
         await application.evaluate(({ BrowserWindow }: typeof Electron.CrossProcessExports): void => {
-            const fixture: UiFixture = (globalThis as MainGlobals).statementAiUi!;
+            const fixture: IUiFixture = (globalThis as IMainGlobals).statementAiUi!;
             fixture.state.workspace!.matchRevision++;
             BrowserWindow.getAllWindows()[0].webContents.send('workspace:state', fixture.state);
         });
@@ -252,8 +261,8 @@ test('reviews local AI statement changes safely, keeps drafts on discard and sup
         await expect(panel.getByText('Local AI · NuExtract3', { exact: true })).toBeVisible();
         expect(await page.evaluate((): Promise<StoredBankImport[]> => window.receiptmatch.bankImports())).toEqual([prepared.suggested]);
         await expect(page.getByText('Unsaved changes', { exact: true })).toBeVisible();
-        const trace: { discarded: number; accepted: StatementAiAcceptRequest[] } = await application.evaluate((): { discarded: number; accepted: StatementAiAcceptRequest[] } => {
-            const fixture: UiFixture = (globalThis as MainGlobals).statementAiUi!;
+        const trace: IStatementTrace = await application.evaluate((): IStatementTrace => {
+            const fixture: IUiFixture = (globalThis as IMainGlobals).statementAiUi!;
             return { discarded: fixture.discarded.length, accepted: fixture.accepted };
         });
         expect(trace.discarded).toBeGreaterThanOrEqual(3);

@@ -55,7 +55,7 @@ test('statement versions round-trip unchanged originals, retain historical SQL r
     assert.deepEqual(active, second.record);
     assert.equal(reopened.matches.length, active.transactions.length);
     const db: Database.Database = new Database(file);
-    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, 4);
+    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as Record<'count', number>).count, 4);
     db.prepare('INSERT INTO transactions(id,statement_id,coefficient,currency,scale) VALUES(?,?,?,?,?)').run(randomUUID(), original.accounts[0].statementId, '99', 'EUR', 2);
     db.close();
     await assert.rejects(loadWorkspace(file), /unexpected projected records/);
@@ -147,8 +147,8 @@ test('removing a statement deletes every retained analysis and historical transa
     assert.deepEqual(removed.imports, []);
     assert.deepEqual((await loadWorkspace(removed.filePath)).statementAnalysisVersions, []);
     const db: Database.Database = new Database(removed.filePath);
-    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, 0);
-    assert.equal((db.prepare('SELECT count(*) AS count FROM statements').get() as { count: number }).count, 0);
+    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as Record<'count', number>).count, 0);
+    assert.equal((db.prepare('SELECT count(*) AS count FROM statements').get() as Record<'count', number>).count, 0);
     db.close();
 });
 
@@ -166,8 +166,8 @@ test('the historical SQL union includes correction-promoted drafts without trans
     const active: StoredBankImport = projectCorrectedStatementAnalyses(reopened.imports, reopened.statementAnalysisVersions, reopened.bankCorrections)[0];
     assert.equal(active.transactions.some((row: StoredBankImport['transactions'][number]): boolean => row.transactionId === id), true);
     const db: Database.Database = new Database(saved.filePath);
-    assert.equal((db.prepare('SELECT revision FROM transactions WHERE id=?').get(id) as { revision: number }).revision, 2);
-    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, 3);
+    assert.equal((db.prepare('SELECT revision FROM transactions WHERE id=?').get(id) as Record<'revision', number>).revision, 2);
+    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as Record<'count', number>).count, 3);
     db.close();
 });
 

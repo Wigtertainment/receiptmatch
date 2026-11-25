@@ -1,6 +1,6 @@
-import type { BankImportInput, BankImportResult, PositionedSpan, SourceEvidence, TransactionCandidate, UnresolvedDraft } from "../../src/shared/bank-import.js";
+import type { BankImportInput, BankImportResult, PositionedSpan, TransactionCandidate, UnresolvedDraft } from "../../src/shared/bank-import.js";
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
-import type { StoredDocumentImport } from "../../src/shared/workspace-documents.js";
+import type { DocumentFileResult, StoredDocumentImport } from "../../src/shared/workspace-documents.js";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { ExtractionResult } from "../../src/shared/pdf-extraction.js";
@@ -21,13 +21,15 @@ export function retainedBank(root: string, input: BankImportInput = statement())
 		importedAt: "2032-05-20T12:00:00.000Z",
 		filePath: path.join(root, "bank.pdf"),
 		result,
-		accounts: result.accountSections.map((section: { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; }): { sectionId: string; accountId: `${string}-${string}-${string}-${string}-${string}`; statementId: `${string}-${string}-${string}-${string}-${string}`; } => ({ sectionId: section.sectionId, accountId: randomUUID(), statementId: randomUUID() })),
-		transactions: result.transactions.map((row: TransactionCandidate): { rowId: string; transactionId: `${string}-${string}-${string}-${string}-${string}`; } => ({ rowId: row.rowId, transactionId: randomUUID() })),
-		drafts: result.unresolvedDrafts.map((row: UnresolvedDraft): { rowId: string; draftId: `${string}-${string}-${string}-${string}-${string}`; } => ({ rowId: row.rowId, draftId: randomUUID() })),
+		accounts: result.accountSections.map((section: BankImportResult['accountSections'][number]): StoredBankImport['accounts'][number] => ({
+			sectionId: section.sectionId, accountId: randomUUID(), statementId: randomUUID()
+		})),
+		transactions: result.transactions.map((row: TransactionCandidate): StoredBankImport['transactions'][number] => ({ rowId: row.rowId, transactionId: randomUUID() })),
+		drafts: result.unresolvedDrafts.map((row: UnresolvedDraft): StoredBankImport['drafts'][number] => ({ rowId: row.rowId, draftId: randomUUID() })),
 	});
 }
 
-export function extractedDocument(bytes: Uint8Array, sourceId: string, format: DocumentFormat = "pdf"): ExtractionResult & { status: "complete" } {
+export function extractedDocument(bytes: Uint8Array, sourceId: string, format: DocumentFormat = "pdf"): Extract<ExtractionResult, Record<'status', 'complete'>> {
 	return {
 		status: "complete",
 		input: {
@@ -62,7 +64,7 @@ export function documentRun(root: string, records: StoredSupportingDocument[] = 
 		startedAt: "2032-05-20T11:00:00.000Z",
 		finishedAt: "2032-05-20T13:00:00.000Z",
 		status: "finished",
-		files: records.map((record: StoredSupportingDocument): { status: string; record: StoredSupportingDocument; } => ({ status: "imported", record })),
+		files: records.map((record: StoredSupportingDocument): Extract<DocumentFileResult, Record<'status', 'imported'>> => ({ status: "imported", record })),
 		directoryIssues: [],
 	});
 }

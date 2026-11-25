@@ -36,8 +36,8 @@ test('displays the latest saved statement analysis after opening and reopening t
         try {
             await app.evaluate(({ dialog, BrowserWindow }: typeof Electron.CrossProcessExports, file: string): void => {
                 BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
-                dialog.showOpenDialog = async (): Promise<{ canceled: false; filePaths: string[] }> => Promise.resolve({ canceled: false, filePaths: [file] });
-                dialog.showMessageBox = async (): Promise<{ response: number; checkboxChecked: false }> => Promise.resolve({ response: 1, checkboxChecked: false });
+                dialog.showOpenDialog = async (): Promise<Electron.OpenDialogReturnValue> => Promise.resolve({ canceled: false, filePaths: [file] });
+                dialog.showMessageBox = async (): Promise<Electron.MessageBoxReturnValue> => Promise.resolve({ response: 1, checkboxChecked: false });
             }, file);
             const page: Page = await app.firstWindow();
             await page.getByRole('button', { name: 'Open workspace', exact: true }).click();

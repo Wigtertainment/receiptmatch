@@ -1,4 +1,4 @@
-import type { BankImportInput, PositionedSpan, TransactionCandidate } from "../../src/shared/bank-import.js";
+import type { PositionedSpan, TransactionCandidate } from "../../src/shared/bank-import.js";
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
 import type { StoredDocumentImport } from "../../src/shared/workspace-documents.js";
 import type { IMatchSummary } from "../../src/shared/workspace-matching.js";
@@ -14,6 +14,9 @@ import { row, span, statement } from '../unit/bank-fixtures.js';
 import { documentRun, extractedDocument, retainedBank } from '../unit/document-fixtures.js';
 import { interpretSupportingDocument } from '../../electron/documents/interpret.js';
 import { createWorkspace, newMetadata } from '../../electron/store.js';
+
+interface IWorkspaceDialogPlan { opens: string[]; save: string }
+interface IStatementLayoutOrder { leftToRight: boolean; topToBottom: boolean }
 
 async function statementPdf(file: string): Promise<void> {
 	const pdf: PDFDocument = await PDFDocument.create();
@@ -41,14 +44,15 @@ async function invoicePdf(file: string, total: string, receipt: boolean = false)
 }
 
 async function dialogs(app: ElectronApplication, opens: string[], save: string = ''): Promise<void> {
-	await app.evaluate(({ dialog, BrowserWindow }: typeof Electron.CrossProcessExports, plan: { opens: string[]; save: string; }): void => {
+	await app.evaluate(({ dialog, BrowserWindow }: typeof Electron.CrossProcessExports, plan: IWorkspaceDialogPlan): void => {
 		BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
-		dialog.showOpenDialog = async (): Promise<{ canceled: boolean; filePaths: string[]; }> => {
+		dialog.showOpenDialog = async (): Promise<Electron.OpenDialogReturnValue> => {
 			const file: string | undefined = plan.opens.shift();
 			return Promise.resolve({ canceled: !file, filePaths: file ? [file] : [] });
 		};
-		dialog.showSaveDialog = async (): Promise<{ canceled: boolean; filePath: string; }> => Promise.resolve(({ canceled: !plan.save, filePath: plan.save }));
-		dialog.showMessageBox = async (): Promise<{ response: number; checkboxChecked: false; }> => Promise.resolve(({ response: 1, checkboxChecked: false }));
+		dialog.showSaveDialog = async (): Promise<Electron.SaveDialogReturnValue> => Promise.resolve(({ canceled: !plan.save, filePath: plan.save }));
+		dialog.showMessageBox = async (): Promise<Pick<Electron.MessageBoxReturnValue, 'response'> & Record<'checkboxChecked', false>> =>
+			Promise.resolve(({ response: 1, checkboxChecked: false }));
 	}, { opens, save });
 }
 
@@ -103,8 +107,8 @@ test('packaged match suggestions from import through keyboard review and reopeni
 			await expect.poll((): Promise<number> => page.evaluate((): number => innerWidth)).toBe(width);
 		};
 
-		const importBounds: () => Promise<{ leftToRight: boolean; topToBottom: boolean; }> = async (): Promise<{ leftToRight: boolean; topToBottom: boolean; }> => {
-			const [bank, receipts]: [{ x: number; y: number; width: number; height: number; } | null, { x: number; y: number; width: number; height: number; } | null] = await Promise.all([statements.boundingBox(), documents.boundingBox()]);
+		const importBounds: () => Promise<IStatementLayoutOrder> = async (): Promise<IStatementLayoutOrder> => {
+			const [bank, receipts]: [Electron.Rectangle | null, Electron.Rectangle | null] = await Promise.all([statements.boundingBox(), documents.boundingBox()]);
 			return { leftToRight: bank!.x + bank!.width < receipts!.x && bank!.y === receipts!.y, topToBottom: bank!.y + bank!.height < receipts!.y };
 		};
 		await resize(1440);
@@ -136,7 +140,7 @@ test('packaged match suggestions from import through keyboard review and reopeni
 		await expect(detail.getByText('Receipt filename', { exact: true })).toBeVisible();
 		await expect(detail.getByText('Orchard_Workshop_invoice.pdf · Bank Orchard Workshop')).toBeVisible();
 		await expect.poll(async (): Promise<boolean> => {
-			const [transactions, evidence]: [{ x: number; y: number; width: number; height: number; } | null, { x: number; y: number; width: number; height: number; } | null] = await Promise.all([list.boundingBox(), detail.boundingBox()]);
+			const [transactions, evidence]: [Electron.Rectangle | null, Electron.Rectangle | null] = await Promise.all([list.boundingBox(), detail.boundingBox()]);
 			return transactions!.x + transactions!.width < evidence!.x && transactions!.y === evidence!.y;
 		}).toBe(true);
 		await expect(matches.getByText('7 days apart (within 7 days)', { exact: false })).toBeVisible();
@@ -157,7 +161,7 @@ test('packaged match suggestions from import through keyboard review and reopeni
 		await expect(river.locator('.match-transaction')).toHaveAttribute('aria-current', 'true');
 		await expect(detail.getByRole('heading', { name: /River Studio/ })).toBeFocused();
 		await expect(detail.getByText('No supporting document met the matching rules for this transaction.')).toBeVisible();
-		const [transactions, evidence]: [{ x: number; y: number; width: number; height: number; } | null, { x: number; y: number; width: number; height: number; } | null] = await Promise.all([list.boundingBox(), detail.boundingBox()]);
+		const [transactions, evidence]: [Electron.Rectangle | null, Electron.Rectangle | null] = await Promise.all([list.boundingBox(), detail.boundingBox()]);
 		expect(transactions!.y + transactions!.height).toBeLessThan(evidence!.y);
 		await detail.getByRole('button', { name: 'Back to transactions' }).press('Enter');
 		await expect(river).toBeFocused();
@@ -298,9 +302,9 @@ test('keeps the assignment panel in view and previews a document without a total
 	seed.counterpartyCandidate = null;
 	seed.reportedOriginalAmount = null;
 	seed.accountAmount = { ...seed.accountAmount, value: { currency: 'EUR', coefficient: '-17677', scale: 2 } };
-	const receipt: { status: "complete"; input: BankImportInput; } & { status: "complete"; } = extractedDocument(Buffer.from('synthetic receipt without total'), randomUUID());
+	const receipt: ReturnType<typeof extractedDocument> = extractedDocument(Buffer.from('synthetic receipt without total'), randomUUID());
 	receipt.input.pages[0].spans = ['Receipt', 'Merchant: Corner Cafe', 'Receipt Number: WITHOUT-TOTAL'].map((line: string, index: number): PositionedSpan => span(line, 30, 30 + index * 30, 250));
-	const near: { status: "complete"; input: BankImportInput; } & { status: "complete"; } = extractedDocument(Buffer.from('synthetic receipt with a different total'), randomUUID());
+	const near: ReturnType<typeof extractedDocument> = extractedDocument(Buffer.from('synthetic receipt with a different total'), randomUUID());
 	near.input.pages[0].spans = ['Vela Backyard', 'Total: EUR 160.70'].map((line: string, index: number): PositionedSpan => span(line, 30, 30 + index * 30, 250));
 	const imports: StoredDocumentImport = documentRun(root, [{ id: randomUUID(), filePath: path.join(root, 'without-total.pdf'), format: 'pdf',
 		importedAt: '2032-02-27T00:00:00.000Z', result: interpretSupportingDocument(receipt.input) },

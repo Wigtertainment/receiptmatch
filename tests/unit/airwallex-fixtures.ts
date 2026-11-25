@@ -7,7 +7,7 @@ export function airwallexHeader(y: number = 200): PositionedSpan[] {
     return [span('Date', 40, y, 25), span('Details', 110, y, 35), span('Credit', 320, y, 35), span('Debit', 410, y, 30), span('Balance', 500, y, 45)];
 }
 
-export interface AirwallexFixtureRow {
+export interface IAirwallexFixtureRow {
     y: number;
     date?: string;
     kind?: string;
@@ -17,8 +17,8 @@ export interface AirwallexFixtureRow {
     balance?: string;
 }
 
-export function airwallexRow(options: AirwallexFixtureRow): PositionedSpan[] {
-    const { y, date = 'Mar 01 2032', kind = 'Card', details = ['Lantern Supplies, USA,', '(Main Card, **0000): USD 18.07'], credit, debit, balance = '980.50 EUR' }: AirwallexFixtureRow = options;
+export function airwallexRow(options: IAirwallexFixtureRow): PositionedSpan[] {
+    const { y, date = 'Mar 01 2032', kind = 'Card', details = ['Lantern Supplies, USA,', '(Main Card, **0000): USD 18.07'], credit, debit, balance = '980.50 EUR' }: IAirwallexFixtureRow = options;
     return [
         ...(kind ? [span(kind, 110, y, 80)] : []),
         ...details.filter(Boolean).map((text: string, index: number): PositionedSpan => span(text, 110, y + 12 * (index + 1), 195)),
