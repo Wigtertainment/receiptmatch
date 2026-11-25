@@ -5,27 +5,36 @@ import { defaultExportFilenamePattern, exportFilenameExample, exportFilenamePatt
 import type { DocumentExportFailure, DocumentExportOutcome, DocumentExportResponse } from '../../shared/document-export.js';
 import type { IWorkspaceView } from '../../shared/protocol.js';
 
+type ExportFilenamePreview = ReturnType<typeof renderExportFilename>;
+type ExportOutcomeCounts = Record<DocumentExportOutcome['status'], number>;
+interface IExportFeedback { loadRevision: number; result: DocumentExportResponse }
+interface IExportPlaceholder { token: string; label: string }
+
 @Component({
 	selector: 'app-export-settings', standalone: true, templateUrl: './export-settings.component.html',
 	imports: [WigAlertComponent, WigButtonComponent, WigInputComponent, WigTableComponent, WigTemplateDirective, InputLength],
 })
 export class ExportSettings {
+	constructor() {
+		void this.load();
+	}
+
 	readonly workspace: InputSignal<IWorkspaceView> = input.required<IWorkspaceView>();
 	readonly workspaceBusy: InputSignal<boolean> = input.required<boolean>();
 	readonly pattern: WritableSignal<string> = signal<string>(defaultExportFilenamePattern);
 	readonly savedPattern: WritableSignal<string | null> = signal<string | null>(null);
-	readonly preview: Signal<{ filename: string; error?: never; } | { filename?: never; error: string; }> = computed((): { filename: string; error?: never; } | { filename?: never; error: string; } => renderExportFilename(this.pattern(), exportFilenameExample));
+	readonly preview: Signal<ExportFilenamePreview> = computed((): ExportFilenamePreview => renderExportFilename(this.pattern(), exportFilenameExample));
 	readonly busy: WritableSignal<boolean> = signal(true);
 	readonly error: WritableSignal<string | null> = signal<string | null>(null);
 	readonly saved: WritableSignal<boolean> = signal(false);
 	readonly exporting: WritableSignal<boolean> = signal(false);
-	private readonly exportFeedback: WritableSignal<{ loadRevision: number; result: DocumentExportResponse; } | null> = signal<{ loadRevision: number; result: DocumentExportResponse } | null>(null);
+	private readonly exportFeedback: WritableSignal<IExportFeedback | null> = signal<IExportFeedback | null>(null);
 	readonly exportResult: Signal<DocumentExportResponse | null> = computed((): DocumentExportResponse | null => {
-		const feedback: { loadRevision: number; result: DocumentExportResponse; } | null = this.exportFeedback();
+		const feedback: IExportFeedback | null = this.exportFeedback();
 		return feedback?.loadRevision === this.workspace().loadRevision ? feedback.result : null;
 	});
-	readonly exportCounts: Signal<{ copied: number; skipped: number; failed: number; }> = computed((): { copied: number; skipped: number; failed: number; } => {
-		const counts: { copied: number; skipped: number; failed: number; } = { copied: 0, skipped: 0, failed: 0 };
+	readonly exportCounts: Signal<ExportOutcomeCounts> = computed((): ExportOutcomeCounts => {
+		const counts: ExportOutcomeCounts = { copied: 0, skipped: 0, failed: 0 };
 		const result: DocumentExportResponse | null = this.exportResult();
 		if (result?.status === 'completed') {
 			for (const outcome of result.report.outcomes) {
@@ -66,16 +75,12 @@ export class ExportSettings {
 		{ field: 'filename', text: 'Export filename', type: 'custom', template: 'filename' },
 		{ field: 'status', text: 'Result', type: 'custom', template: 'result' },
 	] };
-	readonly placeholders: { token: string; label: string; }[] = [
+	readonly placeholders: IExportPlaceholder[] = [
 		{ token: '{date}', label: 'Booking date' }, { token: '{counterparty}', label: 'Counterparty' },
 		{ token: '{currency}', label: 'Currency' }, { token: '{amount}', label: 'Booking amount' },
 	];
 
-	constructor() {
-		void this.load();
-	}
-
-	failureLabel(outcome: Extract<DocumentExportOutcome, { status: 'failed' }>): string {
+	failureLabel(outcome: Extract<DocumentExportOutcome, Record<'status', 'failed'>>): string {
 		return this.failureLabels[outcome.reason];
 	}
 

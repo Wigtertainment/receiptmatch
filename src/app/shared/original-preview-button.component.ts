@@ -3,7 +3,7 @@ import { Component, DestroyRef, ElementRef, TemplateRef, computed, inject, input
 import { WigButtonComponent, WigCheckboxComponent, WigIconButtonComponent } from '@wigtertainment-ltd/comp-lib';
 import type { OriginalAdoptionResult, IOriginalAnalysisComparison, OriginalAnalysisResult, OriginalPreviewRequest, IOriginalPreviewResult, OriginalRelinkResult } from '../../shared/original-preview.js';
 
-interface PreviewFeedback extends IOriginalPreviewResult {
+interface IPreviewFeedback extends IOriginalPreviewResult {
     source: OriginalPreviewRequest;
     pending: 'open' | 'relink' | 'analyze' | 'adopt' | null;
     actionError?: string;
@@ -37,19 +37,19 @@ export class OriginalPreviewButton {
     readonly loadRevision: InputSignal<number | undefined> = input.required<number | undefined>();
     readonly iconOnly: InputSignal<boolean> = input(false);
     readonly iconTooltip: InputSignal<string | undefined> = input<string>();
-    readonly iconButtonStyle: { width: string; 'min-width': string; 'min-height': string; padding: string; } = { width: '44px', 'min-width': '44px', 'min-height': '44px', padding: '0' };
+    readonly iconButtonStyle: Record<'width' | 'min-width' | 'min-height' | 'padding', string> = { width: '44px', 'min-width': '44px', 'min-height': '44px', padding: '0' };
     readonly acknowledgeConflicts: WritableSignal<boolean> = signal(false);
-    private readonly request: WritableSignal<PreviewFeedback | null> = signal<PreviewFeedback | null>(null);
+    private readonly request: WritableSignal<IPreviewFeedback | null> = signal<IPreviewFeedback | null>(null);
     private readonly destroyed: DestroyRef = inject(DestroyRef);
 	private readonly openButton: Signal<ElementRef<HTMLElement> | undefined> = viewChild('openButton', { read: ElementRef<HTMLElement> });
     private readonly analysisDialog: Signal<ElementRef<HTMLDialogElement> | undefined> = viewChild<ElementRef<HTMLDialogElement>>('analysisDialog');
     readonly feedbackContent: Signal<TemplateRef<unknown> | undefined> = viewChild<TemplateRef<unknown>>('feedbackContent');
-    readonly feedback: Signal<PreviewFeedback | null> = computed((): PreviewFeedback | null => {
-        const request: PreviewFeedback | null = this.request();
+    readonly feedback: Signal<IPreviewFeedback | null> = computed((): IPreviewFeedback | null => {
+        const request: IPreviewFeedback | null = this.request();
         return request && request.source.id === this.sourceId() && request.source.kind === this.kind() && request.source.loadRevision === this.loadRevision() ? request : null;
     });
     readonly hasFeedback: Signal<boolean> = computed((): boolean => {
-        const current: PreviewFeedback | null = this.feedback();
+        const current: IPreviewFeedback | null = this.feedback();
         return Boolean(current?.error) || Boolean(current?.notice) || current?.status === 'missing' || current?.status === 'changed';
     });
 
@@ -58,7 +58,7 @@ export class OriginalPreviewButton {
         if (id === undefined || loadRevision === undefined || this.feedback()?.pending) {
             return;
         }
-        const request: PreviewFeedback = { source: { kind: this.kind(), id, loadRevision }, pending: 'open', error: null };
+        const request: IPreviewFeedback = { source: { kind: this.kind(), id, loadRevision }, pending: 'open', error: null };
         this.request.set(request);
         try {
             const result: IOriginalPreviewResult = await window.receiptmatch.openOriginal(request.source);
@@ -73,11 +73,11 @@ export class OriginalPreviewButton {
     }
 
     async relink(): Promise<void> {
-        const current: PreviewFeedback | null = this.feedback();
+        const current: IPreviewFeedback | null = this.feedback();
         if (!current || current.pending || (current.status !== 'missing' && current.status !== 'changed')) {
             return;
         }
-        const request: PreviewFeedback = { ...current, pending: 'relink', actionError: undefined };
+        const request: IPreviewFeedback = { ...current, pending: 'relink', actionError: undefined };
         this.request.set(request);
         const failure: "The original could not be relinked. Try again." = 'The original could not be relinked. Try again.';
         try {
@@ -99,11 +99,11 @@ export class OriginalPreviewButton {
     }
 
     async analyze(): Promise<void> {
-        const current: PreviewFeedback | null = this.feedback();
+        const current: IPreviewFeedback | null = this.feedback();
         if (!current || current.pending || (current.status !== 'missing' && current.status !== 'changed')) {
             return;
         }
-        const request: PreviewFeedback = { ...current, pending: 'analyze', comparison: undefined, actionError: undefined };
+        const request: IPreviewFeedback = { ...current, pending: 'analyze', comparison: undefined, actionError: undefined };
         this.request.set(request);
         try {
             const result: OriginalAnalysisResult = await window.receiptmatch.analyzeOriginal(request.source);
@@ -115,7 +115,7 @@ export class OriginalPreviewButton {
                 return;
             }
             this.acknowledgeConflicts.set(false);
-            const ready: PreviewFeedback = { ...request, pending: null, comparison: result.comparison };
+            const ready: IPreviewFeedback = { ...request, pending: null, comparison: result.comparison };
             this.request.set(ready);
             requestAnimationFrame((): void => {
                 if (this.destroyed.destroyed || this.feedback() !== ready) {
@@ -131,12 +131,12 @@ export class OriginalPreviewButton {
     }
 
     async applyAnalysis(dialog: HTMLDialogElement): Promise<void> {
-        const current: PreviewFeedback | null = this.feedback();
+        const current: IPreviewFeedback | null = this.feedback();
         const acknowledgeConflicts: boolean = this.acknowledgeConflicts();
         if (!current?.comparison || current.pending || (current.comparison.conflicts.length && !acknowledgeConflicts)) {
             return;
         }
-        const request: PreviewFeedback = { ...current, pending: 'adopt', actionError: undefined };
+        const request: IPreviewFeedback = { ...current, pending: 'adopt', actionError: undefined };
         this.request.set(request);
         try {
             const result: OriginalAdoptionResult = await window.receiptmatch.acceptOriginalAnalysis({ token: current.comparison.token, loadRevision: request.source.loadRevision, acknowledgeConflicts });
@@ -175,7 +175,7 @@ export class OriginalPreviewButton {
     }
 
     dismissAnalysis(): void {
-        const current: PreviewFeedback | null = this.feedback();
+        const current: IPreviewFeedback | null = this.feedback();
         if (current?.comparison) {
             this.request.set({ ...current, comparison: undefined, actionError: undefined });
         }

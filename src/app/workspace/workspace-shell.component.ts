@@ -9,10 +9,11 @@ import type { IWorkspaceBridge, WorkspaceCommand, IWorkspaceState, IWorkspaceVie
 import { StatementImports } from '../statements/statement-imports.component.js';
 
 declare global {
-  interface Window { receiptmatch: IWorkspaceBridge; }
+  var receiptmatch: IWorkspaceBridge;
 }
 
 type WorkspaceSection = 'sources' | 'matches' | 'export-settings' | 'settings';
+interface IWorkspaceNavigation { loadRevision: number; section: WorkspaceSection }
 
 @Component({
   selector: 'app-root', standalone: true,
@@ -20,19 +21,6 @@ type WorkspaceSection = 'sources' | 'matches' | 'export-settings' | 'settings';
   templateUrl: './workspace-shell.component.html'
 })
 export class WorkspaceShell {
-  readonly version: WritableSignal<string | null> = signal<string | null>(null);
-  readonly state: WritableSignal<IWorkspaceState> = signal<IWorkspaceState>({ workspace: null, busy: true, error: null, statementImport: null, importOutcome: null, documentImport: null, documentOutcome: null });
-  readonly commandError: WritableSignal<string | null> = signal<string | null>(null);
-  readonly welcomeSettings: WritableSignal<boolean> = signal(false);
-  private readonly welcomeSettingsButton: Signal<WigButtonComponent | undefined> = viewChild<WigButtonComponent>('welcomeSettingsButton');
-  private readonly navigation: WritableSignal<{ loadRevision: number; section: WorkspaceSection; } | null> = signal<{ loadRevision: number; section: WorkspaceSection } | null>(null);
-  readonly section: Signal<WorkspaceSection> = computed((): WorkspaceSection => {
-    const navigation: { loadRevision: number; section: WorkspaceSection; } | null = this.navigation();
-    return navigation && navigation.loadRevision === this.state().workspace?.loadRevision ? navigation.section : 'sources';
-  });
-  private stateRevision: number = 0;
-  private commandGeneration: number = 0;
-  private disposed: boolean = false;
   constructor() {
     const unsubscribe: () => void = window.receiptmatch.subscribe((state: IWorkspaceState): void => {
       if (this.disposed) {
@@ -50,6 +38,20 @@ export class WorkspaceShell {
       }
     }).catch((): null => null);
   }
+
+  readonly version: WritableSignal<string | null> = signal<string | null>(null);
+  readonly state: WritableSignal<IWorkspaceState> = signal<IWorkspaceState>({ workspace: null, busy: true, error: null, statementImport: null, importOutcome: null, documentImport: null, documentOutcome: null });
+  readonly commandError: WritableSignal<string | null> = signal<string | null>(null);
+  readonly welcomeSettings: WritableSignal<boolean> = signal(false);
+  private readonly welcomeSettingsButton: Signal<WigButtonComponent | undefined> = viewChild<WigButtonComponent>('welcomeSettingsButton');
+  private readonly navigation: WritableSignal<IWorkspaceNavigation | null> = signal<IWorkspaceNavigation | null>(null);
+  readonly section: Signal<WorkspaceSection> = computed((): WorkspaceSection => {
+    const navigation: IWorkspaceNavigation | null = this.navigation();
+    return navigation && navigation.loadRevision === this.state().workspace?.loadRevision ? navigation.section : 'sources';
+  });
+  private stateRevision: number = 0;
+  private commandGeneration: number = 0;
+  private disposed: boolean = false;
 
   async run(command: WorkspaceCommand): Promise<void> {
     const generation: number = ++this.commandGeneration; const revision: number = this.stateRevision;
