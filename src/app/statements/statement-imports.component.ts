@@ -1,27 +1,27 @@
-import type { BankCorrection } from "./shared/bank-corrections.js";
-import type { BankImportResult } from "./shared/bank-import.js";
+import type { BankCorrection } from "../../shared/bank-corrections.js";
+import type { BankImportResult } from "../../shared/bank-import.js";
 import { NgTemplateOutlet } from '@angular/common';
 import { Component, DestroyRef, Injector, afterNextRender, afterRenderEffect, computed, effect, inject, input, output, signal, untracked, viewChild, type ElementRef, type WritableSignal,
     type OutputEmitterRef, type Signal, type InputSignal } from '@angular/core';
 import { type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDrawerComponent, WigDropdownComponent, WigIconButtonComponent, WigInputComponent,
     WigTableComponent, WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
-import { InputLength } from './app/input-length.js';
-import { OriginalPreviewButton } from './app/original-preview-button.js';
-import { StatementReanalysis } from './app/statement-reanalysis.js';
-import { amountEntryExample, formatAmountEntry, parseAmountEntry } from './shared/amount-entry.js';
-import { applyBankCorrections } from './shared/bank-corrections.js';
-import { calendarDateSchema, type ImportIssue, type SourceEvidence, type TransactionCandidate, type UnresolvedDraft } from './shared/bank-import.js';
-import { formatCalendarDate, formatMoney } from './shared/display.js';
-import { sameMoneyValue, type Money } from './shared/money.js';
-import type { WorkspaceCommand, WorkspaceState, WorkspaceView } from './shared/protocol.js';
-import { indexStatementOverlaps, type StatementOverlap, type StatementOverlaps } from './shared/statement-overlaps.js';
-import { excludedDuplicateIds, type DuplicateDecision } from './shared/transaction-duplicates.js';
-import type { BankImportSummary, StoredBankImport } from './shared/workspace-import.js';
-import type { ExtractionProgress } from './shared/pdf-extraction.js';
+import { InputLength } from '../shared/input-length.directive.js';
+import { OriginalPreviewButton } from '../shared/original-preview-button.component.js';
+import { StatementReanalysis } from './statement-reanalysis.component.js';
+import { amountEntryExample, formatAmountEntry, parseAmountEntry } from '../../shared/amount-entry.js';
+import { applyBankCorrections } from '../../shared/bank-corrections.js';
+import { calendarDateSchema, type ImportIssue, type SourceEvidence, type TransactionCandidate, type UnresolvedDraft } from '../../shared/bank-import.js';
+import { formatCalendarDate, formatMoney } from '../../shared/display.js';
+import { sameMoneyValue, type Money } from '../../shared/money.js';
+import type { WorkspaceCommand, WorkspaceState, WorkspaceView } from '../../shared/protocol.js';
+import { indexStatementOverlaps, type StatementOverlap, type StatementOverlaps } from '../../shared/statement-overlaps.js';
+import { excludedDuplicateIds, type DuplicateDecision } from '../../shared/transaction-duplicates.js';
+import type { BankImportSummary, StoredBankImport } from '../../shared/workspace-import.js';
+import type { ExtractionProgress } from '../../shared/pdf-extraction.js';
 import type { ZodSafeParseResult } from 'zod';
+import { RowSource } from './row-source.component.js';
+import { directionLabel, type ImportRow } from './statement-row.js';
 
-type ImportRow = TransactionCandidate | UnresolvedDraft;
-type RowSourceRecord = Pick<StoredBankImport, 'filePath' | 'result'>;
 type BookingAction = 'correction' | 'source';
 interface StatementRemoval { importId: string; revision: number; fileName: string; predecessorName?: string; }
 type DuplicateAction = Extract<WorkspaceCommand, { type: 'set-duplicate-decision' }>['decision'];
@@ -36,86 +36,10 @@ function filename(value: string): string {
     const name: string | undefined = value.split(/[\\/]/).at(-1); return name?.length ? name : value;
 }
 
-function directionLabel(value: ImportRow['direction']): "Unknown" | "Incoming" | "Outgoing" {
-    return value === 'incoming' ? 'Incoming' : value === 'outgoing' ? 'Outgoing' : 'Unknown';
-}
-
-@Component({
-    selector: 'app-row-source', standalone: true,
-    template: `
-      <div class="source-detail-body">
-        <dl class="source-facts">
-          <div><dt>Full description</dt><dd class="raw-text">{{ row().description?.value || 'Unknown' }}</dd></div>
-          <div><dt>Booking date</dt><dd>{{ date(row().bookingDate?.value ?? null) }}</dd></div>
-          <div><dt>Printed date basis</dt><dd>{{ row().bookingDate?.basisLabel || 'Unknown' }}</dd></div>
-          <div><dt>Value date</dt><dd>{{ date(row().valueDate?.value ?? null) }}</dd></div>
-          <div><dt>Account amount</dt><dd>{{ money(row().accountAmount?.value ?? null) }}</dd></div>
-          <div><dt>Direction</dt><dd>{{ direction(row().direction) }}</dd></div>
-          <div><dt>Reported original amount</dt><dd>{{ money(row().reportedOriginalAmount?.value ?? null) }}</dd></div>
-          <div><dt>Counterparty candidate</dt><dd>{{ row().counterpartyCandidate?.value || 'Unknown' }}</dd></div>
-          <div><dt>Account reference</dt><dd>{{ account()?.accountReference?.value || 'Unknown' }}</dd></div>
-          <div><dt>Account currency</dt><dd>{{ account()?.currency?.value || 'Unknown' }}</dd></div>
-          <div><dt>Source file</dt><dd class="file-location">{{ record().filePath }}</dd></div>
-        </dl>
-        <h4>Labeled references</h4>
-        @if (row().references.length) {
-          <dl class="source-facts">@for (reference of row().references; track $index) { <div><dt>{{ reference.label }}</dt><dd>{{ reference.value }}</dd></div> }</dl>
-        } @else { <p class="muted">No labeled references reported.</p> }
-        <h4>Source evidence</h4>
-        @for (field of evidenceFields(); track $index) {
-          <section class="evidence-group" [attr.aria-label]="field.label">
-            <h5>{{ field.label }}</h5>
-            <ul class="evidence-list">@for (evidence of field.evidence; track $index) {
-              <li>
-                <p class="evidence-origin">Page {{ pageNumber(evidence.pageId) }} · {{ evidence.method === 'embedded-text' ? 'Embedded text' : 'Local English OCR' }}</p>
-                <p class="raw-text">{{ evidence.rawText }}</p>
-                <p class="evidence-region">Region in PDF points: {{ region(evidence) }}</p>
-              </li>
-            }</ul>
-          </section>
-        }
-      </div>
-    `
-})
-class RowSource {
-    readonly row: InputSignal<ImportRow> = input.required<ImportRow>();
-    readonly record: InputSignal<RowSourceRecord> = input.required<RowSourceRecord>();
-    readonly date: (value: string | null, locale?: string | string[]) => string = formatCalendarDate;
-    readonly money: (value: (Omit<Money, "currency"> & { currency: string | null; }) | null, locale?: string | string[]) => string = formatMoney;
-    readonly direction: (value: ImportRow["direction"]) => "Unknown" | "Incoming" | "Outgoing" = directionLabel;
-    readonly account: Signal<{ sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; } | undefined> = computed((): { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; } | undefined => this.record().result.accountSections.find((section: { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; }): boolean => section.sectionId === this.row().accountSectionId));
-    readonly evidenceFields: Signal<{ label: string; evidence: SourceEvidence[]  ; }[]> = computed((): { label: string; evidence: SourceEvidence[]  ; }[] => {
-        const row: ImportRow = this.row(); const account: { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; } | undefined = this.account();
-        const values: { label: string; evidence: SourceEvidence[]  ; }[] = [
-            { label: 'Full row', evidence: row.evidence },
-            { label: 'Booking date', evidence: row.bookingDate?.evidence ?? [] },
-            { label: 'Value date', evidence: row.valueDate?.evidence ?? [] },
-            { label: 'Description', evidence: row.description?.evidence ?? [] },
-            { label: 'Account amount', evidence: row.accountAmount?.evidence ?? [] },
-            { label: 'Reported original amount', evidence: row.reportedOriginalAmount?.evidence ?? [] },
-            { label: 'Counterparty candidate', evidence: row.counterpartyCandidate?.evidence ?? [] },
-            { label: 'Account reference', evidence: account?.accountReference?.evidence ?? [] },
-            { label: 'Account currency', evidence: account?.currency.evidence ?? [] },
-            { label: 'Account section', evidence: account?.evidence ?? [] },
-            ...row.references.map((reference: { label: string; value: string; evidence: SourceEvidence[]; }): { label: string; evidence: SourceEvidence[]; } => ({ label: reference.label, evidence: reference.evidence }))
-        ];
-        return values.filter((field: { label: string; evidence: SourceEvidence[]  ; }): number => field.evidence.length);
-    });
-    pageNumber(pageId: string): number | "Unknown" {
-        return this.record().result.sourceProvenance?.pages.find((page: { pageId: string; pageNumber: number; width: number; height: number; }): boolean => page.pageId === pageId)?.pageNumber ?? 'Unknown';
-    }
-
-    region(evidence: SourceEvidence): string {
-        const formatter: Intl.NumberFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
-        const value: { x: number; y: number; width: number; height: number; } = evidence.region;
-        return `x ${formatter.format(value.x)}, y ${formatter.format(value.y)}, width ${formatter.format(value.width)}, height ${formatter.format(value.height)}`;
-    }
-}
-
 @Component({ selector: 'app-statement-imports', standalone: true,
     imports: [RowSource, OriginalPreviewButton, StatementReanalysis, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDrawerComponent, WigDropdownComponent,
         WigIconButtonComponent, WigInputComponent, WigTableComponent, WigTemplateDirective, InputLength, NgTemplateOutlet],
-    templateUrl: './app/statement-imports.html' })
+    templateUrl: './statement-imports.component.html' })
 export class StatementImports {
     readonly state: InputSignal<WorkspaceState> = input.required<WorkspaceState>();
     readonly active: InputSignal<boolean> = input(true);

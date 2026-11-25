@@ -1,12 +1,12 @@
 import { Component, computed, input, signal, type Signal, type WritableSignal, type InputSignal } from '@angular/core';
 import { type TableConfig, WigAlertComponent, WigButtonComponent, WigInputComponent, WigTableComponent, WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
-import { InputLength } from './input-length.js';
-import { defaultExportFilenamePattern, exportFilenameExample, exportFilenamePatternLimit, renderExportFilename } from '../shared/export-filename.js';
-import type { DocumentExportFailure, DocumentExportOutcome, DocumentExportResponse } from '../shared/document-export.js';
-import type { WorkspaceView } from '../shared/protocol.js';
+import { InputLength } from '../shared/input-length.directive.js';
+import { defaultExportFilenamePattern, exportFilenameExample, exportFilenamePatternLimit, renderExportFilename } from '../../shared/export-filename.js';
+import type { DocumentExportFailure, DocumentExportOutcome, DocumentExportResponse } from '../../shared/document-export.js';
+import type { WorkspaceView } from '../../shared/protocol.js';
 
 @Component({
-	selector: 'app-export-settings', standalone: true, templateUrl: './export-settings.html',
+	selector: 'app-export-settings', standalone: true, templateUrl: './export-settings.component.html',
 	imports: [WigAlertComponent, WigButtonComponent, WigInputComponent, WigTableComponent, WigTemplateDirective, InputLength],
 })
 export class ExportSettings {

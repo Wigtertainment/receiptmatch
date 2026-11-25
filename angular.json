@@ -5,11 +5,16 @@
     "receiptmatch": {
       "projectType": "application",
       "root": "",
+      "schematics": {
+        "@schematics/angular:component": { "type": "component", "addTypeToClassName": false },
+        "@schematics/angular:directive": { "type": "directive", "addTypeToClassName": false },
+        "@schematics/angular:service": { "type": "service", "addTypeToClassName": false }
+      },
       "architect": {
         "build": {
           "builder": "@angular/build:application",
           "options": {
-            "browser": "src/app.ts",
+            "browser": "src/main.ts",
             "index": "src/index.html",
             "assets": [{ "glob": "receiptmatch-logo.png", "input": "media/receiptmatch", "output": "/" }, { "glob": "receiptmatch.ico", "input": "media/receiptmatch", "output": "/" }],
             "styles": ["@wigtertainment-ltd/comp-lib/styles/default.css", "src/styles.css"],

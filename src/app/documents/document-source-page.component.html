@@ -1,0 +1,23 @@
+<details class="source-details source-page" [open]="isOpen()" (toggle)="toggle($event)">
+	<summary>Page {{ page().pageNumber }} · {{ page().spans.length }} text spans</summary>
+	@if (isOpen()) {
+		@if (page().status === 'failed') {
+			<p>This page could not be read.</p>
+		} @else {
+			<ul class="evidence-list">
+				@for (span of spans(); track $index) {
+					<li>
+						<p class="raw-text">{{ span.text }}</p>
+						<p class="evidence-origin">{{ extractionLabels[span.method] }}</p>
+						<p class="evidence-region">Region in {{ units() }}: {{ regionText(span.region) }}</p>
+					</li>
+				} @empty {
+					<li>No readable text was retained for this page.</li>
+				}
+			</ul>
+			@if (remaining() > 0) {
+				<wig-button severity="secondary" [label]="'Show ' + nextCount() + ' more text spans'" (click)="showMore()" />
+			}
+		}
+	}
+</details>

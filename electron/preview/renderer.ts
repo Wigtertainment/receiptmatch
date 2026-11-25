@@ -37,20 +37,7 @@ let revision: number = 0;
 
 @Component({
     selector: 'app-preview-controls', imports: [WigButtonComponent, WigDropdownComponent],
-    template: `
-        <div class="controls">
-            @if (pageCount()) {
-                <div id="pagination" class="controls" role="group" aria-label="PDF pages">
-                    <wig-button label="Previous page" severity="secondary" [disabled]="page() <= 1" (click)="movePage(-1)" />
-                    <output id="page-number" aria-live="polite">Page {{ page() }} of {{ pageCount() }}</output>
-                    <wig-button label="Next page" severity="secondary" [disabled]="page() >= pageCount()" (click)="movePage(1)" />
-                </div>
-            }
-            <label for="zoom">Zoom</label>
-            <wig-dropdown class="zoom-control" inputId="zoom" ariaLabel="Zoom" [options]="zoomOptions()" optionLabel="label" optionValue="value"
-                [disabled]="!ready()" [selectedOption]="zoom()" (selectedOptionChange)="changeZoom($event)" />
-        </div>
-    `
+    templateUrl: './preview-controls.component.html'
 })
 class PreviewControls {
     readonly page: WritableSignal<number> = selectedPage;

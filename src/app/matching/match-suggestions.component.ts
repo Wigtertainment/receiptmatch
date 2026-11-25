@@ -1,29 +1,29 @@
-import type { StoredDocumentImport } from "../shared/workspace-documents.js";
-import type { ImportIssue } from "../shared/bank-import.js";
-import type { SupportingDocument } from "../shared/supporting-document.js";
+import type { StoredDocumentImport } from "../../shared/workspace-documents.js";
+import type { ImportIssue } from "../../shared/bank-import.js";
+import type { SupportingDocument } from "../../shared/supporting-document.js";
 import { Component, computed, effect, input, signal, untracked, type EffectCleanupRegisterFn, type Signal, type WritableSignal, type InputSignal } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import { type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigCheckboxComponent, WigDropdownComponent, WigIconButtonComponent, WigTableComponent, WigTagComponent,
 	WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
-import { formatCalendarDate, formatMoney } from '../shared/display.js';
-import { formatDocumentTotal } from '../shared/document-display.js';
-import type { MatchApprovalSelection } from '../shared/match-approvals.js';
-import type { WorkspaceState, WorkspaceCommand, DocumentSnapshot, DocumentImportSummary, OriginalDocumentFields, WorkspaceView } from '../shared/protocol.js';
-import type { MatchCandidateView, MatchDetails, MatchReview, MatchSummary } from '../shared/workspace-matching.js';
-import type { StoredSupportingDocument } from '../shared/workspace-documents.js';
-import { DocumentAnalysis } from './document-imports.js';
-import { OriginalPreviewButton } from './original-preview-button.js';
-import { ButtonPressed } from './button-pressed.js';
-import type { Money } from '../shared/money.js';
-import type { DocumentFieldDisposition, DocumentFieldReviewTarget } from '../shared/document-field-reviews.js';
-import { documentCorrectionKey, type DocumentCorrection, type DocumentCorrectionTarget, type DocumentCorrectionValue } from '../shared/document-corrections.js';
+import { formatCalendarDate, formatMoney } from '../../shared/display.js';
+import { formatDocumentTotal } from '../../shared/document-display.js';
+import type { MatchApprovalSelection } from '../../shared/match-approvals.js';
+import type { WorkspaceState, WorkspaceCommand, DocumentSnapshot, DocumentImportSummary, OriginalDocumentFields, WorkspaceView } from '../../shared/protocol.js';
+import type { MatchCandidateView, MatchDetails, MatchReview, MatchSummary } from '../../shared/workspace-matching.js';
+import type { StoredSupportingDocument } from '../../shared/workspace-documents.js';
+import { DocumentAnalysis } from '../documents/document-analysis.component.js';
+import { OriginalPreviewButton } from '../shared/original-preview-button.component.js';
+import { ButtonPressed } from '../shared/button-pressed.directive.js';
+import type { Money } from '../../shared/money.js';
+import type { DocumentFieldDisposition, DocumentFieldReviewTarget } from '../../shared/document-field-reviews.js';
+import { documentCorrectionKey, type DocumentCorrection, type DocumentCorrectionTarget, type DocumentCorrectionValue } from '../../shared/document-corrections.js';
 
 type MatchStatus = MatchSummary['status'];
 type Filter = 'all' | MatchStatus;
 interface ReviewDocument { id: string; name: string; path: string; total: string | null; record: StoredSupportingDocument; original: OriginalDocumentFields | null; reviewBase: OriginalDocumentFields | null; }
 
 @Component({
-	selector: 'app-match-suggestions', standalone: true, templateUrl: './match-suggestions.html',
+	selector: 'app-match-suggestions', standalone: true, templateUrl: './match-suggestions.component.html',
 	imports: [NgTemplateOutlet, DocumentAnalysis, OriginalPreviewButton, ButtonPressed, WigAccordionComponent, WigAlertComponent, WigButtonComponent,
 		WigCheckboxComponent, WigDropdownComponent, WigIconButtonComponent, WigTableComponent, WigTagComponent, WigTemplateDirective],
 })
