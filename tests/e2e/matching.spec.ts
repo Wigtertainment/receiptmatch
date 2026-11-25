@@ -1,9 +1,9 @@
 import type { BankImportInput, PositionedSpan, TransactionCandidate } from "../../src/shared/bank-import.js";
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
 import type { StoredDocumentImport } from "../../src/shared/workspace-documents.js";
-import type { MatchSummary } from "../../src/shared/workspace-matching.js";
-import type { WorkspaceState } from "../../src/shared/protocol.js";
-import type { WorkspaceBridge } from "../../src/shared/protocol.js";
+import type { IMatchSummary } from "../../src/shared/workspace-matching.js";
+import type { IWorkspaceState } from "../../src/shared/protocol.js";
+import type { IWorkspaceBridge } from "../../src/shared/protocol.js";
 import { mkdir, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -225,10 +225,10 @@ test('packaged match suggestions from import through keyboard review and reopeni
 		await restored.getByRole('group', { name: 'Filter match results' }).getByRole('button', { name: 'Unmatched 1' }).click();
 		await expect(restored.getByRole('region', { name: 'Manual review' }).getByText('Document assigned · restaurant-receipt.pdf')).toBeVisible();
 		const decisions: ("open" | "assigned" | "completed-without-document" | "uncertain" | "reliable" | "unmatched")[][] | undefined = await reopened.evaluate(async (): Promise<("open" | "assigned" | "completed-without-document" | "uncertain" | "reliable" | "unmatched")[][] | undefined> => {
-			const bridge: WorkspaceBridge = window.receiptmatch;
-			const { workspace }: WorkspaceState = await bridge.command({ type: 'get-state' });
-			const rows: MatchSummary[] | null = await bridge.matchSummaries(workspace!.matchRevision);
-			return rows?.map((row: MatchSummary): ("open" | "assigned" | "completed-without-document" | "uncertain" | "reliable" | "unmatched")[] => [row.status, row.review.status]).sort();
+			const bridge: IWorkspaceBridge = window.receiptmatch;
+			const { workspace }: IWorkspaceState = await bridge.command({ type: 'get-state' });
+			const rows: IMatchSummary[] | null = await bridge.matchSummaries(workspace!.matchRevision);
+			return rows?.map((row: IMatchSummary): ("open" | "assigned" | "completed-without-document" | "uncertain" | "reliable" | "unmatched")[] => [row.status, row.review.status]).sort();
 		});
 		expect(decisions).toEqual([['uncertain', 'completed-without-document'], ['unmatched', 'assigned']]);
 		await test.step('correct original receipt fields, recalculate suggestions and reopen with the assignment intact', async (): Promise<void> => {

@@ -8,8 +8,8 @@ import { type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonCo
 import { formatCalendarDate, formatMoney } from '../../shared/display.js';
 import { formatDocumentTotal } from '../../shared/document-display.js';
 import type { MatchApprovalSelection } from '../../shared/match-approvals.js';
-import type { WorkspaceState, WorkspaceCommand, DocumentSnapshot, DocumentImportSummary, OriginalDocumentFields, WorkspaceView } from '../../shared/protocol.js';
-import type { MatchCandidateView, MatchDetails, MatchReview, MatchSummary } from '../../shared/workspace-matching.js';
+import type { IWorkspaceState, WorkspaceCommand, IDocumentSnapshot, IDocumentImportSummary, OriginalDocumentFields, IWorkspaceView } from '../../shared/protocol.js';
+import type { IMatchCandidateView, IMatchDetails, MatchReview, IMatchSummary } from '../../shared/workspace-matching.js';
 import type { StoredSupportingDocument } from '../../shared/workspace-documents.js';
 import { DocumentAnalysis } from '../documents/document-analysis.component.js';
 import { OriginalPreviewButton } from '../shared/original-preview-button.component.js';
@@ -18,7 +18,7 @@ import type { Money } from '../../shared/money.js';
 import type { DocumentFieldDisposition, DocumentFieldReviewTarget } from '../../shared/document-field-reviews.js';
 import { documentCorrectionKey, type DocumentCorrection, type DocumentCorrectionTarget, type DocumentCorrectionValue } from '../../shared/document-corrections.js';
 
-type MatchStatus = MatchSummary['status'];
+type MatchStatus = IMatchSummary['status'];
 type Filter = 'all' | MatchStatus;
 interface ReviewDocument { id: string; name: string; path: string; total: string | null; record: StoredSupportingDocument; original: OriginalDocumentFields | null; reviewBase: OriginalDocumentFields | null; }
 
@@ -28,7 +28,7 @@ interface ReviewDocument { id: string; name: string; path: string; total: string
 		WigCheckboxComponent, WigDropdownComponent, WigIconButtonComponent, WigTableComponent, WigTagComponent, WigTemplateDirective],
 })
 export class MatchSuggestions {
-	readonly workspace: InputSignal<WorkspaceView> = input.required<WorkspaceView>();
+	readonly workspace: InputSignal<IWorkspaceView> = input.required<IWorkspaceView>();
 	readonly active: InputSignal<boolean> = input.required<boolean>();
 	readonly busy: InputSignal<boolean> = input.required<boolean>();
 	readonly filters: readonly ["all", "reliable", "uncertain", "unmatched"] = ['all', 'reliable', 'uncertain', 'unmatched'] as const;
@@ -38,26 +38,26 @@ export class MatchSuggestions {
 	readonly approvalChanges: { readonly booking: "The booking was corrected."; readonly document: "The supporting document was corrected."; readonly 'booking-and-document': "The booking and supporting document were corrected."; } = {
 		booking: 'The booking was corrected.', document: 'The supporting document was corrected.', 'booking-and-document': 'The booking and supporting document were corrected.',
 	} as const;
-	readonly issueLabels: Record<MatchCandidateView['issues'][number], string> = {
+	readonly issueLabels: Record<IMatchCandidateView['issues'][number], string> = {
 		'missing-reference': 'No matching payment or document reference.',
 		'conflicting-evidence': 'Some source details are ambiguous or conflict.',
 		'competing-reference': 'Another possible match is supported by a reference.',
 		'amount-needs-review': 'The reference matches. Check the amount before assigning this document.',
 	};
-	readonly amountLabels: Record<MatchCandidateView['signals']['amount'], string> = {
+	readonly amountLabels: Record<IMatchCandidateView['signals']['amount'], string> = {
 		equal: 'Amounts match.',
 		close: 'Amounts are close, with a difference to review.',
 		different: 'Amounts differ.',
 		'currency-differs': 'Currencies differ.',
 		missing: 'No usable document amount.',
 	};
-	readonly nameLabels: Record<MatchCandidateView['signals']['filename']['state'], string> = {
+	readonly nameLabels: Record<IMatchCandidateView['signals']['filename']['state'], string> = {
 		match: 'Name matches.',
 		partial: 'Part of the name matches.',
 		different: 'Names differ.',
 		missing: 'No usable name comparison.',
 	};
-	readonly sectionLabels: Record<MatchCandidateView['sectionKind'], string> = {
+	readonly sectionLabels: Record<IMatchCandidateView['sectionKind'], string> = {
 		invoice: 'Invoice', receipt: 'Receipt', 'credit-note': 'Credit note', 'billing-summary': 'Billing summary',
 		'payment-information': 'Payment information', unknown: 'Document section',
 	};
@@ -72,15 +72,15 @@ export class MatchSuggestions {
 		const firstLine: string = description.trim().split(/\r?\n/, 1)[0];
 		return firstLine.length > 140 ? firstLine.slice(0, 139) + '…' : firstLine || 'Transaction';
 	};
-	readonly tableRow: (row: MatchSummary) => MatchSummary = (row: MatchSummary): MatchSummary => row;
-	readonly transactionColumns: TableConfig<MatchSummary> = { columns: [
+	readonly tableRow: (row: IMatchSummary) => IMatchSummary = (row: IMatchSummary): IMatchSummary => row;
+	readonly transactionColumns: TableConfig<IMatchSummary> = { columns: [
 		{ field: 'approvalSelection', text: 'Approval selection', type: 'custom', template: 'approval' },
 		{ field: 'bookingDate', text: 'Booking date', type: 'custom', template: 'date' },
 		{ field: 'description', text: 'Transaction', type: 'custom', template: 'transaction' },
 		{ field: 'accountAmount', text: 'Account amount', type: 'custom', template: 'amount' },
 		{ field: 'review', text: 'Review / suggestion', type: 'custom', template: 'review' }
 	] };
-	readonly ignoredColumns: TableConfig<MatchSummary> = { columns: [
+	readonly ignoredColumns: TableConfig<IMatchSummary> = { columns: [
 		{ field: 'bookingDate', text: 'Booking date', type: 'custom', template: 'date' },
 		{ field: 'description', text: 'Transaction', type: 'custom', template: 'transaction' },
 		{ field: 'accountAmount', text: 'Account amount', type: 'custom', template: 'amount' },
@@ -92,12 +92,12 @@ export class MatchSuggestions {
 	private readonly ignoreFocus: WritableSignal<{ loadRevision: number; revision: number; preventScroll: boolean } | null> = signal(null);
 	private readonly selected: WritableSignal<{ transactionId: string; loadRevision: number; } | null> = signal<{ transactionId: string; loadRevision: number } | null>(null);
 	private readonly filterState: WritableSignal<{ filter: Filter; loadRevision: number; } | null> = signal<{ filter: Filter; loadRevision: number } | null>(null);
-	private readonly summaryRequest: WritableSignal<{ revision: number; loadRevision: number; rows: MatchSummary[] | null; } | null> = signal<{ revision: number; loadRevision: number; rows: MatchSummary[] | null } | null>(null);
-	private readonly detailRequest: WritableSignal<{ revision: number; transactionId: string; value: MatchDetails | null; } | null> = signal<{ revision: number; transactionId: string; value: MatchDetails | null } | null>(null);
+	private readonly summaryRequest: WritableSignal<{ revision: number; loadRevision: number; rows: IMatchSummary[] | null; } | null> = signal<{ revision: number; loadRevision: number; rows: IMatchSummary[] | null } | null>(null);
+	private readonly detailRequest: WritableSignal<{ revision: number; transactionId: string; value: IMatchDetails | null; } | null> = signal<{ revision: number; transactionId: string; value: IMatchDetails | null } | null>(null);
 	private readonly documentRequest: WritableSignal<{ key: string; loadRevision: number; documents: ReviewDocument[] | null; } | null> = signal<{ key: string; loadRevision: number; documents: ReviewDocument[] | null } | null>(null);
 	private readonly documentRetry: WritableSignal<number> = signal(0);
 	private readonly documentKey: Signal<string> = computed((): string => {
-		const workspace: WorkspaceView = this.workspace();
+		const workspace: IWorkspaceView = this.workspace();
 		return JSON.stringify([workspace.loadRevision, workspace.matchRevision]);
 	});
 	private readonly documentDraft: WritableSignal<{ loadRevision: number; transactionId: string; id: string; } | null> = signal<{ loadRevision: number; transactionId: string; id: string } | null>(null);
@@ -108,17 +108,17 @@ export class MatchSuggestions {
 	private readonly summaryRetry: WritableSignal<number> = signal(0);
 	private readonly detailRetry: WritableSignal<number> = signal(0);
 	private readonly revision: Signal<number> = computed((): number => this.workspace().matchRevision);
-	private readonly currentSummary: Signal<{ revision: number; loadRevision: number; rows: MatchSummary[] | null; } | null> = computed((): { revision: number; loadRevision: number; rows: MatchSummary[] | null; } | null => {
-		const result: { revision: number; loadRevision: number; rows: MatchSummary[] | null; } | null = this.summaryRequest();
+	private readonly currentSummary: Signal<{ revision: number; loadRevision: number; rows: IMatchSummary[] | null; } | null> = computed((): { revision: number; loadRevision: number; rows: IMatchSummary[] | null; } | null => {
+		const result: { revision: number; loadRevision: number; rows: IMatchSummary[] | null; } | null = this.summaryRequest();
 		return result?.revision === this.revision() ? result : null;
 	});
 	readonly filter: Signal<Filter> = computed((): Filter => this.filterState()?.loadRevision === this.workspace().loadRevision ? this.filterState()!.filter : 'all');
-	private readonly allRows: Signal<MatchSummary[] | null> = computed((): MatchSummary[] | null => {
-		const result: { revision: number; loadRevision: number; rows: MatchSummary[] | null; } | null = this.summaryRequest();
+	private readonly allRows: Signal<IMatchSummary[] | null> = computed((): IMatchSummary[] | null => {
+		const result: { revision: number; loadRevision: number; rows: IMatchSummary[] | null; } | null = this.summaryRequest();
 		return result?.loadRevision === this.workspace().loadRevision ? result.rows : null;
 	});
-	readonly rows: Signal<MatchSummary[] | null> = computed((): MatchSummary[] | null => this.allRows()?.filter((row: MatchSummary): boolean => !row.ignored) ?? null);
-	readonly ignoredRows: Signal<MatchSummary[]> = computed((): MatchSummary[] => this.allRows()?.filter((row: MatchSummary): boolean => row.ignored) ?? []);
+	readonly rows: Signal<IMatchSummary[] | null> = computed((): IMatchSummary[] | null => this.allRows()?.filter((row: IMatchSummary): boolean => !row.ignored) ?? null);
+	readonly ignoredRows: Signal<IMatchSummary[]> = computed((): IMatchSummary[] => this.allRows()?.filter((row: IMatchSummary): boolean => row.ignored) ?? []);
 	readonly ignoreError: Signal<string | null> = computed((): string | null => {
 		const feedback: { loadRevision: number; message: string; } | null = this.ignoreFeedback();
 		return feedback?.loadRevision === this.workspace().loadRevision ? feedback.message : null;
@@ -131,16 +131,16 @@ export class MatchSuggestions {
 		}
 		return counts;
 	});
-	readonly filteredRows: Signal<MatchSummary[]> = computed((): MatchSummary[] => {
-		const rows: MatchSummary[] = this.rows() ?? [];
+	readonly filteredRows: Signal<IMatchSummary[]> = computed((): IMatchSummary[] => {
+		const rows: IMatchSummary[] = this.rows() ?? [];
 		const filter: Filter = this.filter();
-		return filter === 'all' ? rows : rows.filter((row: MatchSummary): boolean => row.status === filter);
+		return filter === 'all' ? rows : rows.filter((row: IMatchSummary): boolean => row.status === filter);
 	});
-	readonly selectedRow: Signal<MatchSummary | null> = computed<MatchSummary | null>((): MatchSummary => {
-		const rows: MatchSummary[] = this.filteredRows();
+	readonly selectedRow: Signal<IMatchSummary | null> = computed<IMatchSummary | null>((): IMatchSummary => {
+		const rows: IMatchSummary[] = this.filteredRows();
 		const selected: { transactionId: string; loadRevision: number; } | null = this.selected();
 		const id: string | null = selected?.loadRevision === this.workspace().loadRevision ? selected.transactionId : null;
-		return rows.find((row: MatchSummary): boolean => row.transactionId === id) ?? rows[0] ?? null;
+		return rows.find((row: IMatchSummary): boolean => row.transactionId === id) ?? rows[0] ?? null;
 	});
 	readonly choosingIgnore: Signal<boolean> = computed((): boolean => {
 		const choice: { transactionId: string; loadRevision: number; } | null = this.ignoreChoice();
@@ -153,7 +153,7 @@ export class MatchSuggestions {
 	});
 	readonly hiddenApprovalCount: Signal<number> = computed((): number => {
 		const selected: ReadonlyMap<string, MatchApprovalSelection> | null = this.approvalSelections();
-		return selected ? selected.size - this.filteredRows().filter((row: MatchSummary): boolean => selected.has(row.transactionId)).length : 0;
+		return selected ? selected.size - this.filteredRows().filter((row: IMatchSummary): boolean => selected.has(row.transactionId)).length : 0;
 	});
 	readonly approvalFeedback: Signal<{ loadRevision: number; message: string; error: boolean; transactionId?: string; } | null> = computed((): { loadRevision: number; message: string; error: boolean; transactionId?: string; } | null => {
 		const feedback: { loadRevision: number; message: string; error: boolean; transactionId?: string; } | null = this.batchFeedback();
@@ -183,12 +183,12 @@ export class MatchSuggestions {
 		}
 		return duplicates;
 	});
-	readonly owners: Signal<Map<string, MatchSummary>> = computed((): Map<string, MatchSummary> => new Map((this.allRows() ?? []).flatMap((row: MatchSummary): [] | [readonly [string, MatchSummary]] => row.review.status === 'assigned' ? [[row.review.documentId, row] as const] : [])));
+	readonly owners: Signal<Map<string, IMatchSummary>> = computed((): Map<string, IMatchSummary> => new Map((this.allRows() ?? []).flatMap((row: IMatchSummary): [] | [readonly [string, IMatchSummary]] => row.review.status === 'assigned' ? [[row.review.documentId, row] as const] : [])));
 	readonly documentOptions: Signal<{ id: string; label: string; disabled: boolean; }[]> = computed((): { id: string; label: string; disabled: boolean; }[] => {
 		const transaction: string | undefined = this.selectedRow()?.transactionId;
-		const owners: Map<string, MatchSummary> = this.owners();
+		const owners: Map<string, IMatchSummary> = this.owners();
 		return (this.documents() ?? []).map((item: ReviewDocument): { id: string; label: string; disabled: boolean; } => {
-			const owner: MatchSummary | undefined = owners.get(item.id);
+			const owner: IMatchSummary | undefined = owners.get(item.id);
 			const unavailable: boolean | undefined = owner && owner.transactionId !== transaction;
 			return { id: item.id, label: this.documentLabel(item, unavailable ? owner : undefined), disabled: !!unavailable };
 		});
@@ -211,14 +211,14 @@ export class MatchSuggestions {
 		return documents?.find((item: ReviewDocument): boolean => item.id === this.selectedDocumentId());
 	});
 	private readonly candidateTransactionId: Signal<string | null> = computed((): string | null => {
-		const row: MatchSummary | null = this.selectedRow();
+		const row: IMatchSummary | null = this.selectedRow();
 		return row?.candidateCount ? row.transactionId : null;
 	});
-	private readonly currentDetail: Signal<{ revision: number; transactionId: string; value: MatchDetails | null; } | null> = computed((): { revision: number; transactionId: string; value: MatchDetails | null; } | null => {
-		const result: { revision: number; transactionId: string; value: MatchDetails | null; } | null = this.detailRequest();
+	private readonly currentDetail: Signal<{ revision: number; transactionId: string; value: IMatchDetails | null; } | null> = computed((): { revision: number; transactionId: string; value: IMatchDetails | null; } | null => {
+		const result: { revision: number; transactionId: string; value: IMatchDetails | null; } | null = this.detailRequest();
 		return result?.revision === this.revision() && result.transactionId === this.candidateTransactionId() ? result : null;
 	});
-	readonly details: Signal<MatchDetails | null> = computed((): MatchDetails | null => this.currentDetail()?.value ?? null);
+	readonly details: Signal<IMatchDetails | null> = computed((): IMatchDetails | null => this.currentDetail()?.value ?? null);
 	readonly detailsFailed: Signal<boolean> = computed((): boolean => this.currentDetail()?.value === null);
 
 	constructor() {
@@ -238,7 +238,7 @@ export class MatchSuggestions {
 		effect((onCleanup: EffectCleanupRegisterFn): void => {
 			const matchRevision: number = this.revision();
 			this.summaryRetry();
-			if (!this.active() || untracked((): { revision: number; loadRevision: number; rows: MatchSummary[] | null; } | null => this.currentSummary())) {
+			if (!this.active() || untracked((): { revision: number; loadRevision: number; rows: IMatchSummary[] | null; } | null => this.currentSummary())) {
 				return;
 			}
 			const loadRevision: number = untracked((): number => this.workspace().loadRevision);
@@ -246,7 +246,7 @@ export class MatchSuggestions {
 			onCleanup((): void => {
 				current = false;
 			});
-			const update: (rows: MatchSummary[] | null) => void = (rows: MatchSummary[] | null): void => {
+			const update: (rows: IMatchSummary[] | null) => void = (rows: IMatchSummary[] | null): void => {
 					if (!current || !this.active() || this.revision() !== matchRevision) {
 						return;
 					}
@@ -272,14 +272,14 @@ export class MatchSuggestions {
 			const transactionId: string | null = this.candidateTransactionId();
 			const matchRevision: number = this.revision();
 			this.detailRetry();
-			if (!this.active() || !transactionId || untracked((): { revision: number; transactionId: string; value: MatchDetails | null; } | null => this.currentDetail())) {
+			if (!this.active() || !transactionId || untracked((): { revision: number; transactionId: string; value: IMatchDetails | null; } | null => this.currentDetail())) {
 				return;
 			}
 			let current: boolean = true;
 			onCleanup((): void => {
 				current = false;
 			});
-			const update: (value: MatchDetails | null) => void = (value: MatchDetails | null): void => {
+			const update: (value: IMatchDetails | null) => void = (value: IMatchDetails | null): void => {
 				if (current && this.active() && this.revision() === matchRevision && this.candidateTransactionId() === transactionId) {
 					this.detailRequest.set({ revision: matchRevision, transactionId, value });
 				}
@@ -293,8 +293,8 @@ export class MatchSuggestions {
 			if (!this.active() || untracked((): boolean => this.documentRequest()?.key === key)) {
 				return;
 			}
-			const { documentImports, loadRevision, matchRevision, supersededDocuments }: WorkspaceView = untracked(this.workspace);
-			const reportIds: string[] = documentImports.map((report: DocumentImportSummary): string => report.id);
+			const { documentImports, loadRevision, matchRevision, supersededDocuments }: IWorkspaceView = untracked(this.workspace);
+			const reportIds: string[] = documentImports.map((report: IDocumentImportSummary): string => report.id);
 			if (!reportIds.length) {
 				this.documentRequest.set({ key, loadRevision, documents: [] }); return;
 			}
@@ -307,7 +307,7 @@ export class MatchSuggestions {
 					this.documentRequest.set({ key, loadRevision, documents });
 				}
 			};
-			void window.receiptmatch.documentSnapshot({ loadRevision, revision: matchRevision }).then((snapshot: DocumentSnapshot | null): void => {
+			void window.receiptmatch.documentSnapshot({ loadRevision, revision: matchRevision }).then((snapshot: IDocumentSnapshot | null): void => {
 				if (snapshot?.loadRevision !== loadRevision || snapshot.revision !== matchRevision) {
 					return update(null);
 				}
@@ -343,7 +343,7 @@ export class MatchSuggestions {
 		if (!transactionId) {
 			return;
 		}
-		const { loadRevision }: WorkspaceView = this.workspace();
+		const { loadRevision }: IWorkspaceView = this.workspace();
 		if (transactionId !== this.selectedRow()?.transactionId) {
 			this.resetDetail();
 		}
@@ -359,20 +359,20 @@ export class MatchSuggestions {
 	}
 
 	toggleIgnoreChoice(): void {
-		const row: MatchSummary | null = this.selectedRow();
+		const row: IMatchSummary | null = this.selectedRow();
 		this.ignoreFeedback.set(null);
 		this.ignoreChoice.set(row && !this.choosingIgnore() ? { transactionId: row.transactionId, loadRevision: this.workspace().loadRevision } : null);
 	}
 
-	async changeIgnored(row: MatchSummary, ignored: boolean, remember?: true): Promise<void> {
+	async changeIgnored(row: IMatchSummary, ignored: boolean, remember?: true): Promise<void> {
 		if (this.reviewDisabled()) {
 			return;
 		}
-		const { loadRevision, matchRevision }: WorkspaceView = this.workspace();
+		const { loadRevision, matchRevision }: IWorkspaceView = this.workspace();
 		this.pending.set(true);
 		this.ignoreFeedback.set(null);
 		try {
-			const result: WorkspaceState = await window.receiptmatch.command({
+			const result: IWorkspaceState = await window.receiptmatch.command({
 				type: 'set-transaction-ignored', transactionId: row.transactionId, revision: matchRevision, ignored, ...(remember && { remember }),
 			});
 			if (this.workspace().loadRevision !== loadRevision) {
@@ -409,7 +409,7 @@ export class MatchSuggestions {
 		document.getElementById('match-transaction-' + transactionId)?.closest('tr')?.focus();
 	}
 
-	documentLabel(item: ReviewDocument, owner?: MatchSummary): string {
+	documentLabel(item: ReviewDocument, owner?: IMatchSummary): string {
 		const parts: string[] = [this.duplicateDocumentNames().has(item.name) ? item.path : item.name];
 		if (item.total) {
 			parts.push(item.total);
@@ -421,13 +421,13 @@ export class MatchSuggestions {
 	}
 
 	chooseDocument(id: string | null): void {
-		const row: MatchSummary | null = this.selectedRow();
+		const row: IMatchSummary | null = this.selectedRow();
 		if (row) {
 			this.documentDraft.set({ loadRevision: this.workspace().loadRevision, transactionId: row.transactionId, id: id ?? '' });
 		}
 	}
 
-	selectForApproval(row: MatchSummary, checked: boolean): void {
+	selectForApproval(row: IMatchSummary, checked: boolean): void {
 		if (this.reviewDisabled()) {
 			return;
 		}
@@ -452,13 +452,13 @@ export class MatchSuggestions {
 		if (!selected?.size || this.reviewDisabled()) {
 			return;
 		}
-		const { loadRevision }: WorkspaceView = this.workspace();
+		const { loadRevision }: IWorkspaceView = this.workspace();
 		const trigger: Element | null = document.activeElement;
 		let focusId: string = 'match-batch-result';
 		this.pending.set(true);
 		this.batchFeedback.set(null);
 		try {
-			const result: WorkspaceState = await window.receiptmatch.command({ type: 'approve-matches', loadRevision, selections: [...selected.values()] });
+			const result: IWorkspaceState = await window.receiptmatch.command({ type: 'approve-matches', loadRevision, selections: [...selected.values()] });
 			if (this.workspace().loadRevision !== loadRevision) {
 				return;
 			}
@@ -486,15 +486,15 @@ export class MatchSuggestions {
 		}
 	}
 
-	private reportApprovalError(selected: ReadonlyMap<string, MatchApprovalSelection>, loadRevision: number, result: WorkspaceState, error: string): string {
+	private reportApprovalError(selected: ReadonlyMap<string, MatchApprovalSelection>, loadRevision: number, result: IWorkspaceState, error: string): string {
 		let focusId: string = 'match-batch-result';
 		const transactionId: string | undefined = result.approvalIssue?.transactionId;
 		if (transactionId) {
 			const remaining: Map<string, MatchApprovalSelection> = new Map(selected);
 			remaining.delete(transactionId);
 			this.batchSelection.set({ loadRevision, rows: remaining });
-			if (this.rows()?.some((row: MatchSummary): boolean => row.transactionId === transactionId)) {
-				if (!this.filteredRows().some((row: MatchSummary): boolean => row.transactionId === transactionId)) {
+			if (this.rows()?.some((row: IMatchSummary): boolean => row.transactionId === transactionId)) {
+				if (!this.filteredRows().some((row: IMatchSummary): boolean => row.transactionId === transactionId)) {
 					this.setFilter('all');
 				}
 				if (this.selectedRow()?.transactionId !== transactionId) {
@@ -511,17 +511,17 @@ export class MatchSuggestions {
 	}
 
 	async applyReview(review: MatchReview): Promise<void> {
-		const row: MatchSummary | null = this.selectedRow();
+		const row: IMatchSummary | null = this.selectedRow();
 		if (this.reviewDisabled() || !row) {
 			return;
 		}
-		const { transactionId }: MatchSummary = row;
-		const { loadRevision, matchRevision }: WorkspaceView = this.workspace();
+		const { transactionId }: IMatchSummary = row;
+		const { loadRevision, matchRevision }: IWorkspaceView = this.workspace();
 		const trigger: Element | null = document.activeElement;
 		this.pending.set(true);
 		this.reviewFeedback.set(null);
 		try {
-			const result: WorkspaceState = await window.receiptmatch.command({ type: 'review-match', transactionId, revision: matchRevision, review });
+			const result: IWorkspaceState = await window.receiptmatch.command({ type: 'review-match', transactionId, revision: matchRevision, review });
 			// The session publishes validation errors. It returns busy rejections only to this caller.
 			if (result.busy && result.error) {
 				this.reviewFeedback.set({ loadRevision, transactionId, message: result.error });
@@ -559,11 +559,11 @@ export class MatchSuggestions {
 		if (this.reviewDisabled() || !this.documents() || !transactionId || command.documentId !== this.selectedDocumentId()) {
 			return;
 		}
-		const { loadRevision }: WorkspaceView = this.workspace();
+		const { loadRevision }: IWorkspaceView = this.workspace();
 		this.pending.set(true);
 		this.reviewFeedback.set(null);
 		try {
-			const result: WorkspaceState = await window.receiptmatch.command(command);
+			const result: IWorkspaceState = await window.receiptmatch.command(command);
 			if (result.error) {
 				this.reviewFeedback.set({ loadRevision, transactionId, message: result.error });
 			}

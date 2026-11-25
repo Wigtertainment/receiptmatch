@@ -1,7 +1,7 @@
 import { applyBankCorrections, type BankCorrection } from '../src/shared/bank-corrections.js';
 import { applyDocumentCorrections, documentCorrectionKey, type DocumentCorrection } from '../src/shared/document-corrections.js';
 import { advanceReviewRevision, type MatchApproval, type ReviewApprovalState } from '../src/shared/match-approvals.js';
-import type { OriginalAnalysisComparison } from '../src/shared/original-preview.js';
+import type { IOriginalAnalysisComparison } from '../src/shared/original-preview.js';
 import { excludedDuplicateIds, type DuplicateDecision } from '../src/shared/transaction-duplicates.js';
 import type { StoredDocumentImport } from '../src/shared/workspace-documents.js';
 import type { AnalyzedSource } from './source-analysis.js';
@@ -20,7 +20,7 @@ interface AdoptionContext {
 type StatementSource = Extract<AnalyzedSource, { kind: 'statement' }>;
 type DocumentSource = Extract<AnalyzedSource, { kind: 'document' }>;
 interface AdoptionPlan {
-    changes: OriginalAnalysisComparison['changes'];
+    changes: IOriginalAnalysisComparison['changes'];
     conflicts: string[];
     blockingConflict: string | undefined;
     preserved: number;

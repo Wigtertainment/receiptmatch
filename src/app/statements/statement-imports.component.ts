@@ -13,10 +13,10 @@ import { applyBankCorrections } from '../../shared/bank-corrections.js';
 import { calendarDateSchema, type ImportIssue, type SourceEvidence, type TransactionCandidate, type UnresolvedDraft } from '../../shared/bank-import.js';
 import { formatCalendarDate, formatMoney } from '../../shared/display.js';
 import { sameMoneyValue, type Money } from '../../shared/money.js';
-import type { WorkspaceCommand, WorkspaceState, WorkspaceView } from '../../shared/protocol.js';
-import { indexStatementOverlaps, type StatementOverlap, type StatementOverlaps } from '../../shared/statement-overlaps.js';
+import type { WorkspaceCommand, IWorkspaceState, IWorkspaceView } from '../../shared/protocol.js';
+import { indexStatementOverlaps, type IStatementOverlap, type IStatementOverlaps } from '../../shared/statement-overlaps.js';
 import { excludedDuplicateIds, type DuplicateDecision } from '../../shared/transaction-duplicates.js';
-import type { BankImportSummary, StoredBankImport } from '../../shared/workspace-import.js';
+import type { IBankImportSummary, StoredBankImport } from '../../shared/workspace-import.js';
 import type { ExtractionProgress } from '../../shared/pdf-extraction.js';
 import type { ZodSafeParseResult } from 'zod';
 import { RowSource } from './row-source.component.js';
@@ -26,10 +26,10 @@ type BookingAction = 'correction' | 'source';
 interface StatementRemoval { importId: string; revision: number; fileName: string; predecessorName?: string; }
 type DuplicateAction = Extract<WorkspaceCommand, { type: 'set-duplicate-decision' }>['decision'];
 type ExclusionAction = Extract<DuplicateAction, 'keep-first' | 'keep-second'>;
-type BookingLocation = Pick<StatementOverlap, 'statementId' | 'filePath' | 'transactionId' | 'transactionNumber'>;
+type BookingLocation = Pick<IStatementOverlap, 'statementId' | 'filePath' | 'transactionId' | 'transactionNumber'>;
 interface DuplicatePairView {
     other: BookingLocation;
-    evidence: StatementOverlap | null;
+    evidence: IStatementOverlap | null;
     decision: DuplicateDecision | null;
 }
 function filename(value: string): string {
@@ -41,7 +41,7 @@ function filename(value: string): string {
         WigIconButtonComponent, WigInputComponent, WigTableComponent, WigTemplateDirective, InputLength, NgTemplateOutlet],
     templateUrl: './statement-imports.component.html' })
 export class StatementImports {
-    readonly state: InputSignal<WorkspaceState> = input.required<WorkspaceState>();
+    readonly state: InputSignal<IWorkspaceState> = input.required<IWorkspaceState>();
     readonly active: InputSignal<boolean> = input(true);
     readonly settingsRequested: OutputEmitterRef<void> = output<void>();
     readonly workspaceCommand: OutputEmitterRef<WorkspaceCommand> = output<WorkspaceCommand>();
@@ -60,7 +60,7 @@ export class StatementImports {
     readonly selected: Signal<StoredBankImport | null> = computed((): StoredBankImport | null => this.records().find((record: StoredBankImport): boolean => record.id === this.selectedId()) ?? null);
     readonly statementInfo: { id: string; header: string; template: string; }[] = [{ id: 'statement', header: 'Statement details', template: 'statement' }];
     readonly corrections: Signal<Map<string, BankCorrection>> = computed((): Map<string, BankCorrection> => new Map((this.state().workspace?.bankCorrections ?? []).map((correction: BankCorrection): [string, BankCorrection] => [correction.rowId, correction])));
-    readonly statementCounts: Signal<Map<string, number>> = computed((): Map<string, number> => new Map((this.state().workspace?.imports ?? []).map((record: BankImportSummary): [string, number] => [record.id, record.transactions])));
+    readonly statementCounts: Signal<Map<string, number>> = computed((): Map<string, number> => new Map((this.state().workspace?.imports ?? []).map((record: IBankImportSummary): [string, number] => [record.id, record.transactions])));
     readonly statementOptions: Signal<{ id: string; label: string; }[]> = computed((): { id: string; label: string; }[] => this.records().map((record: StoredBankImport): { id: string; label: string; } => {
         const status: "Archived analysis" | "Partial import" | "Complete import" = this.state().workspace?.supersededStatements?.includes(record.id) ? 'Archived analysis' :
             record.result.status === 'partial' ? 'Partial import' : 'Complete import';
@@ -81,13 +81,13 @@ export class StatementImports {
         const record: StoredBankImport | null = this.displayed();
         return record ? [record] : [];
     });
-    private readonly overlapIndex: Signal<(statementId: string) => StatementOverlaps> = computed((): (statementId: string) => StatementOverlaps => {
+    private readonly overlapIndex: Signal<(statementId: string) => IStatementOverlaps> = computed((): (statementId: string) => IStatementOverlaps => {
         const archived: Set<string> = new Set(this.state().workspace?.supersededStatements);
-        const originalBankIds: Map<string, string> = new Map((this.state().workspace?.imports ?? []).flatMap((record: BankImportSummary): [string, string][] =>
+        const originalBankIds: Map<string, string> = new Map((this.state().workspace?.imports ?? []).flatMap((record: IBankImportSummary): [string, string][] =>
             record.bankId ? [[record.id, record.bankId]] : []));
         return indexStatementOverlaps(this.effectiveRecords().filter((record: StoredBankImport): boolean => !archived.has(record.id)), originalBankIds);
     });
-    readonly overlaps: Signal<StatementOverlaps> = computed((): StatementOverlaps => this.overlapIndex()(this.selectedId() ?? ''));
+    readonly overlaps: Signal<IStatementOverlaps> = computed((): IStatementOverlaps => this.overlapIndex()(this.selectedId() ?? ''));
     private readonly expandedOverlapRows: WritableSignal<ReadonlySet<string>> = signal<ReadonlySet<string>>(new Set());
     private readonly duplicateDecisions: Signal<DuplicateDecision[]> = computed((): DuplicateDecision[] => this.state().workspace?.duplicateDecisions ?? []);
     private readonly decisionsByBooking: Signal<Map<string, DuplicateDecision[]>> = computed((): Map<string, DuplicateDecision[]> => {
@@ -231,7 +231,7 @@ export class StatementImports {
     constructor() {
         afterRenderEffect({ write: (): void => this.focusAfterAiTransition() });
         effect((): void => {
-            const value: WorkspaceState = this.state();
+            const value: IWorkspaceState = this.state();
             const key: string = this.key(value);
             untracked((): void => {
                 if (key !== this.recordsKey) {
@@ -246,7 +246,7 @@ export class StatementImports {
     }
 
     private focusAfterAiTransition(): void {
-        const state: WorkspaceState = this.state();
+        const state: IWorkspaceState = this.state();
         const previous: typeof this.previousAiView = this.previousAiView;
         const stage: NonNullable<typeof this.previousAiView>['stage'] = state.statementFallback?.stage;
         const loadRevision: number | undefined = state.workspace?.loadRevision;
@@ -269,15 +269,15 @@ export class StatementImports {
         }
     }
 
-    private key(value: WorkspaceState): string {
-        return JSON.stringify([value.workspace?.id ?? null, value.workspace?.loadRevision ?? null, value.workspace?.imports.map((record: BankImportSummary): string => record.id) ?? []]);
+    private key(value: IWorkspaceState): string {
+        return JSON.stringify([value.workspace?.id ?? null, value.workspace?.loadRevision ?? null, value.workspace?.imports.map((record: IBankImportSummary): string => record.id) ?? []]);
     }
 
-    private loadRecords(value: WorkspaceState, key: string): void {
+    private loadRecords(value: IWorkspaceState, key: string): void {
         const generation: number = ++this.generation; const previousSelection: string | null = this.selectedId();
         this.recordsKey = key; this.records.set([]); this.detailsError.set(null); this.expandedOverlapRows.set(new Set()); this.exclusion.set(null);
-        const ids: string[] = value.workspace?.imports.map((record: BankImportSummary): string => record.id) ?? [];
-        const previous: { workspaceId: string; loadRevision: number; ids: string[]; } | null = this.recordsSnapshot; const workspace: WorkspaceView | null = value.workspace;
+        const ids: string[] = value.workspace?.imports.map((record: IBankImportSummary): string => record.id) ?? [];
+        const previous: { workspaceId: string; loadRevision: number; ids: string[]; } | null = this.recordsSnapshot; const workspace: IWorkspaceView | null = value.workspace;
         if (previous && previous.workspaceId === workspace?.id && previousSelection && previous.ids.includes(previousSelection) && !ids.includes(previousSelection)) {
             requestAnimationFrame((): void => {
                 if (!this.disposed && generation === this.generation && !this.state().busy) {
@@ -341,13 +341,13 @@ export class StatementImports {
     }
 
     requestStatementRemoval(id: string, dialog: HTMLDialogElement, cancel: WigButtonComponent): void {
-        const { workspace, busy }: WorkspaceState = this.state();
-        const statement: BankImportSummary | undefined = workspace?.imports.find((record: BankImportSummary): boolean => record.id === id);
+        const { workspace, busy }: IWorkspaceState = this.state();
+        const statement: IBankImportSummary | undefined = workspace?.imports.find((record: IBankImportSummary): boolean => record.id === id);
         if (!workspace || !statement || busy || dialog.open || this.selectedId() !== id) {
             return;
         }
-        const predecessor: BankImportSummary | undefined = workspace.supersededStatements.includes(id) ? undefined :
-            workspace.imports.find((record: BankImportSummary): boolean => record.id === statement.replacesStatementId);
+        const predecessor: IBankImportSummary | undefined = workspace.supersededStatements.includes(id) ? undefined :
+            workspace.imports.find((record: IBankImportSummary): boolean => record.id === statement.replacesStatementId);
         const requested: StatementRemoval = { importId: id, revision: workspace.matchRevision, fileName: filename(statement.filePath),
             ...(predecessor ? { predecessorName: filename(predecessor.filePath) } : {}) };
         this.removal.set(requested);
@@ -402,7 +402,7 @@ export class StatementImports {
     }
 
     chooseDuplicate(transactionId: string, otherTransactionId: string, decision: DuplicateAction): void {
-        const { workspace, busy }: WorkspaceState = this.state();
+        const { workspace, busy }: IWorkspaceState = this.state();
         if (!workspace || busy) {
             return;
         }
@@ -435,7 +435,7 @@ export class StatementImports {
 
     openBookingAction(mode: BookingAction, rowId: string): void {
         const record: StoredBankImport | null = this.selected();
-        const workspace: WorkspaceView | null = this.state().workspace;
+        const workspace: IWorkspaceView | null = this.state().workspace;
         const id: string | undefined = this.rowIds().get(rowId);
         if (!record || !workspace || !id || (mode === 'correction' && this.state().busy)) {
             return;
@@ -465,7 +465,7 @@ export class StatementImports {
     applyCorrection(form: HTMLFormElement, event?: Event): void {
         event?.preventDefault();
         const editing: { row: TransactionCandidate | UnresolvedDraft; original: ImportRow; id: string; currency: string; mode: BookingAction; loadRevision: number; recordId: string; rowId: string; originalRevision: number; } | null = this.editing();
-        const workspace: WorkspaceView | null = this.state().workspace;
+        const workspace: IWorkspaceView | null = this.state().workspace;
         if (!editing || !workspace || this.state().busy) {
             return;
         }
@@ -558,7 +558,7 @@ export class StatementImports {
     }
 
     progressText(): string {
-        const current: WorkspaceState['statementImport'] = this.state().statementImport;
+        const current: IWorkspaceState['statementImport'] = this.state().statementImport;
         if (!current) {
             return '';
         }

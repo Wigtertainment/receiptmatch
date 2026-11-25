@@ -12,7 +12,7 @@ import { WorkspaceSession, type WorkspaceDialogs } from '../../electron/workspac
 import { importIssue, type BankImportResult } from '../../src/shared/bank-import.js';
 import { documentFieldReviewKey, type DocumentFieldReview } from '../../src/shared/document-field-reviews.js';
 import type { StatementAiPreviewResult, StatementAiRequest, StatementAiResult } from '../../src/shared/statement-ai.js';
-import type { MatchSummary } from '../../src/shared/workspace-matching.js';
+import type { IMatchSummary } from '../../src/shared/workspace-matching.js';
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
 import { documentRun, retainedBank, retainedDocument } from './document-fixtures.js';
 
@@ -60,8 +60,8 @@ function ready(result: StatementAiPreviewResult): Extract<StatementAiPreviewResu
     return result;
 }
 
-function summary(session: WorkspaceSession, id: string): MatchSummary {
-    return session.matchSummaries(session.state().workspace!.matchRevision)!.find((row: MatchSummary): boolean => row.transactionId === id)!;
+function summary(session: WorkspaceSession, id: string): IMatchSummary {
+    return session.matchSummaries(session.state().workspace!.matchRevision)!.find((row: IMatchSummary): boolean => row.transactionId === id)!;
 }
 
 test('complete adapter statements produce an isolated preview and append one analysis only after acceptance', async (context: TestContext): Promise<void> => {

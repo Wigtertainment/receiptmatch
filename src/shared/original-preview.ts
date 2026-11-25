@@ -1,26 +1,49 @@
 import { z } from 'zod';
 
-export const originalPreviewRequestSchema: z.ZodObject<{ kind: z.ZodEnum<{ statement: "statement"; document: "document"; }>; id: z.ZodUUID; loadRevision: z.ZodNumber; }, z.core.$strict> = z.strictObject({ kind: z.enum(['statement', 'document']), id: z.uuid(), loadRevision: z.number().int().nonnegative() });
+interface IOriginalPreviewRequestShape {
+    kind: z.ZodEnum<z.core.util.ToEnum<'statement' | 'document'>>;
+    id: z.ZodUUID;
+    loadRevision: z.ZodNumber;
+}
+
+interface IOriginalAdoptionRequestShape {
+    token: z.ZodUUID;
+    loadRevision: z.ZodNumber;
+    acknowledgeConflicts: z.ZodBoolean;
+}
+
+export const originalPreviewRequestSchema: z.ZodObject<z.core.util.Flatten<IOriginalPreviewRequestShape>, z.core.$strict> = z.strictObject({
+    kind: z.enum(['statement', 'document']), id: z.uuid(), loadRevision: z.number().int().nonnegative()
+});
 export type OriginalPreviewRequest = z.infer<typeof originalPreviewRequestSchema>;
-export interface OriginalPreviewResult { error: string | null; status?: 'missing' | 'changed' | 'unreadable'; }
-export type OriginalRelinkResult = { status: 'linked' | 'cancelled' } | { status: 'failed'; error: string };
-export const originalAdoptionRequestSchema: z.ZodObject<{ token: z.ZodUUID; loadRevision: z.ZodNumber; acknowledgeConflicts: z.ZodBoolean; }, z.core.$strict> = z.strictObject({
+export interface IOriginalPreviewResult { error: string | null; status?: 'missing' | 'changed' | 'unreadable'; }
+interface IOriginalSourceFailure { status: 'failed'; error: string }
+export type OriginalRelinkResult = Record<'status', 'linked' | 'cancelled'> | IOriginalSourceFailure;
+export const originalAdoptionRequestSchema: z.ZodObject<z.core.util.Flatten<IOriginalAdoptionRequestShape>, z.core.$strict> = z.strictObject({
     token: z.uuid(), loadRevision: z.number().int().nonnegative(), acknowledgeConflicts: z.boolean()
 });
 export type OriginalAdoptionRequest = z.infer<typeof originalAdoptionRequestSchema>;
-export interface OriginalAnalysisComparison {
+interface IOriginalAnalysisChange { label: string; before: string | null; after: string | null }
+export interface IOriginalAnalysisComparison {
     token: string;
     oldPath: string;
     newPath: string;
-    changes: { label: string; before: string | null; after: string | null }[];
+    changes: IOriginalAnalysisChange[];
     conflicts: string[];
     preserved: number;
     revoked: number;
 }
-export type OriginalAnalysisResult = { status: 'ready'; comparison: OriginalAnalysisComparison } | { status: 'cancelled' } | { status: 'failed'; error: string };
-export type OriginalAdoptionResult = { status: 'adopted' } | { status: 'failed'; error: string };
-export const originalSourceExtensions: { readonly pdf: readonly [".pdf"]; readonly png: readonly [".png"]; readonly jpeg: readonly [".jpg", ".jpeg"]; } = { pdf: ['.pdf'], png: ['.png'], jpeg: ['.jpg', '.jpeg'] } as const;
-export interface OriginalPreviewData {
+interface IOriginalAnalysisReady { status: 'ready'; comparison: IOriginalAnalysisComparison }
+export type OriginalAnalysisResult = IOriginalAnalysisReady | Record<'status', 'cancelled'> | IOriginalSourceFailure;
+export type OriginalAdoptionResult = Record<'status', 'adopted'> | IOriginalSourceFailure;
+
+interface IOriginalSourceExtensions {
+    readonly pdf: readonly ['.pdf'];
+    readonly png: readonly ['.png'];
+    readonly jpeg: readonly ['.jpg', '.jpeg'];
+}
+export const originalSourceExtensions: IOriginalSourceExtensions = { pdf: ['.pdf'], png: ['.png'], jpeg: ['.jpg', '.jpeg'] } as const;
+export interface IOriginalPreviewData {
     name: string;
     format: 'pdf' | 'png' | 'jpeg';
     bytes: Uint8Array;

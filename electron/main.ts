@@ -1,20 +1,20 @@
 import type { StoredBankImport } from "../src/shared/workspace-import.js";
 import type { StoredDocumentImport } from "../src/shared/workspace-documents.js";
-import type { ReconciliationExportReport } from "../src/shared/document-export.js";
+import type { IReconciliationExportReport } from "../src/shared/document-export.js";
 import type { OriginalAdoptionResult } from "../src/shared/original-preview.js";
 import type { OriginalAnalysisResult } from "../src/shared/original-preview.js";
 import type { OriginalRelinkResult } from "../src/shared/original-preview.js";
-import type { OriginalPreviewResult } from "../src/shared/original-preview.js";
-import type { MatchDetails } from "../src/shared/workspace-matching.js";
-import type { MatchSummary } from "../src/shared/workspace-matching.js";
-import type { DocumentSnapshot } from "../src/shared/protocol.js";
-import type { LocalOcrRequest, LocalOcrStatus, NuExtractSettingsStatus } from "../src/shared/local-ocr-settings.js";
+import type { IOriginalPreviewResult } from "../src/shared/original-preview.js";
+import type { IMatchDetails } from "../src/shared/workspace-matching.js";
+import type { IMatchSummary } from "../src/shared/workspace-matching.js";
+import type { IDocumentSnapshot } from "../src/shared/protocol.js";
+import type { LocalOcrRequest, LocalOcrStatus, INuExtractSettingsStatus } from "../src/shared/local-ocr-settings.js";
 import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, session } from 'electron';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { randomBytes } from 'node:crypto';
-import { commandSchema, documentExportRequestSchema, documentSnapshotRequestSchema, exportSettingsRequestSchema, matchRequestSchema, type WorkspaceCommand, type WorkspaceState } from '../src/shared/protocol.js';
+import { commandSchema, documentExportRequestSchema, documentSnapshotRequestSchema, exportSettingsRequestSchema, matchRequestSchema, type WorkspaceCommand, type IWorkspaceState } from '../src/shared/protocol.js';
 import type { DocumentExportResponse } from '../src/shared/document-export.js';
 import { originalAdoptionRequestSchema, originalPreviewRequestSchema, originalSourceExtensions } from '../src/shared/original-preview.js';
 import { WorkspaceSession } from './workspace-session.js';
@@ -107,7 +107,7 @@ async function launch(): Promise<void> {
   };
   const previews: OriginalPreviewWindows = new OriginalPreviewWindows(process.argv.includes('--hidden'), windowIcon);
   let previewLoadRevision: number | undefined;
-  const publish: (state: WorkspaceState) => void = (state: WorkspaceState): void => {
+  const publish: (state: IWorkspaceState) => void = (state: IWorkspaceState): void => {
     if (window.isDestroyed()) {
       return;
     }
@@ -173,7 +173,7 @@ async function launch(): Promise<void> {
     }
     confirmingOcrDownload = true;
     try {
-      const status: NuExtractSettingsStatus = await nuExtract.status();
+      const status: INuExtractSettingsStatus = await nuExtract.status();
       const modelDownload: boolean = kind === 'model';
       const available: boolean = modelDownload ? status.cpuAvailable && !status.installed : status.gpu === 'download-required';
       if (status.busy || !available) {
@@ -251,7 +251,7 @@ async function launch(): Promise<void> {
     return app.getVersion();
   });
 
-  ipcMain.handle('workspace:command', (event: Electron.IpcMainInvokeEvent, payload: unknown): WorkspaceState | Promise<WorkspaceState> => {
+  ipcMain.handle('workspace:command', (event: Electron.IpcMainInvokeEvent, payload: unknown): IWorkspaceState | Promise<IWorkspaceState> => {
     if (!authorized(event)) {
       throw new Error('Workspace request denied.');
     }
@@ -276,7 +276,7 @@ async function launch(): Promise<void> {
     return workspace.documentImports();
   });
 
-  ipcMain.handle('workspace:document-snapshot', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): DocumentSnapshot | null => {
+  ipcMain.handle('workspace:document-snapshot', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): IDocumentSnapshot | null => {
     if (!authorized(event) || payload.length !== 1) {
       throw new Error('Workspace request denied.');
     }
@@ -287,7 +287,7 @@ async function launch(): Promise<void> {
     return workspace.documentSnapshot(request.data);
   });
 
-  ipcMain.handle('workspace:matches', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): MatchSummary[] | MatchDetails | null => {
+  ipcMain.handle('workspace:matches', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): IMatchSummary[] | IMatchDetails | null => {
     if (!authorized(event) || payload.length !== 1) {
       throw new Error('Workspace request denied.');
     }
@@ -299,7 +299,7 @@ async function launch(): Promise<void> {
     return transactionId ? workspace.matchDetails(revision, transactionId) : workspace.matchSummaries(revision);
   });
 
-  ipcMain.handle('workspace:open-original', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<OriginalPreviewResult> | { error: string; } => {
+  ipcMain.handle('workspace:open-original', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<IOriginalPreviewResult> | { error: string; } => {
     if (!authorized(event) || payload.length !== 1) {
       throw new Error('Workspace request denied.');
     }
@@ -393,7 +393,7 @@ async function launch(): Promise<void> {
   let closeRequested: boolean = false;
 
   function validateExportAfterFolderChoice(loadRevision: number, includeCsv: boolean, savedFingerprint: string | null, matchRevision: number): DocumentExportResponse | null {
-    const current: WorkspaceState = workspace.state();
+    const current: IWorkspaceState = workspace.state();
     if (closeRequested || window.isDestroyed()) {
       return { status: 'cancelled' };
     }
@@ -425,7 +425,7 @@ async function launch(): Promise<void> {
       return blocked;
     }
     if (includeCsv) {
-      const { csv, documentCopies }: ReconciliationExportReport = await workspace.exportReconciliation(loadRevision, destination, pattern);
+      const { csv, documentCopies }: IReconciliationExportReport = await workspace.exportReconciliation(loadRevision, destination, pattern);
       return { status: 'completed', report: documentCopies, csv };
     }
     return { status: 'completed', report: await workspace.exportApprovedDocuments(loadRevision, destination, pattern) };
@@ -443,7 +443,7 @@ async function launch(): Promise<void> {
       return { status: 'cancelled' };
     }
     const { loadRevision, includeCsv }: { loadRevision: number; includeCsv: boolean } = request.data;
-    const initial: WorkspaceState = workspace.state();
+    const initial: IWorkspaceState = workspace.state();
     if (initial.workspace?.loadRevision !== loadRevision) {
       return { status: 'failed', message: 'The workspace has changed. Open Export and try again.' };
     }

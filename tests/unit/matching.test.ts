@@ -1,9 +1,9 @@
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
 import type { BankImportInput, ImportPage, SourceEvidence, TransactionCandidate } from "../../src/shared/bank-import.js";
 import type { MatchCandidate, TransactionMatch } from "../../src/shared/workspace-matching.js";
-import type { MatchNameEvidence } from "../../src/shared/workspace-matching.js";
-import type { ReviewMatchCandidate } from "../../src/shared/workspace-matching.js";
-import type { ReviewMatch } from "../../src/shared/workspace-matching.js";
+import type { IMatchNameEvidence } from "../../src/shared/workspace-matching.js";
+import type { IReviewMatchCandidate } from "../../src/shared/workspace-matching.js";
+import type { IReviewMatch } from "../../src/shared/workspace-matching.js";
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'vitest';
@@ -40,7 +40,7 @@ test('rechecks the amounts of a historically reliable candidate before displayin
 	candidate.documentId = replacement.id;
 	candidate.sectionId = replacement.result.sections[0].sectionId;
 	candidate.amounts[0].documentAmount.coefficient = '123457';
-	const [reviewed]: ReviewMatch[] = evaluateReviewMatches([historical], [bank], [documentRun(root, [replacement])]);
+	const [reviewed]: IReviewMatch[] = evaluateReviewMatches([historical], [bank], [documentRun(root, [replacement])]);
 	assert.equal(historical.status, 'reliable');
 	assert.equal(reviewed.status, 'uncertain');
 	assert.equal(reviewed.candidates[0].signals.amount, 'close');
@@ -175,13 +175,13 @@ test.for(["'", '’'])('suggests a receipt when the bank name contains an intern
 
 	const historical: ReturnType<typeof matchFor> = matchFor(bank, 0, receipt);
 	assert.equal(historical.status, 'unmatched');
-	const [reviewed]: ReviewMatch[] = evaluateReviewMatches([historical], [bank], [documentRun(root, [receipt])]);
+	const [reviewed]: IReviewMatch[] = evaluateReviewMatches([historical], [bank], [documentRun(root, [receipt])]);
 	assert.equal(reviewed.status, 'uncertain');
-	assert.deepEqual(reviewed.candidates.map(({ documentId, signals }: ReviewMatchCandidate): (string | MatchNameEvidence)[] => [documentId, signals.amount, signals.filename]), [
+	assert.deepEqual(reviewed.candidates.map(({ documentId, signals }: IReviewMatchCandidate): (string | IMatchNameEvidence)[] => [documentId, signals.amount, signals.filename]), [
 		[receipt.id, 'close', { state: 'partial', bankText: description, documentText: 'Blooms.pdf' }],
 	]);
 
 	booking.description.value = 'Bloom S Bar & Grill Lca';
-	const [unrelated]: ReviewMatch[] = evaluateReviewMatches([historical], [bank], [documentRun(root, [receipt])]);
+	const [unrelated]: IReviewMatch[] = evaluateReviewMatches([historical], [bank], [documentRun(root, [receipt])]);
 	assert.equal(unrelated.status, 'unmatched');
 });

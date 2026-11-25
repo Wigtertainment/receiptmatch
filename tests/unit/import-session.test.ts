@@ -1,7 +1,7 @@
 import type { BankImportInput, ImportIssue, PositionedSpan } from "../../src/shared/bank-import.js";
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
-import type { WorkspaceView } from "../../src/shared/protocol.js";
-import type { WorkspaceState } from "../../src/shared/protocol.js";
+import type { IWorkspaceView } from "../../src/shared/protocol.js";
+import type { IWorkspaceState } from "../../src/shared/protocol.js";
 import { test, vi, type Mock } from 'vitest';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
@@ -226,7 +226,7 @@ test('import/save/reopen preserves full records and stable IDs; loaded-byte dupl
     const report: StoredBankImport[] = session.bankImports();
     report[0].result.transactions[0].accountAmount.value.coefficient = '999';
     assert.equal(session.bankImports()[0].result.transactions[0].accountAmount.value.coefficient, '-123456');
-    const stateCopy: WorkspaceState = session.state();
+    const stateCopy: IWorkspaceState = session.state();
     stateCopy.workspace!.imports[0].transactions = 999;
     assert.equal(session.state().workspace!.imports[0].transactions, 2);
     const expected: StoredBankImport[] = session.bankImports();
@@ -317,7 +317,7 @@ test('cancellation wins over a late successful import and all competing workspac
     plan.saves.push(path.join(directory, 'empty.receiptmatch'));
     await session.dispatch({ type: 'save' });
     const id: string = session.state().workspace!.id;
-    const pending: Promise<WorkspaceState> = session.dispatch({ type: 'import-statement' });
+    const pending: Promise<IWorkspaceState> = session.dispatch({ type: 'import-statement' });
     await waitFor((): boolean => !!release);
     const tick: ExtractionProgress = { phase: 'text', pageNumber: 1, pageCount: 1, completedPages: 0 };
     progress!(tick);
@@ -466,7 +466,7 @@ test('invalid saved import mappings report workspace data errors and preserve cu
     await session.dispatch({ type: 'new' });
     await session.dispatch({ type: 'rename', name: 'Current unsaved work' });
     await session.dispatch({ type: 'import-statement' });
-    const before: WorkspaceView | null = session.state().workspace;
+    const before: IWorkspaceView | null = session.state().workspace;
     const records: StoredBankImport[] = session.bankImports();
     plan.choices.push('discard');
     plan.opens.push(damagedFile);

@@ -4,8 +4,8 @@ import type { TransactionMatch } from "../src/shared/workspace-matching.js";
 import type { ImportIssue } from "../src/shared/bank-import.js";
 import type { SupportingDocument } from "../src/shared/supporting-document.js";
 import type { MatchApproval } from "../src/shared/match-approvals.js";
-import type { MatchSummary } from "../src/shared/workspace-matching.js";
-import type { ReviewMatch } from "../src/shared/workspace-matching.js";
+import type { IMatchSummary } from "../src/shared/workspace-matching.js";
+import type { IReviewMatch } from "../src/shared/workspace-matching.js";
 import path from 'node:path';
 import { formatAmountEntry } from '../src/shared/amount-entry.js';
 import { projectCorrectedStatementAnalyses } from './import/statement-analyses.js';
@@ -41,10 +41,10 @@ export function reconciliationRows(snapshot: SavedWorkspace, copyOutcomes: reado
 	const documents: StoredDocumentImport[] = activeSupportingDocuments(documentView.effective, snapshot.sourceReplacements);
 	const matchImports: StoredBankImport[] = excludeTransactions(imports, snapshot.ignoredTransactions);
 	const exactMatches: TransactionMatch[] = matchImports === corrected && !snapshot.sourceReplacements.size && !documentView.hasAutomaticChanges ? snapshot.matches : suggestWorkspaceMatches(matchImports, documents);
-	const matches: ReviewMatch[] = evaluateReviewMatches(exactMatches, matchImports, documents);
+	const matches: IReviewMatch[] = evaluateReviewMatches(exactMatches, matchImports, documents);
 	const documentRevisions: Map<string, number> = documentRevisionIndex(snapshot.documentCorrections.values(), snapshot.documentFieldReviews.values());
-	const summaries: Map<string, MatchSummary> = new Map(summarizeMatches(matches, imports, snapshot.matchDecisions, snapshot.bankCorrections, snapshot.reviewApprovals, documentRevisions, snapshot.ignoredTransactions)
-		.map((summary: MatchSummary): [string, MatchSummary] => [summary.transactionId, summary]));
+	const summaries: Map<string, IMatchSummary> = new Map(summarizeMatches(matches, imports, snapshot.matchDecisions, snapshot.bankCorrections, snapshot.reviewApprovals, documentRevisions, snapshot.ignoredTransactions)
+		.map((summary: IMatchSummary): [string, IMatchSummary] => [summary.transactionId, summary]));
 	const names: Map<string, string> = new Map(snapshot.documentImports.flatMap((run: StoredDocumentImport): (readonly [string, string])[] => run.files.flatMap((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): [] | [readonly [string, string]] => file.status === 'imported' ?
 		[[file.record.id, sourceName(file.record.filePath)] as const] : [])));
 	const copies: Map<string, DocumentExportOutcome> = new Map<string, DocumentExportOutcome>();
@@ -64,7 +64,7 @@ export function reconciliationRows(snapshot: SavedWorkspace, copyOutcomes: reado
 
 type BookingFields = Pick<ReconciliationRow, 'statement_id' | 'statement_file' | 'booking_date' | 'description' | 'account_amount' | 'account_currency' | 'original_amount' | 'original_currency'>;
 
-function appendStatementRows(record: StoredBankImport, summaries: ReadonlyMap<string, MatchSummary>, names: ReadonlyMap<string, string>,
+function appendStatementRows(record: StoredBankImport, summaries: ReadonlyMap<string, IMatchSummary>, names: ReadonlyMap<string, string>,
 	copies: ReadonlyMap<string, DocumentExportOutcome>, reviewApprovals: SavedWorkspace['reviewApprovals'], rows: ReconciliationRow[]): void {
 	const statements: Map<string, string> = new Map(record.accounts.map((account: { sectionId: string; accountId: string; statementId: string; }): [string, string] => [account.sectionId, account.statementId]));
 	const transactions: Map<string, TransactionCandidate> = new Map(record.result.transactions.map((row: TransactionCandidate): [string, TransactionCandidate] => [row.rowId, row]));
@@ -89,7 +89,7 @@ function appendStatementRows(record: StoredBankImport, summaries: ReadonlyMap<st
 	};
 	for (const { rowId, transactionId } of record.transactions) {
 		const row: TransactionCandidate = transactions.get(rowId)!;
-		const summary: MatchSummary = summaries.get(transactionId)!;
+		const summary: IMatchSummary = summaries.get(transactionId)!;
 		const issueCodes: string = [...(issues.get(rowId) ?? [])].sort().join('|');
 		rows.push(transactionRow(summary, bookingFields(row), reviewApprovals.get(transactionId)?.approval, copies.get(transactionId), names, issueCodes));
 	}
@@ -104,7 +104,7 @@ function appendStatementRows(record: StoredBankImport, summaries: ReadonlyMap<st
 	}
 }
 
-function transactionRow(summary: MatchSummary, booking: BookingFields, storedApproval: MatchApproval | null | undefined, copy: DocumentExportOutcome | undefined,
+function transactionRow(summary: IMatchSummary, booking: BookingFields, storedApproval: MatchApproval | null | undefined, copy: DocumentExportOutcome | undefined,
 	names: ReadonlyMap<string, string>, issueCodes: string): ReconciliationRow {
 	const transactionId: string = summary.transactionId;
 	const documentId: string = summary.review.status === 'assigned' ? summary.review.documentId : '';

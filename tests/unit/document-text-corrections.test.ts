@@ -8,7 +8,7 @@ import { applyDocumentFieldCorrections, documentCorrectionKey, documentCorrectio
 import { supportingDocumentSchema, type DocumentIssue, type DocumentSection, type SupportingDocument } from '../../src/shared/supporting-document.js';
 import { storedSupportingDocumentSchema, type StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
 import { approvalSelectionFor, type ReviewApprovalState } from '../../src/shared/match-approvals.js';
-import { commandSchema, type WorkspaceView } from '../../src/shared/protocol.js';
+import { commandSchema, type IWorkspaceView } from '../../src/shared/protocol.js';
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
 import type { TransactionCandidate } from '../../src/shared/bank-import.js';
 import { createWorkspace, loadWorkspace, newMetadata, type SavedWorkspace } from '../../electron/store.js';
@@ -149,7 +149,7 @@ test('new field edits survive save and reopen, reject stale input and make exist
     await createWorkspace(file, newMetadata(), [bank], [documentRun(root, [document])], new Map([[transactionId, document.id]]), new Map(), new Map(), new Map([[transactionId, approval]]));
     const session: WorkspaceSession = new WorkspaceSession({ open: (): Promise<string> => Promise.resolve(file), save: (): Promise<string> => Promise.resolve(file), unsaved: (): Promise<'discard'> => Promise.resolve('discard') });
     await session.dispatch({ type: 'open' });
-    const before: WorkspaceView = session.state().workspace!;
+    const before: IWorkspaceView = session.state().workspace!;
     const merchant: DocumentSection['merchants'][number] = document.result.sections[0].merchants[0];
     const edit: DocumentCorrection = correction(document, merchant.id, { kind: 'merchant', value: 'Edited Workshop' });
     assert.equal((await session.dispatch(commandSchema.parse({ ...edit, type: 'correct-document-field', revision: before.matchRevision }))).error, null);

@@ -1,5 +1,5 @@
 import { applyDocumentFieldCorrections, type DocumentCorrection } from '../../src/shared/document-corrections.js';
-import type { ReceiptAiChange } from '../../src/shared/receipt-ai.js';
+import type { IReceiptAiChange } from '../../src/shared/receipt-ai.js';
 import type { DocumentIssue, DocumentSection, SupportingDocument } from '../../src/shared/supporting-document.js';
 import type { StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
 import { documentReferenceFields, moneyKey, normalizeReference, outgoingAmounts } from '../matching.js';
@@ -9,7 +9,7 @@ import { hasFullDocumentReference, mergedLegacySections, recordedDocumentPayment
 
 export interface ReceiptVersionPlan {
     analysis: SupportingDocument;
-    changes: ReceiptAiChange[];
+    changes: IReceiptAiChange[];
     conflicts: string[];
     blockingConflict?: string;
     invalidatesApproval: boolean;
@@ -176,7 +176,7 @@ export function prepareReceiptAnalysisVersion(previous: StoredSupportingDocument
     const after: SupportingDocument = afterWithCorrections ?? new SupportingDocumentState(analysis).effective;
     const { changes, conflicts }: DocumentPairing = compareDocuments({ result: before }, { result: after });
     const invalidatesApproval: boolean = matchingFacts(before) !== matchingFacts(after);
-    if (invalidatesApproval && !changes.some((change: ReceiptAiChange): boolean => change.kind !== 'warnings')) {
+    if (invalidatesApproval && !changes.some((change: IReceiptAiChange): boolean => change.kind !== 'warnings')) {
         changes.push({ label: 'Matching evidence', before: null, after: 'Evidence used for matching changed.', kind: 'matching' });
     }
     const blockingConflict: string | undefined = afterWithCorrections ? undefined : 'A manual correction cannot be matched unambiguously in the new analysis.';

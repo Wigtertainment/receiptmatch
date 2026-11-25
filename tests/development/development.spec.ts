@@ -11,12 +11,12 @@ import { Writable } from 'node:stream';
 import { concurrently, type Command, type ConcurrentlyResult } from 'concurrently';
 import { test as base, type ConsoleMessage, type ElectronApplication, type Page, type PlaywrightTestOptions, type PlaywrightTestArgs, type PlaywrightWorkerArgs, type TestInfo, type PlaywrightWorkerOptions, type TestType } from '@playwright/test';
 import waitOn from 'wait-on';
-import type { WorkspaceCommand, WorkspaceState, WorkspaceView } from '../../src/shared/protocol.js';
+import type { WorkspaceCommand, IWorkspaceState, IWorkspaceView } from '../../src/shared/protocol.js';
 import type { ChildProcess } from 'node:child_process';
 
 declare global {
 	interface Window {
-		receiptmatchDevelopmentState?: WorkspaceState;
+		receiptmatchDevelopmentState?: IWorkspaceState;
 		receiptmatchDevelopmentNonce?: string;
 	}
 }
@@ -37,7 +37,7 @@ interface DevelopmentReport {
 	checks: { name: string; status: 'passed'; milliseconds: number }[];
 	rendererEvents: (RendererEvent & { origin: string })[];
 	activeCheck?: string;
-	importCompletion?: WorkspaceState;
+	importCompletion?: IWorkspaceState;
 	busyPortProbe?: { requests: number; output: string };
 	hmrBundleChange?: { beforeHash: string; afterHash: string; firstDifference: number; before: string; after: string };
 	failureSnapshot?: Partial<Record<'state' | 'records', unknown>>;
@@ -213,7 +213,7 @@ test('direct Electron development and stylesheet HMR', async ({ development: { p
 		await currentApplication().evaluate(({ BrowserWindow }: typeof Electron.CrossProcessExports): void => BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false));
 		await page.evaluate(async (): Promise<void> => {
 			window.receiptmatchDevelopmentState = await window.receiptmatch.command({ type: 'get-state' });
-			window.receiptmatch.subscribe((value: WorkspaceState): void => {
+			window.receiptmatch.subscribe((value: IWorkspaceState): void => {
 				window.receiptmatchDevelopmentState = value;
 			});
 		});
@@ -236,26 +236,26 @@ test('direct Electron development and stylesheet HMR', async ({ development: { p
 		);
 	}
 
-	async function state(): Promise<WorkspaceState> {
-		return page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'get-state' }));
+	async function state(): Promise<IWorkspaceState> {
+		return page.evaluate((): Promise<IWorkspaceState> => window.receiptmatch.command({ type: 'get-state' }));
 	}
 
 	async function records(): Promise<StoredBankImport[]> {
 		return page.evaluate((): Promise<StoredBankImport[]> => window.receiptmatch.bankImports());
 	}
 
-	async function command(value: WorkspaceCommand): Promise<WorkspaceState> {
+	async function command(value: WorkspaceCommand): Promise<IWorkspaceState> {
 		return bounded(
 			`Completing the actual ${value.type} command`,
-			page.evaluate((value: WorkspaceCommand): Promise<WorkspaceState> => window.receiptmatch.command(value), value),
+			page.evaluate((value: WorkspaceCommand): Promise<IWorkspaceState> => window.receiptmatch.command(value), value),
 			typeof value === 'object' && value !== null && 'type' in value && value.type === 'import-statement' ? 45000 : 20000
 		);
 	}
 
-	async function waitWorkspace(expected: Partial<WorkspaceView>): Promise<void> {
-		await page.waitForFunction((expected: Partial<WorkspaceView>): boolean | undefined => {
-			const value: WorkspaceState | undefined = window.receiptmatchDevelopmentState;
-			return value && !value.busy && Object.entries(expected).every(([key, wanted]: [string, WorkspaceView[keyof WorkspaceView]]): boolean => value.workspace?.[key as keyof WorkspaceView] === wanted);
+	async function waitWorkspace(expected: Partial<IWorkspaceView>): Promise<void> {
+		await page.waitForFunction((expected: Partial<IWorkspaceView>): boolean | undefined => {
+			const value: IWorkspaceState | undefined = window.receiptmatchDevelopmentState;
+			return value && !value.busy && Object.entries(expected).every(([key, wanted]: [string, IWorkspaceView[keyof IWorkspaceView]]): boolean => value.workspace?.[key as keyof IWorkspaceView] === wanted);
 		}, expected);
 	}
 
@@ -347,7 +347,7 @@ test('direct Electron development and stylesheet HMR', async ({ development: { p
 		for (const request of denied) {
 			assert.match(request.error ?? '', /ERR_BLOCKED_BY_CLIENT/, `${url}: ${JSON.stringify(request)}`);
 		}
-		const invalid: WorkspaceState = await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'write-file', path: '/not-authorized' } as unknown as WorkspaceCommand));
+		const invalid: IWorkspaceState = await page.evaluate((): Promise<IWorkspaceState> => window.receiptmatch.command({ type: 'write-file', path: '/not-authorized' } as unknown as WorkspaceCommand));
 		assert.match(invalid.error ?? '', /not supported/);
 	}
 
@@ -471,7 +471,7 @@ test('direct Electron development and stylesheet HMR', async ({ development: { p
 		await page.getByLabel('Workspace name', { exact: true }).fill('Direct local workspace');
 		await waitWorkspace({ name: 'Direct local workspace', dirty: true, filePath: null });
 		await dialogs({ saves: [workspaceFile] });
-		const saved: WorkspaceState = await command({ type: 'save' });
+		const saved: IWorkspaceState = await command({ type: 'save' });
 		assert.equal(saved.error, null);
 		await waitWorkspace({ filePath: workspaceFile, dirty: false });
 		assert.equal((await readFile(workspaceFile)).subarray(0, 16).toString(), 'SQLite format 3\0');
@@ -479,7 +479,7 @@ test('direct Electron development and stylesheet HMR', async ({ development: { p
 	await check('direct-built-desktop-bundled-local-english-ocr-survives-save-and-process-restart', async (): Promise<void> => {
 		const savedHash: string = hash(await readFile(workspaceFile));
 		await dialogs({ opens: [sourceFile] });
-		const completed: WorkspaceState = await command({ type: 'import-statement' });
+		const completed: IWorkspaceState = await command({ type: 'import-statement' });
 		report.importCompletion = completed;
 		assert.equal(completed.error, null);
 		assert.equal(completed.busy, false);
@@ -505,15 +505,15 @@ test('direct Electron development and stylesheet HMR', async ({ development: { p
 		);
 		assert.ok(imported[0].result.transactions.every((row: TransactionCandidate): boolean => [...row.bookingDate.evidence, ...row.accountAmount.evidence].every((value: SourceEvidence): boolean => value.method === 'local-ocr')));
 		assert.equal(hash(await readFile(workspaceFile)), savedHash, 'Import must remain unsaved until explicit Save.');
-		const persisted: WorkspaceState = await command({ type: 'save' });
+		const persisted: IWorkspaceState = await command({ type: 'save' });
 		assert.equal(persisted.error, null);
 		await waitWorkspace({ dirty: false });
-		const saved: WorkspaceState = await state();
+		const saved: IWorkspaceState = await state();
 		assert.ok(saved.workspace);
 		await close();
 		await launch();
 		await dialogs({ opens: [workspaceFile] });
-		const reopened: WorkspaceState = await command({ type: 'open' });
+		const reopened: IWorkspaceState = await command({ type: 'open' });
 		assert.equal(reopened.error, null);
 		await waitWorkspace({ filePath: workspaceFile, name: 'Direct local workspace', id: saved.workspace.id, dirty: false });
 		assert.deepEqual(await records(), imported);
@@ -606,7 +606,7 @@ test('direct Electron development and stylesheet HMR', async ({ development: { p
 	});
 	await check('stylesheet-hmr-preserves-the-renderer-and-current-workspace', async (): Promise<void> => {
 		const nonce: `${string}-${string}-${string}-${string}-${string}` = randomUUID();
-		const before: WorkspaceState = await state();
+		const before: IWorkspaceState = await state();
 		const beforeBundle: string = await (await fetch(`${developmentUrl}main.js`)).text();
 		await page.evaluate((nonce: `${string}-${string}-${string}-${string}-${string}`): void => {
 			window.receiptmatchDevelopmentNonce = nonce;

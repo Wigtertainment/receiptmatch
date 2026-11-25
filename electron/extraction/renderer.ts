@@ -16,7 +16,7 @@ import {
     PDF_EXTRACTION_LIMITS,
     PDF_EXTRACTION_VERSION,
     RECEIPT_RASTER_LIMITS,
-    type ExtractionBridge,
+    type IExtractionBridge,
     type ExtractionJob,
     type ExtractionProgress,
     type ExtractionResult
@@ -27,7 +27,7 @@ import type { ZodSafeParseResult } from 'zod';
 
 declare global {
     interface Window {
-        receiptMatchExtraction: ExtractionBridge;
+        receiptMatchExtraction: IExtractionBridge;
     }
 }
 pdfjs.GlobalWorkerOptions.workerSrc = new URL('./pdf/pdf.worker.min.mjs', location.href).href;

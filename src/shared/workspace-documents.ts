@@ -1,13 +1,19 @@
 import type { SupportingDocument } from "./supporting-document.js";
-import type { ImportIssue, PositionedSpan } from "./bank-import.js";
+import type { PositionedSpan } from "./bank-import.js";
 import { z } from "zod";
 import { importIssueSchema } from "./bank-import.js";
 import type { ExtractionProgress } from "./pdf-extraction.js";
 import { hasManualDocumentFields, supportingDocumentSchema } from "./supporting-document.js";
 
+interface IDocumentImportLimits {
+	readonly files: 1000;
+	readonly directories: 1000;
+	readonly depth: 64;
+}
+
 // Fixed execution guards, not supported-workload or processing-time promises.
-export const DOCUMENT_IMPORT_LIMITS: { readonly files: 1000; readonly directories: 1000; readonly depth: 64; } = { files: 1000, directories: 1000, depth: 64 } as const;
-export const documentFormatSchema: z.ZodEnum<{ png: "png"; pdf: "pdf"; jpeg: "jpeg"; }> = z.enum(["pdf", "png", "jpeg"]);
+export const DOCUMENT_IMPORT_LIMITS: IDocumentImportLimits = { files: 1000, directories: 1000, depth: 64 } as const;
+export const documentFormatSchema: z.ZodEnum<z.core.util.ToEnum<"pdf" | "png" | "jpeg">> = z.enum(["pdf", "png", "jpeg"]);
 const localPath: z.ZodString = z
 	.string()
 	.min(1)
@@ -15,276 +21,37 @@ const localPath: z.ZodString = z
 	.refine((value: string): boolean => !value.includes("\0") && /^(?:[A-Za-z]:[\\/]|\/|\\\\[^\\]+\\[^\\]+)/.test(value));
 const hash: z.ZodString = z.string().regex(/^[a-f0-9]{64}$/);
 const sourceId: z.ZodString = z.string().min(1).max(128);
-type IssuesType = z.ZodArray<z.ZodObject<{
-	code: z.ZodString;
-	severity: z.ZodEnum<{
-		error: "error";
-		warning: "warning";
-	}>;
-	message: z.ZodString;
-	pageId: z.ZodNullable<z.ZodString>;
-	rowId: z.ZodNullable<z.ZodString>;
-	field: z.ZodNullable<z.ZodString>;
-	evidence: z.ZodArray<z.ZodObject<{
-		pageId: z.ZodString;
-		region: z.ZodObject<{
-			x: z.ZodNumber;
-			y: z.ZodNumber;
-			width: z.ZodNumber;
-			height: z.ZodNumber;
-		}, z.core.$strict>;
-		rawText: z.ZodString;
-		method: z.ZodEnum<{
-			"embedded-text": "embedded-text";
-			"local-ocr": "local-ocr";
-		}>;
-	}, z.core.$strict>>;
-}, z.core.$strict>>;
-const issues: IssuesType = z.array(importIssueSchema).min(1).max(1000);
-type StoredSupportingDocumentSchemaType = z.ZodObject<{
+const issues: z.ZodArray<typeof importIssueSchema> = z.array(importIssueSchema).min(1).max(1000);
+
+type SupportingDocumentShape = typeof supportingDocumentSchema.shape;
+type SupportingDocumentSectionShape = SupportingDocumentShape["sections"]["element"]["shape"];
+type CorrectableSectionField = "amounts" | "dates" | "merchants" | "references" | "currencies";
+// Stored originals exclude review markers, as enforced by the manifest refinements below.
+type OriginalFieldArray<Shape extends z.core.$ZodShape> = z.ZodArray<z.ZodObject<Omit<Shape, "confirmedByUser" | "correctedByUser">, z.core.$strict>>;
+
+interface IOriginalDocumentSectionShape extends Omit<SupportingDocumentSectionShape, CorrectableSectionField> {
+	amounts: OriginalFieldArray<SupportingDocumentSectionShape["amounts"]["element"]["shape"]>;
+	dates: OriginalFieldArray<SupportingDocumentSectionShape["dates"]["element"]["shape"]>;
+	merchants: OriginalFieldArray<SupportingDocumentSectionShape["merchants"]["element"]["shape"]>;
+	references: OriginalFieldArray<SupportingDocumentSectionShape["references"]["element"]["shape"]>;
+	currencies: OriginalFieldArray<SupportingDocumentSectionShape["currencies"]["element"]["shape"]>;
+}
+
+interface IOriginalDocumentShape extends Omit<SupportingDocumentShape, "sections"> {
+	sections: z.ZodArray<z.ZodObject<z.core.util.Flatten<IOriginalDocumentSectionShape>, z.core.$strict>>;
+}
+
+type OriginalDocumentSchema = z.ZodObject<z.core.util.Flatten<IOriginalDocumentShape>, z.core.$strict>;
+
+interface IStoredSupportingDocumentShape {
 	id: z.ZodUUID;
 	importedAt: z.ZodISODateTime;
-	filePath: z.ZodString;
-	format: z.ZodEnum<{
-		png: "png";
-		pdf: "pdf";
-		jpeg: "jpeg";
-	}>;
-	result: z.ZodObject<{
-		contractVersion: z.ZodLiteral<"1">;
-		parserVersion: z.ZodEnum<{
-			1: "1";
-			2: "2";
-		}>;
-		status: z.ZodEnum<{
-			complete: "complete";
-			failed: "failed";
-			partial: "partial";
-		}>;
-		input: z.ZodNullable<z.ZodObject<{
-			source: z.ZodObject<{
-				sourceId: z.ZodString;
-				sha256: z.ZodString;
-			}, z.core.$strict>;
-			extraction: z.ZodObject<{
-				runId: z.ZodString;
-				version: z.ZodString;
-			}, z.core.$strict>;
-			pages: z.ZodArray<z.ZodObject<{
-				pageId: z.ZodString;
-				pageNumber: z.ZodNumber;
-				width: z.ZodNumber;
-				height: z.ZodNumber;
-				status: z.ZodEnum<{
-					complete: "complete";
-					failed: "failed";
-				}>;
-				spans: z.ZodArray<z.ZodObject<{
-					text: z.ZodString;
-					region: z.ZodObject<{
-						x: z.ZodNumber;
-						y: z.ZodNumber;
-						width: z.ZodNumber;
-						height: z.ZodNumber;
-					}, z.core.$strict>;
-					method: z.ZodEnum<{
-						"embedded-text": "embedded-text";
-						"local-ocr": "local-ocr";
-					}>;
-				}, z.core.$strict>>;
-			}, z.core.$strict>>;
-			issues: typeof issues;
-		}, z.core.$strict>>;
-		sections: z.ZodArray<z.ZodObject<{
-			sectionId: z.ZodString;
-			kind: z.ZodEnum<{
-				unknown: "unknown";
-				invoice: "invoice";
-				receipt: "receipt";
-				"billing-summary": "billing-summary";
-				"credit-note": "credit-note";
-				"payment-information": "payment-information";
-			}>;
-			pageIds: z.ZodArray<z.ZodString>;
-			evidence: z.ZodArray<z.ZodObject<{
-				pageId: z.ZodString;
-				region: z.ZodObject<{
-					x: z.ZodNumber;
-					y: z.ZodNumber;
-					width: z.ZodNumber;
-					height: z.ZodNumber;
-				}, z.core.$strict>;
-				rawText: z.ZodString;
-				method: z.ZodEnum<{
-					"embedded-text": "embedded-text";
-					"local-ocr": "local-ocr";
-				}>;
-			}, z.core.$strict>>;
-			amounts: z.ZodArray<z.ZodObject<{
-				role: z.ZodEnum<{
-					unknown: "unknown";
-					"billed-total": "billed-total";
-					"balance-due": "balance-due";
-					payment: "payment";
-					"refund-payment": "refund-payment";
-					"credit-note-component": "credit-note-component";
-					"informational-fx": "informational-fx";
-					tax: "tax";
-					subtotal: "subtotal";
-					"line-item": "line-item";
-				}>;
-				candidates: z.ZodArray<z.ZodObject<{
-					coefficient: z.ZodString;
-					scale: z.ZodNumber;
-					currency: z.ZodNullable<z.ZodString>;
-				}, z.core.$strict>>;
-				id: z.ZodString;
-				label: z.ZodString;
-				evidence: z.ZodArray<z.ZodObject<{
-					pageId: z.ZodString;
-					region: z.ZodObject<{
-						x: z.ZodNumber;
-						y: z.ZodNumber;
-						width: z.ZodNumber;
-						height: z.ZodNumber;
-					}, z.core.$strict>;
-					rawText: z.ZodString;
-					method: z.ZodEnum<{
-						"embedded-text": "embedded-text";
-						"local-ocr": "local-ocr";
-					}>;
-				}, z.core.$strict>>;
-			}, z.core.$strict>>;
-			dates: z.ZodArray<z.ZodObject<{
-				role: z.ZodEnum<{
-					unknown: "unknown";
-					payment: "payment";
-					issue: "issue";
-					due: "due";
-					"service-period": "service-period";
-					"service-start": "service-start";
-					"service-end": "service-end";
-				}>;
-				candidates: z.ZodArray<z.ZodISODate>;
-				id: z.ZodString;
-				label: z.ZodString;
-				evidence: z.ZodArray<z.ZodObject<{
-					pageId: z.ZodString;
-					region: z.ZodObject<{
-						x: z.ZodNumber;
-						y: z.ZodNumber;
-						width: z.ZodNumber;
-						height: z.ZodNumber;
-					}, z.core.$strict>;
-					rawText: z.ZodString;
-					method: z.ZodEnum<{
-						"embedded-text": "embedded-text";
-						"local-ocr": "local-ocr";
-					}>;
-				}, z.core.$strict>>;
-			}, z.core.$strict>>;
-			merchants: z.ZodArray<z.ZodObject<{
-				role: z.ZodLiteral<"merchant">;
-				candidates: z.ZodArray<z.ZodString>;
-				id: z.ZodString;
-				label: z.ZodString;
-				evidence: z.ZodArray<z.ZodObject<{
-					pageId: z.ZodString;
-					region: z.ZodObject<{
-						x: z.ZodNumber;
-						y: z.ZodNumber;
-						width: z.ZodNumber;
-						height: z.ZodNumber;
-					}, z.core.$strict>;
-					rawText: z.ZodString;
-					method: z.ZodEnum<{
-						"embedded-text": "embedded-text";
-						"local-ocr": "local-ocr";
-					}>;
-				}, z.core.$strict>>;
-			}, z.core.$strict>>;
-			references: z.ZodArray<z.ZodObject<{
-				role: z.ZodEnum<{
-					unknown: "unknown";
-					payment: "payment";
-					invoice: "invoice";
-					receipt: "receipt";
-					order: "order";
-					customer: "customer";
-					account: "account";
-					table: "table";
-					"related-invoice": "related-invoice";
-				}>;
-				candidates: z.ZodArray<z.ZodString>;
-				id: z.ZodString;
-				label: z.ZodString;
-				evidence: z.ZodArray<z.ZodObject<{
-					pageId: z.ZodString;
-					region: z.ZodObject<{
-						x: z.ZodNumber;
-						y: z.ZodNumber;
-						width: z.ZodNumber;
-						height: z.ZodNumber;
-					}, z.core.$strict>;
-					rawText: z.ZodString;
-					method: z.ZodEnum<{
-						"embedded-text": "embedded-text";
-						"local-ocr": "local-ocr";
-					}>;
-				}, z.core.$strict>>;
-			}, z.core.$strict>>;
-			currencies: z.ZodArray<z.ZodObject<{
-				role: z.ZodEnum<{
-					unknown: "unknown";
-					"informational-fx": "informational-fx";
-					settlement: "settlement";
-				}>;
-				candidates: z.ZodArray<z.ZodString>;
-				id: z.ZodString;
-				label: z.ZodString;
-				evidence: z.ZodArray<z.ZodObject<{
-					pageId: z.ZodString;
-					region: z.ZodObject<{
-						x: z.ZodNumber;
-						y: z.ZodNumber;
-						width: z.ZodNumber;
-						height: z.ZodNumber;
-					}, z.core.$strict>;
-					rawText: z.ZodString;
-					method: z.ZodEnum<{
-						"embedded-text": "embedded-text";
-						"local-ocr": "local-ocr";
-					}>;
-				}, z.core.$strict>>;
-			}, z.core.$strict>>;
-		}, z.core.$strict>>;
-		issues: z.ZodArray<z.ZodObject<{
-			code: z.ZodString;
-			severity: z.ZodEnum<{
-				error: "error";
-				warning: "warning";
-			}>;
-			message: z.ZodString;
-			sectionId: z.ZodNullable<z.ZodString>;
-			fieldId: z.ZodNullable<z.ZodString>;
-			field: z.ZodNullable<z.ZodString>;
-			evidence: z.ZodArray<z.ZodObject<{
-				pageId: z.ZodString;
-				region: z.ZodObject<{
-					x: z.ZodNumber;
-					y: z.ZodNumber;
-					width: z.ZodNumber;
-					height: z.ZodNumber;
-				}, z.core.$strict>;
-				rawText: z.ZodString;
-				method: z.ZodEnum<{
-					"embedded-text": "embedded-text";
-					"local-ocr": "local-ocr";
-				}>;
-			}, z.core.$strict>>;
-		}, z.core.$strict>>;
-	}, z.core.$strict>;
-}, z.core.$strict>;
+	filePath: typeof localPath;
+	format: typeof documentFormatSchema;
+	result: OriginalDocumentSchema;
+}
+
+type StoredSupportingDocumentSchemaType = z.ZodObject<z.core.util.Flatten<IStoredSupportingDocumentShape>, z.core.$strict>;
 export const storedSupportingDocumentSchema: StoredSupportingDocumentSchemaType = z
 	.strictObject({
 		id: z.uuid(),
@@ -316,267 +83,39 @@ export const storedSupportingDocumentSchema: StoredSupportingDocumentSchemaType 
 				ctx.addIssue({ code: "custom", message: "Image documents require one complete page with local OCR evidence." });
 			}
 	});
+
+interface IImportedDocumentFileShape {
+	status: z.ZodLiteral<"imported">;
+	record: typeof storedSupportingDocumentSchema;
+}
+
+interface ISkippedDocumentFileShape {
+	status: z.ZodLiteral<"skipped">;
+	filePath: typeof localPath;
+	sha256: typeof hash;
+	existingSourceId: typeof sourceId;
+}
+
+interface IUnsupportedDocumentFileShape {
+	status: z.ZodLiteral<"unsupported">;
+	filePath: typeof localPath;
+	issues: typeof issues;
+}
+
+interface IFailedDocumentFileShape {
+	status: z.ZodLiteral<"failed">;
+	filePath: typeof localPath;
+	format: z.ZodNullable<typeof documentFormatSchema>;
+	sha256: z.ZodNullable<typeof hash>;
+	issues: typeof issues;
+	analysis: z.ZodNullable<OriginalDocumentSchema>;
+}
+
 type FileResultType = z.ZodDiscriminatedUnion<[
-	z.ZodObject<{
-		status: z.ZodLiteral<"imported">;
-		record: typeof storedSupportingDocumentSchema;
-	}, z.core.$strict>,
-	z.ZodObject<{
-		status: z.ZodLiteral<"skipped">;
-		filePath: z.ZodString;
-		sha256: z.ZodString;
-		existingSourceId: z.ZodString;
-	}, z.core.$strict>,
-	z.ZodObject<{
-		status: z.ZodLiteral<"unsupported">;
-		filePath: z.ZodString;
-		issues: typeof issues;
-	}, z.core.$strict>,
-	z.ZodObject<{
-		status: z.ZodLiteral<"failed">;
-		filePath: z.ZodString;
-		format: z.ZodNullable<z.ZodEnum<{
-			png: "png";
-			pdf: "pdf";
-			jpeg: "jpeg";
-		}>>;
-		sha256: z.ZodNullable<z.ZodString>;
-		issues: typeof issues;
-		analysis: z.ZodNullable<z.ZodObject<{
-			contractVersion: z.ZodLiteral<"1">;
-			parserVersion: z.ZodEnum<{
-				1: "1";
-				2: "2";
-			}>;
-			status: z.ZodEnum<{
-				complete: "complete";
-				failed: "failed";
-				partial: "partial";
-			}>;
-			input: z.ZodNullable<z.ZodObject<{
-				source: z.ZodObject<{
-					sourceId: z.ZodString;
-					sha256: z.ZodString;
-				}, z.core.$strict>;
-				extraction: z.ZodObject<{
-					runId: z.ZodString;
-					version: z.ZodString;
-				}, z.core.$strict>;
-				pages: z.ZodArray<z.ZodObject<{
-					pageId: z.ZodString;
-					pageNumber: z.ZodNumber;
-					width: z.ZodNumber;
-					height: z.ZodNumber;
-					status: z.ZodEnum<{
-						complete: "complete";
-						failed: "failed";
-					}>;
-					spans: z.ZodArray<z.ZodObject<{
-						text: z.ZodString;
-						region: z.ZodObject<{
-							x: z.ZodNumber;
-							y: z.ZodNumber;
-							width: z.ZodNumber;
-							height: z.ZodNumber;
-						}, z.core.$strict>;
-						method: z.ZodEnum<{
-							"embedded-text": "embedded-text";
-							"local-ocr": "local-ocr";
-						}>;
-					}, z.core.$strict>>;
-				}, z.core.$strict>>;
-				issues: typeof issues;
-			}, z.core.$strict>>;
-			sections: z.ZodArray<z.ZodObject<{
-				sectionId: z.ZodString;
-				kind: z.ZodEnum<{
-					unknown: "unknown";
-					invoice: "invoice";
-					receipt: "receipt";
-					"billing-summary": "billing-summary";
-					"credit-note": "credit-note";
-					"payment-information": "payment-information";
-				}>;
-				pageIds: z.ZodArray<z.ZodString>;
-				evidence: z.ZodArray<z.ZodObject<{
-					pageId: z.ZodString;
-					region: z.ZodObject<{
-						x: z.ZodNumber;
-						y: z.ZodNumber;
-						width: z.ZodNumber;
-						height: z.ZodNumber;
-					}, z.core.$strict>;
-					rawText: z.ZodString;
-					method: z.ZodEnum<{
-						"embedded-text": "embedded-text";
-						"local-ocr": "local-ocr";
-					}>;
-				}, z.core.$strict>>;
-				amounts: z.ZodArray<z.ZodObject<{
-					role: z.ZodEnum<{
-						unknown: "unknown";
-						"billed-total": "billed-total";
-						"balance-due": "balance-due";
-						payment: "payment";
-						"refund-payment": "refund-payment";
-						"credit-note-component": "credit-note-component";
-						"informational-fx": "informational-fx";
-						tax: "tax";
-						subtotal: "subtotal";
-						"line-item": "line-item";
-					}>;
-					candidates: z.ZodArray<z.ZodObject<{
-						coefficient: z.ZodString;
-						scale: z.ZodNumber;
-						currency: z.ZodNullable<z.ZodString>;
-					}, z.core.$strict>>;
-					id: z.ZodString;
-					label: z.ZodString;
-					evidence: z.ZodArray<z.ZodObject<{
-						pageId: z.ZodString;
-						region: z.ZodObject<{
-							x: z.ZodNumber;
-							y: z.ZodNumber;
-							width: z.ZodNumber;
-							height: z.ZodNumber;
-						}, z.core.$strict>;
-						rawText: z.ZodString;
-						method: z.ZodEnum<{
-							"embedded-text": "embedded-text";
-							"local-ocr": "local-ocr";
-						}>;
-					}, z.core.$strict>>;
-				}, z.core.$strict>>;
-				dates: z.ZodArray<z.ZodObject<{
-					role: z.ZodEnum<{
-						unknown: "unknown";
-						payment: "payment";
-						issue: "issue";
-						due: "due";
-						"service-period": "service-period";
-						"service-start": "service-start";
-						"service-end": "service-end";
-					}>;
-					candidates: z.ZodArray<z.ZodISODate>;
-					id: z.ZodString;
-					label: z.ZodString;
-					evidence: z.ZodArray<z.ZodObject<{
-						pageId: z.ZodString;
-						region: z.ZodObject<{
-							x: z.ZodNumber;
-							y: z.ZodNumber;
-							width: z.ZodNumber;
-							height: z.ZodNumber;
-						}, z.core.$strict>;
-						rawText: z.ZodString;
-						method: z.ZodEnum<{
-							"embedded-text": "embedded-text";
-							"local-ocr": "local-ocr";
-						}>;
-					}, z.core.$strict>>;
-				}, z.core.$strict>>;
-				merchants: z.ZodArray<z.ZodObject<{
-					role: z.ZodLiteral<"merchant">;
-					candidates: z.ZodArray<z.ZodString>;
-					id: z.ZodString;
-					label: z.ZodString;
-					evidence: z.ZodArray<z.ZodObject<{
-						pageId: z.ZodString;
-						region: z.ZodObject<{
-							x: z.ZodNumber;
-							y: z.ZodNumber;
-							width: z.ZodNumber;
-							height: z.ZodNumber;
-						}, z.core.$strict>;
-						rawText: z.ZodString;
-						method: z.ZodEnum<{
-							"embedded-text": "embedded-text";
-							"local-ocr": "local-ocr";
-						}>;
-					}, z.core.$strict>>;
-				}, z.core.$strict>>;
-				references: z.ZodArray<z.ZodObject<{
-					role: z.ZodEnum<{
-						unknown: "unknown";
-						payment: "payment";
-						invoice: "invoice";
-						receipt: "receipt";
-						order: "order";
-						customer: "customer";
-						account: "account";
-						table: "table";
-						"related-invoice": "related-invoice";
-					}>;
-					candidates: z.ZodArray<z.ZodString>;
-					id: z.ZodString;
-					label: z.ZodString;
-					evidence: z.ZodArray<z.ZodObject<{
-						pageId: z.ZodString;
-						region: z.ZodObject<{
-							x: z.ZodNumber;
-							y: z.ZodNumber;
-							width: z.ZodNumber;
-							height: z.ZodNumber;
-						}, z.core.$strict>;
-						rawText: z.ZodString;
-						method: z.ZodEnum<{
-							"embedded-text": "embedded-text";
-							"local-ocr": "local-ocr";
-						}>;
-					}, z.core.$strict>>;
-				}, z.core.$strict>>;
-				currencies: z.ZodArray<z.ZodObject<{
-					role: z.ZodEnum<{
-						unknown: "unknown";
-						"informational-fx": "informational-fx";
-						settlement: "settlement";
-					}>;
-					candidates: z.ZodArray<z.ZodString>;
-					id: z.ZodString;
-					label: z.ZodString;
-					evidence: z.ZodArray<z.ZodObject<{
-						pageId: z.ZodString;
-						region: z.ZodObject<{
-							x: z.ZodNumber;
-							y: z.ZodNumber;
-							width: z.ZodNumber;
-							height: z.ZodNumber;
-						}, z.core.$strict>;
-						rawText: z.ZodString;
-						method: z.ZodEnum<{
-							"embedded-text": "embedded-text";
-							"local-ocr": "local-ocr";
-						}>;
-					}, z.core.$strict>>;
-				}, z.core.$strict>>;
-			}, z.core.$strict>>;
-			issues: z.ZodArray<z.ZodObject<{
-				code: z.ZodString;
-				severity: z.ZodEnum<{
-					error: "error";
-					warning: "warning";
-				}>;
-				message: z.ZodString;
-				sectionId: z.ZodNullable<z.ZodString>;
-				fieldId: z.ZodNullable<z.ZodString>;
-				field: z.ZodNullable<z.ZodString>;
-				evidence: z.ZodArray<z.ZodObject<{
-					pageId: z.ZodString;
-					region: z.ZodObject<{
-						x: z.ZodNumber;
-						y: z.ZodNumber;
-						width: z.ZodNumber;
-						height: z.ZodNumber;
-					}, z.core.$strict>;
-					rawText: z.ZodString;
-					method: z.ZodEnum<{
-						"embedded-text": "embedded-text";
-						"local-ocr": "local-ocr";
-					}>;
-				}, z.core.$strict>>;
-			}, z.core.$strict>>;
-		}, z.core.$strict>>;
-	}, z.core.$strict>
+	z.ZodObject<z.core.util.Flatten<IImportedDocumentFileShape>, z.core.$strict>,
+	z.ZodObject<z.core.util.Flatten<ISkippedDocumentFileShape>, z.core.$strict>,
+	z.ZodObject<z.core.util.Flatten<IUnsupportedDocumentFileShape>, z.core.$strict>,
+	z.ZodObject<z.core.util.Flatten<IFailedDocumentFileShape>, z.core.$strict>
 ], "status">;
 const fileResult: FileResultType = z.discriminatedUnion("status", [
 	z.strictObject({ status: z.literal("imported"), record: storedSupportingDocumentSchema }),
@@ -601,22 +140,24 @@ function within(folder: string, file: string): boolean {
 		target: string = normalized(file);
 	return !target.split("/").some((part: string): part is "." | ".." => part === "." || part === "..") && (target === root || target.startsWith(root === "/" ? "/" : root + "/"));
 }
-type StoredDocumentImportSchemaType = z.ZodObject<{
+
+interface IDirectoryIssueShape {
+	directoryPath: typeof localPath;
+	code: z.ZodString;
+	message: z.ZodString;
+}
+
+interface IStoredDocumentImportShape {
 	id: z.ZodUUID;
-	folderPath: z.ZodString;
+	folderPath: typeof localPath;
 	startedAt: z.ZodISODateTime;
 	finishedAt: z.ZodISODateTime;
-	status: z.ZodEnum<{
-		cancelled: "cancelled";
-		finished: "finished";
-	}>;
+	status: z.ZodEnum<z.core.util.ToEnum<"cancelled" | "finished">>;
 	files: z.ZodArray<typeof fileResult>;
-	directoryIssues: z.ZodArray<z.ZodObject<{
-		directoryPath: z.ZodString;
-		code: z.ZodString;
-		message: z.ZodString;
-	}, z.core.$strict>>;
-}, z.core.$strict>;
+	directoryIssues: z.ZodArray<z.ZodObject<z.core.util.Flatten<IDirectoryIssueShape>, z.core.$strict>>;
+}
+
+type StoredDocumentImportSchemaType = z.ZodObject<z.core.util.Flatten<IStoredDocumentImportShape>, z.core.$strict>;
 export const storedDocumentImportSchema: StoredDocumentImportSchemaType = z
 	.strictObject({
 		id: z.uuid(),
@@ -639,7 +180,7 @@ export const storedDocumentImportSchema: StoredDocumentImportSchemaType = z
 			paths: Set<string> = new Set<string>(),
 			importedHashes: Set<string> = new Set<string>();
 		const importedSources: Map<string, string> = new Map(
-			record.files.flatMap((file: { status: "imported"; record: { id: string; importedAt: string; filePath: string; format: "png" | "pdf" | "jpeg"; result: SupportingDocument; }; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): [] | [readonly [string, string]] =>
+			record.files.flatMap((file: DocumentFileResult): [] | [readonly [string, string]] =>
 				file.status === "imported" && file.record.result.input ? [[file.record.result.input.source.sourceId, file.record.result.input.source.sha256] as const] : [],
 			),
 		);
@@ -675,7 +216,7 @@ function checkFileProvenance(file: DocumentFileResult, importedSources: Readonly
 	if (file.status === "imported" && file.record.result.input) {
 		ownIdentity(file.record.id);
 		ownIdentity(file.record.result.input.source.sourceId);
-		const source: { sourceId: string; sha256: string; } = file.record.result.input.source;
+		const source: NonNullable<SupportingDocument["input"]>["source"] = file.record.result.input.source;
 		if (importedHashes.has(source.sha256)) {
 			invalid("Content-identical successful files must be skipped.");
 		}
@@ -711,12 +252,12 @@ export type DocumentFormat = z.infer<typeof documentFormatSchema>;
 export type StoredSupportingDocument = z.infer<typeof storedSupportingDocumentSchema>;
 export type StoredDocumentImport = z.infer<typeof storedDocumentImportSchema>;
 export type DocumentFileResult = z.infer<typeof fileResult>;
-export interface WorkspaceSource {
+export interface IWorkspaceSource {
 	id: string;
 	filePath: string;
 	sha256: string | null;
 }
-export interface DocumentImportProgress {
+export interface IDocumentImportProgress {
 	phase: "scanning" | "extracting";
 	filePath: string | null;
 	completedFiles: number;

@@ -2,7 +2,7 @@ import type { ImportIssue } from "../../src/shared/bank-import.js";
 import type { ZodSafeParseResult } from 'zod';
 import {
     bankImportInputSchema, bankImportResultSchema, calendarDateSchema, emptyImportResult, importIssue, sourceProvenance,
-    type BankAdapter, type BankImportInput, type BankImportResult, type ImportPage, type PositionedSpan, type SourceEvidence, type UnresolvedDraft
+    type IBankAdapter, type BankImportInput, type BankImportResult, type ImportPage, type PositionedSpan, type SourceEvidence, type UnresolvedDraft
 } from '../../src/shared/bank-import.js';
 import { moneySchema, type Money } from '../../src/shared/money.js';
 
@@ -390,7 +390,7 @@ function parse(input: BankImportInput): BankImportResult {
         importIssue('result-limit-or-contract', 'The interpreted statement exceeds result limits or cannot be represented safely.'));
 }
 
-export const airwallexAdapter: BankAdapter = { metadata, parse, identify: (input: BankImportInput): boolean => {
+export const airwallexAdapter: IBankAdapter = { metadata, parse, identify: (input: BankImportInput): boolean => {
     const lines: Line[] = input.pages.flatMap(linesOf);
     return /\bairwallex\b/i.test(lines.map((line: Line): string => joined(line.spans)).join('\n')) &&
         lines.some((line: Line): boolean => /^[A-Z]{3} Account Activity\b/.test(joined(line.spans))) && lines.some((line: Line): boolean => headerOf(line) !== null);

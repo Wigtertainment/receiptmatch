@@ -4,12 +4,12 @@ import type { MatchCandidate, TransactionMatch } from "../../src/shared/workspac
 import type { DocumentIssue, DocumentSection, SupportingDocument } from "../../src/shared/supporting-document.js";
 import type { MatchApprovalSelection } from "../../src/shared/match-approvals.js";
 import type { MatchReviewCounts } from "../../src/shared/workspace-matching.js";
-import type { WorkspaceState } from "../../src/shared/protocol.js";
-import type { WorkspaceView } from "../../src/shared/protocol.js";
-import type { MatchSourceExcerpt } from "../../src/shared/workspace-matching.js";
-import type { MatchSummary } from "../../src/shared/workspace-matching.js";
-import type { MatchCandidateView } from "../../src/shared/workspace-matching.js";
-import type { MatchDetails } from "../../src/shared/workspace-matching.js";
+import type { IWorkspaceState } from "../../src/shared/protocol.js";
+import type { IWorkspaceView } from "../../src/shared/protocol.js";
+import type { IMatchSourceExcerpt } from "../../src/shared/workspace-matching.js";
+import type { IMatchSummary } from "../../src/shared/workspace-matching.js";
+import type { IMatchCandidateView } from "../../src/shared/workspace-matching.js";
+import type { IMatchDetails } from "../../src/shared/workspace-matching.js";
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -68,10 +68,10 @@ test.for(['counterparty', 'booking description'])('ranks an existing uncertain m
 	assert.equal(savedMatch.status, 'uncertain');
 	assert.equal(savedMatch.candidates[0].documentId, generic.id);
 	const revision: number = session.state().workspace!.matchRevision;
-	const details: MatchDetails = session.matchDetails(revision, transactionId)!;
-	assert.deepEqual(details.candidates.map((candidate: MatchCandidateView): string => candidate.documentId), [named.id, substring.id, wrongAmount.id, generic.id]);
+	const details: IMatchDetails = session.matchDetails(revision, transactionId)!;
+	assert.deepEqual(details.candidates.map((candidate: IMatchCandidateView): string => candidate.documentId), [named.id, substring.id, wrongAmount.id, generic.id]);
 	const bankText: string = booking.counterpartyCandidate?.value ?? booking.description.value;
-	assert.deepEqual(details.candidates.map((candidate: MatchCandidateView): "partial" | "match" | "missing" | "different" => candidate.signals.filename.state), ['match', 'partial', 'match', 'missing']);
+	assert.deepEqual(details.candidates.map((candidate: IMatchCandidateView): "partial" | "match" | "missing" | "different" => candidate.signals.filename.state), ['match', 'partial', 'match', 'missing']);
 	assert.equal(details.candidates[0].signals.filename.bankText, bankText);
 	assert.equal(details.candidates[2].signals.amount, 'close');
 	assert.equal(session.state().workspace?.dirty, false);
@@ -100,8 +100,8 @@ test('combines independent signals for existing workspaces with no exact amount 
 	const { transactionId }: { rowId: string; transactionId: string; } = bank.transactions[0];
 	const revision: number = session.state().workspace!.matchRevision;
 	assert.equal(session.matchResults().find((match: TransactionMatch): boolean => match.transactionId === transactionId)?.status, 'unmatched');
-	assert.equal(session.matchSummaries(revision)?.find((row: MatchSummary): boolean => row.transactionId === transactionId)?.status, 'uncertain');
-	const candidates: Map<string, MatchCandidateView> = new Map(session.matchDetails(revision, transactionId)?.candidates.map((candidate: MatchCandidateView): [string, MatchCandidateView] => [candidate.documentId, candidate]));
+	assert.equal(session.matchSummaries(revision)?.find((row: IMatchSummary): boolean => row.transactionId === transactionId)?.status, 'uncertain');
+	const candidates: Map<string, IMatchCandidateView> = new Map(session.matchDetails(revision, transactionId)?.candidates.map((candidate: IMatchCandidateView): [string, IMatchCandidateView] => [candidate.documentId, candidate]));
 	assert.equal(candidates.size, 4);
 	assert.equal(candidates.get(named.id)?.signals.amount, 'close');
 	assert.equal(candidates.get(named.id)?.signals.filename.state, 'partial');
@@ -186,18 +186,18 @@ test('ranks a previously imported OCR receipt first when item totals recover a m
 
 	const { transactionId }: { rowId: string; transactionId: string; } = bank.transactions[0];
 	let revision: number = session.state().workspace!.matchRevision;
-	const candidates: MatchCandidateView[] = session.matchDetails(revision, transactionId)!.candidates;
-	assert.deepEqual(candidates.map((candidate: MatchCandidateView): string => candidate.documentId), [receipt.id, other.id]);
+	const candidates: IMatchCandidateView[] = session.matchDetails(revision, transactionId)!.candidates;
+	assert.deepEqual(candidates.map((candidate: IMatchCandidateView): string => candidate.documentId), [receipt.id, other.id]);
 	assert.deepEqual(candidates[0].amounts[0].documentAmount, { coefficient: '10820', currency: 'EUR', scale: 2 });
 	assert.equal(candidates[0].signals.filename.state, 'partial');
-	assert.ok(candidates[0].documentEvidence.some((evidence: MatchSourceExcerpt): boolean => evidence.text.includes('29.50')));
-	const summary: MatchSummary = session.matchSummaries(revision)!.find((row: MatchSummary): boolean => row.transactionId === transactionId)!;
+	assert.ok(candidates[0].documentEvidence.some((evidence: IMatchSourceExcerpt): boolean => evidence.text.includes('29.50')));
+	const summary: IMatchSummary = session.matchSummaries(revision)!.find((row: IMatchSummary): boolean => row.transactionId === transactionId)!;
 	assert.equal(summary.status, 'uncertain');
 	assert.equal(summary.review.status, 'open');
 	assert.deepEqual(await readFile(file), savedBytes);
 	assert.equal((await session.dispatch({ type: 'review-match', revision, transactionId, review: { status: 'assigned', documentId: receipt.id } })).error, null);
-	const workspace: WorkspaceView = session.state().workspace!;
-	const selection: MatchApprovalSelection = session.matchSummaries(workspace.matchRevision)!.find((row: MatchSummary): boolean => row.transactionId === transactionId)!.approvalSelection!;
+	const workspace: IWorkspaceView = session.state().workspace!;
+	const selection: MatchApprovalSelection = session.matchSummaries(workspace.matchRevision)!.find((row: IMatchSummary): boolean => row.transactionId === transactionId)!.approvalSelection!;
 	assert.equal((await session.dispatch({ type: 'approve-matches', loadRevision: workspace.loadRevision, selections: [selection] })).error, null);
 	assert.equal((await session.dispatch({ type: 'save' })).error, null);
 	const saved: SavedWorkspace = await loadWorkspace(file);
@@ -211,12 +211,12 @@ test('ranks a previously imported OCR receipt first when item totals recover a m
 	assert.equal((await session.dispatch({ type: 'open' })).error, null);
 	revision = session.state().workspace!.matchRevision;
 	assert.equal(session.matchDetails(revision, transactionId)?.candidates[0].documentId, receipt.id);
-	assert.equal(session.matchSummaries(revision)?.find((row: MatchSummary): boolean => row.transactionId === transactionId)?.approvalStatus.status, 'approved');
+	assert.equal(session.matchSummaries(revision)?.find((row: IMatchSummary): boolean => row.transactionId === transactionId)?.approvalStatus.status, 'approved');
 
 	assert.equal((await session.dispatch({ type: 'correct-document-field', revision, documentId: receipt.id,
 		sectionId: result.sections[0].sectionId, fieldId: total.id, change: { kind: 'amount', value: { coefficient: '100', currency: 'EUR', scale: 2 } } })).error, null);
 	revision = session.state().workspace!.matchRevision;
-	assert.deepEqual(session.matchDetails(revision, transactionId)!.candidates.map((candidate: MatchCandidateView): string => candidate.documentId), [other.id]);
+	assert.deepEqual(session.matchDetails(revision, transactionId)!.candidates.map((candidate: IMatchCandidateView): string => candidate.documentId), [other.id]);
 });
 
 test.for(['Date', 'ORIGINAL'])('recovers an OCR date using %s in match suggestions for an already imported receipt', async (label: string, context: TestContext & object): Promise<void> => {
@@ -248,12 +248,12 @@ test.for(['Date', 'ORIGINAL'])('recovers an OCR date using %s in match suggestio
 	await session.dispatch({ type: 'open' });
 	const { transactionId }: { rowId: string; transactionId: string; } = bank.transactions[0];
 	const revision: number = session.state().workspace!.matchRevision;
-	assert.equal(session.matchSummaries(revision)?.find((row: MatchSummary): boolean => row.transactionId === transactionId)?.status, 'uncertain');
-	const candidate: MatchCandidateView | undefined = session.matchDetails(revision, transactionId)?.candidates[0];
+	assert.equal(session.matchSummaries(revision)?.find((row: IMatchSummary): boolean => row.transactionId === transactionId)?.status, 'uncertain');
+	const candidate: IMatchCandidateView | undefined = session.matchDetails(revision, transactionId)?.candidates[0];
 	assert.equal(candidate?.documentId, receipt.id);
 	assert.equal(candidate?.date?.documentDate, '2032-02-27');
 	assert.equal(candidate?.date?.daysApart, 1);
-	assert.ok(candidate?.documentEvidence.some((item: MatchSourceExcerpt): boolean => item.text === label));
+	assert.ok(candidate?.documentEvidence.some((item: IMatchSourceExcerpt): boolean => item.text === label));
 	assert.deepEqual(await readFile(file), savedBytes);
 });
 
@@ -276,9 +276,9 @@ test('recomputes the workspace snapshot on each successful import and saves it o
 	const transactionId: string = bank.transactions[0].transactionId;
 	const firstRevision: number = session.state().workspace!.matchRevision;
 	assert.equal(first.find((match: TransactionMatch): boolean => match.transactionId === transactionId)?.status, 'reliable');
-	assert.equal(session.matchSummaries(firstRevision)?.find((row: MatchSummary): boolean => row.transactionId === transactionId)?.candidateCount, 1);
-	const projected: MatchDetails | null = session.matchDetails(firstRevision, transactionId);
-	assert.equal(projected?.candidates[0].documentEvidence.some((item: MatchSourceExcerpt): boolean => item.page === 1 && item.text.includes('SYNTHETIC-A')), true);
+	assert.equal(session.matchSummaries(firstRevision)?.find((row: IMatchSummary): boolean => row.transactionId === transactionId)?.candidateCount, 1);
+	const projected: IMatchDetails | null = session.matchDetails(firstRevision, transactionId);
+	assert.equal(projected?.candidates[0].documentEvidence.some((item: IMatchSourceExcerpt): boolean => item.page === 1 && item.text.includes('SYNTHETIC-A')), true);
 	await session.dispatch({ type: 'save' });
 	assert.deepEqual((await loadWorkspace(file)).matches, first);
 	const savedBytes: NonSharedBuffer = await readFile(file);
@@ -432,10 +432,10 @@ test('reviews transactions independently of confidence and keeps exclusive decis
 	);
 	const revision: () => number = (): number => session.state().workspace!.matchRevision;
 
-	const review: (transactionId: string, decision: MatchReview, at?: number) => Promise<WorkspaceState> = (transactionId: string, decision: MatchReview, at: number = revision()): Promise<WorkspaceState> =>
+	const review: (transactionId: string, decision: MatchReview, at?: number) => Promise<IWorkspaceState> = (transactionId: string, decision: MatchReview, at: number = revision()): Promise<IWorkspaceState> =>
 		session.dispatch(commandSchema.parse({ type: 'review-match', revision: at, transactionId, review: decision }));
 
-	const row: (transactionId: string) => MatchSummary | undefined = (transactionId: string): MatchSummary | undefined => session.matchSummaries(revision())?.find((item: MatchSummary): boolean => item.transactionId === transactionId);
+	const row: (transactionId: string) => IMatchSummary | undefined = (transactionId: string): IMatchSummary | undefined => session.matchSummaries(revision())?.find((item: IMatchSummary): boolean => item.transactionId === transactionId);
 
 	const counts: () => MatchReviewCounts = (): MatchReviewCounts => session.state().workspace!.matchReviewCounts;
 	await session.dispatch({ type: 'new' });
@@ -546,12 +546,12 @@ test('corrects booking values with exact money, retains original evidence and pr
 	const before: NonSharedBuffer = await readFile(file);
 	const session: WorkspaceSession = new WorkspaceSession({ open: async (): Promise<string> => Promise.resolve(file), save: async (): Promise<string> => Promise.resolve(file), unsaved: async (): Promise<"discard"> => Promise.resolve('discard') });
 	await session.dispatch({ type: 'open' });
-	const state: () => WorkspaceView = (): WorkspaceView => session.state().workspace!;
+	const state: () => IWorkspaceView = (): IWorkspaceView => session.state().workspace!;
 
-	const correct: (rowId: string, changes: { bookingDate?: string; accountAmount?: { currency: string; coefficient: string; scale: number; }; }, revision?: number) => Promise<WorkspaceState> = (rowId: string, changes: { bookingDate?: string; accountAmount?: { currency: string; coefficient: string; scale: number } }, revision: number = state().matchRevision): Promise<WorkspaceState> =>
+	const correct: (rowId: string, changes: { bookingDate?: string; accountAmount?: { currency: string; coefficient: string; scale: number; }; }, revision?: number) => Promise<IWorkspaceState> = (rowId: string, changes: { bookingDate?: string; accountAmount?: { currency: string; coefficient: string; scale: number } }, revision: number = state().matchRevision): Promise<IWorkspaceState> =>
 		session.dispatch(commandSchema.parse({ type: 'correct-bank-row', rowId, revision, changes }));
 
-	const summary: (id: string) => MatchSummary | undefined = (id: string): MatchSummary | undefined => session.matchSummaries(state().matchRevision)?.find((row: MatchSummary): boolean => row.transactionId === id);
+	const summary: (id: string) => IMatchSummary | undefined = (id: string): IMatchSummary | undefined => session.matchSummaries(state().matchRevision)?.find((row: IMatchSummary): boolean => row.transactionId === id);
 	assert.equal((await loadWorkspace(file)).schemaVersion, 5);
 	assert.deepEqual(await readFile(file), before);
 	assert.equal(summary(first.transactionId)?.status, 'reliable');
@@ -570,7 +570,7 @@ test('corrects booking values with exact money, retains original evidence and pr
 	assert.match((await correct(first.transactionId, { bookingDate: originalDate }, revision)).error!, /Refresh/);
 	assert.equal((await correct(first.transactionId, { accountAmount: { currency: 'EUR', coefficient: '-25620', scale: 2 } })).error, null);
 	assert.equal(summary(first.transactionId)?.status, 'uncertain');
-	const referenceOnly: MatchCandidateView | undefined = session.matchDetails(state().matchRevision, first.transactionId)?.candidates[0];
+	const referenceOnly: IMatchCandidateView | undefined = session.matchDetails(state().matchRevision, first.transactionId)?.candidates[0];
 	assert.equal(referenceOnly?.signals.reference, 'match');
 	assert.equal(referenceOnly?.signals.amount, 'different');
 	const correctedRevision: number = state().matchRevision;
@@ -585,7 +585,7 @@ test('corrects booking values with exact money, retains original evidence and pr
 	assert.equal(state().imports[0].drafts, 1);
 	assert.deepEqual(session.bankImports(), [bankBefore]);
 	assert.deepEqual(await readFile(file), before);
-	const review: WorkspaceState = await session.dispatch({ type: 'review-match', transactionId: draft.draftId, revision: state().matchRevision, review: { status: 'completed-without-document' } });
+	const review: IWorkspaceState = await session.dispatch({ type: 'review-match', transactionId: draft.draftId, revision: state().matchRevision, review: { status: 'completed-without-document' } });
 	assert.equal(review.error, null);
 	assert.equal((await session.dispatch({ type: 'save' })).error, null);
 	assert.equal((await session.dispatch({ type: 'open' })).error, null);
@@ -624,11 +624,11 @@ test('recalculates matches from corrected document fields and saves originals, r
 	assert.equal((await session.dispatch({ type: 'open' })).error, null);
 	assert.equal((await loadWorkspace(file)).schemaVersion, 6);
 	assert.deepEqual(await readFile(file), before);
-	const state: () => WorkspaceView = (): WorkspaceView => session.state().workspace!;
+	const state: () => IWorkspaceView = (): IWorkspaceView => session.state().workspace!;
 	const { sectionId, amounts, dates }: DocumentSection = receipt.result.sections[0];
 	assert.deepEqual(dates[0].candidates, []);
 	const revision: number = state().matchRevision;
-	const correct: (fieldId: string | null, change: DocumentCorrectionValue, at?: number) => Promise<WorkspaceState> = (fieldId: string | null, change: DocumentCorrectionValue, at: number = state().matchRevision): Promise<WorkspaceState> =>
+	const correct: (fieldId: string | null, change: DocumentCorrectionValue, at?: number) => Promise<IWorkspaceState> = (fieldId: string | null, change: DocumentCorrectionValue, at: number = state().matchRevision): Promise<IWorkspaceState> =>
 		session.dispatch(commandSchema.parse({ type: 'correct-document-field', revision: at, documentId: receipt.id, sectionId, fieldId, change }));
 	assert.equal(session.matchResults().find((match: TransactionMatch): boolean => match.transactionId === transactionId)?.status, 'unmatched');
 	assert.equal((await correct(amounts[0].id, { kind: 'amount', value: { coefficient: '123456', scale: 2, currency: 'EUR' } })).error, null);
@@ -638,12 +638,12 @@ test('recalculates matches from corrected document fields and saves originals, r
 	const dateRevision: number = state().matchRevision;
 	await correct(amounts[0].id, { kind: 'amount', value: { coefficient: '1234560', scale: 3, currency: 'EUR' } });
 	assert.equal(state().matchRevision, dateRevision);
-	const candidate: MatchCandidateView | undefined = session.matchDetails(dateRevision, transactionId)?.candidates[0];
+	const candidate: IMatchCandidateView | undefined = session.matchDetails(dateRevision, transactionId)?.candidates[0];
 	assert.equal(candidate?.documentValuesCorrected, true);
 	assert.equal(candidate?.date?.documentDate, '2032-02-28');
-	assert.ok(candidate?.documentEvidence.some((item: MatchSourceExcerpt): boolean => item.text.includes('EUR 98.00')));
+	assert.ok(candidate?.documentEvidence.some((item: IMatchSourceExcerpt): boolean => item.text.includes('EUR 98.00')));
 	assert.equal(session.matchResults().find((match: TransactionMatch): boolean => match.transactionId === transactionId)?.status, 'reliable');
-	const added: WorkspaceState = await session.dispatch({ type: 'correct-document-field', revision: dateRevision, documentId: missing.id, sectionId: missing.result.sections[0].sectionId,
+	const added: IWorkspaceState = await session.dispatch({ type: 'correct-document-field', revision: dateRevision, documentId: missing.id, sectionId: missing.result.sections[0].sectionId,
 		fieldId: null, change: { kind: 'amount', value: { coefficient: '900719925474099327', scale: 2, currency: 'EUR' } } });
 	assert.equal(added.error, null);
 	const overlays: Map<string, DocumentCorrection> = new Map(state().documentCorrections.map((item: DocumentCorrection): [string, DocumentCorrection] => [documentCorrectionKey(item, item.change.kind), item]));

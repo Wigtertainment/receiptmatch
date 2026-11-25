@@ -2,23 +2,33 @@ import { z } from 'zod';
 import { documentScalarConflicts, type DocumentIssue, type DocumentSection, type SupportingDocument } from './supporting-document.js';
 import type { StoredDocumentImport } from './workspace-documents.js';
 
+interface IDocumentFieldReviewTargetShape { documentId: z.ZodUUID; sectionId: z.ZodString; fieldId: z.ZodString }
+interface IDocumentFieldReviewShape extends IDocumentFieldReviewTargetShape {
+    confirmed: z.ZodBoolean;
+    revision: z.ZodNumber;
+    signature: z.ZodString;
+    disposition: z.ZodOptional<typeof documentFieldDispositionSchema>;
+}
+
 const fieldId: z.ZodString = z.string().min(1).max(128);
-export const documentFieldReviewTarget: { documentId: z.ZodUUID; sectionId: z.ZodString; fieldId: z.ZodString } = { documentId: z.uuid(), sectionId: fieldId, fieldId };
-export const documentFieldDispositionSchema: z.ZodEnum<{ rejected: 'rejected'; unavailable: 'unavailable' }> = z.enum(['rejected', 'unavailable']);
+export const documentFieldReviewTarget: IDocumentFieldReviewTargetShape = { documentId: z.uuid(), sectionId: fieldId, fieldId };
+export const documentFieldDispositionSchema: z.ZodEnum<z.core.util.ToEnum<'rejected' | 'unavailable'>> = z.enum(['rejected', 'unavailable']);
 export type DocumentFieldDisposition = z.infer<typeof documentFieldDispositionSchema>;
-export const documentFieldReviewSchema: z.ZodObject<{ documentId: z.ZodUUID; sectionId: z.ZodString; fieldId: z.ZodString; confirmed: z.ZodBoolean; revision: z.ZodNumber; signature: z.ZodString; disposition: z.ZodOptional<typeof documentFieldDispositionSchema> }, z.core.$strict> = z.strictObject({
+export const documentFieldReviewSchema: z.ZodObject<z.core.util.Flatten<IDocumentFieldReviewShape>, z.core.$strict> = z.strictObject({
     ...documentFieldReviewTarget, confirmed: z.boolean(), revision: z.number().int().min(2).max(Number.MAX_SAFE_INTEGER), signature: z.string().min(1), disposition: documentFieldDispositionSchema.optional()
-}).refine((review: { confirmed: boolean; disposition?: DocumentFieldDisposition }): boolean => !(review.confirmed && review.disposition), 'A field cannot be confirmed and excluded at the same time.');
+}).refine((review: Pick<DocumentFieldReview, 'confirmed' | 'disposition'>): boolean => !(review.confirmed && review.disposition), 'A field cannot be confirmed and excluded at the same time.');
 export type DocumentFieldReview = z.infer<typeof documentFieldReviewSchema>;
 export type DocumentFieldReviewTarget = Pick<DocumentFieldReview, 'documentId' | 'sectionId' | 'fieldId'>;
 type DocumentField = DocumentSection['amounts'][number] | DocumentSection['dates'][number] | DocumentSection['merchants'][number] | DocumentSection['references'][number] | DocumentSection['currencies'][number];
+interface ILocatedDocumentField { section: DocumentSection; field: DocumentField; kind: string }
+
 const confirmableIssues: ReadonlySet<string> = new Set(['unconfirmed-merchant', 'unconfirmed-field-association', 'reconstructed-total']);
 
 export function documentFieldReviewKey(target: DocumentFieldReviewTarget): string {
     return JSON.stringify([target.documentId, target.sectionId, target.fieldId]);
 }
 
-function findField(analysis: SupportingDocument, sectionId: string, fieldId: string): { section: DocumentSection; field: DocumentField; kind: string } | null {
+function findField(analysis: SupportingDocument, sectionId: string, fieldId: string): ILocatedDocumentField | null {
     const section: DocumentSection | undefined = analysis.sections.find((item: DocumentSection): boolean => item.sectionId === sectionId);
     if (!section) {
         return null;

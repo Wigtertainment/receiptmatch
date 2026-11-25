@@ -5,11 +5,11 @@ import { ExportSettings } from '../settings/export-settings.component.js';
 import { LocalOcrSettings } from '../settings/local-ocr-settings.component.js';
 import { InputLength } from '../shared/input-length.directive.js';
 import { MatchSuggestions } from '../matching/match-suggestions.component.js';
-import type { WorkspaceBridge, WorkspaceCommand, WorkspaceState, WorkspaceView } from '../../shared/protocol.js';
+import type { IWorkspaceBridge, WorkspaceCommand, IWorkspaceState, IWorkspaceView } from '../../shared/protocol.js';
 import { StatementImports } from '../statements/statement-imports.component.js';
 
 declare global {
-  interface Window { receiptmatch: WorkspaceBridge; }
+  interface Window { receiptmatch: IWorkspaceBridge; }
 }
 
 type WorkspaceSection = 'sources' | 'matches' | 'export-settings' | 'settings';
@@ -21,7 +21,7 @@ type WorkspaceSection = 'sources' | 'matches' | 'export-settings' | 'settings';
 })
 export class WorkspaceShell {
   readonly version: WritableSignal<string | null> = signal<string | null>(null);
-  readonly state: WritableSignal<WorkspaceState> = signal<WorkspaceState>({ workspace: null, busy: true, error: null, statementImport: null, importOutcome: null, documentImport: null, documentOutcome: null });
+  readonly state: WritableSignal<IWorkspaceState> = signal<IWorkspaceState>({ workspace: null, busy: true, error: null, statementImport: null, importOutcome: null, documentImport: null, documentOutcome: null });
   readonly commandError: WritableSignal<string | null> = signal<string | null>(null);
   readonly welcomeSettings: WritableSignal<boolean> = signal(false);
   private readonly welcomeSettingsButton: Signal<WigButtonComponent | undefined> = viewChild<WigButtonComponent>('welcomeSettingsButton');
@@ -34,7 +34,7 @@ export class WorkspaceShell {
   private commandGeneration: number = 0;
   private disposed: boolean = false;
   constructor() {
-    const unsubscribe: () => void = window.receiptmatch.subscribe((state: WorkspaceState): void => {
+    const unsubscribe: () => void = window.receiptmatch.subscribe((state: IWorkspaceState): void => {
       if (this.disposed) {
         return;
       }
@@ -55,7 +55,7 @@ export class WorkspaceShell {
     const generation: number = ++this.commandGeneration; const revision: number = this.stateRevision;
     const loadRevision: number | undefined = this.state().workspace?.loadRevision;
     try {
-      const result: WorkspaceState = await window.receiptmatch.command(command);
+      const result: IWorkspaceState = await window.receiptmatch.command(command);
       if (this.disposed || generation !== this.commandGeneration) {
         return;
       }
@@ -78,7 +78,7 @@ export class WorkspaceShell {
   }
 
   showSection(section: WorkspaceSection): void {
-    const workspace: WorkspaceView | null = this.state().workspace;
+    const workspace: IWorkspaceView | null = this.state().workspace;
     if (!workspace || section === this.section()) {
       return;
     }

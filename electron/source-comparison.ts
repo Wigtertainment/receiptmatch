@@ -2,13 +2,13 @@ import type { ImportIssue, SourceEvidence } from "../src/shared/bank-import.js";
 import type { DocumentIssue } from "../src/shared/supporting-document.js";
 import { formatAmountEntry } from '../src/shared/amount-entry.js';
 import type { TransactionCandidate, UnresolvedDraft } from '../src/shared/bank-import.js';
-import type { ReceiptAiChange } from '../src/shared/receipt-ai.js';
+import type { IReceiptAiChange } from '../src/shared/receipt-ai.js';
 import { bankTransactionIds, statementAccountKey } from '../src/shared/statement-overlaps.js';
 import type { DocumentSection } from '../src/shared/supporting-document.js';
 import type { StoredSupportingDocument } from '../src/shared/workspace-documents.js';
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
 
-type Change = ReceiptAiChange;
+type Change = IReceiptAiChange;
 type BankRow = TransactionCandidate | UnresolvedDraft;
 interface Amount { coefficient: string; scale: number; currency: string | null }
 type SectionField = DocumentSection['amounts'][number] | DocumentSection['dates'][number] | DocumentSection['merchants'][number] |

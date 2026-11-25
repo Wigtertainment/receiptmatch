@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { BigIntStats } from 'node:fs';
 import { link, lstat, mkdir, open, realpath, stat, unlink, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
-import type { DocumentExportOutcome, DocumentExportReport } from '../src/shared/document-export.js';
+import type { DocumentExportOutcome, IDocumentExportReport } from '../src/shared/document-export.js';
 import { renderExportFilename } from '../src/shared/export-filename.js';
 import type { Money } from '../src/shared/money.js';
 import type { MatchApproval } from '../src/shared/match-approvals.js';
@@ -276,7 +276,7 @@ async function exportDocument(
 
 export async function copyApprovedDocuments(
 	destination: string | ExportDirectory, pattern: string, documents: readonly ApprovedExportDocument[], sourcePaths: readonly string[],
-): Promise<DocumentExportReport> {
+): Promise<IDocumentExportReport> {
 	if (!documents.length) {
 		return { directory: null, outcomes: [] };
 	}

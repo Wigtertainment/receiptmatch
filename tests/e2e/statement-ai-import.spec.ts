@@ -9,7 +9,7 @@ import {
 } from '@playwright/test';
 import { NUEXTRACT_ASSETS } from '../../electron/local-ocr-assets.js';
 import type { LocalOcrStatus } from '../../src/shared/local-ocr-settings.js';
-import type { WorkspaceState } from '../../src/shared/protocol.js';
+import type { IWorkspaceState } from '../../src/shared/protocol.js';
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
 
 const bookings: readonly (readonly string[])[] = [
@@ -99,8 +99,8 @@ async function dialogs(application: ElectronApplication, open?: string, save?: s
 	}, { open, save });
 }
 
-async function state(page: Page): Promise<WorkspaceState> {
-	return page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'get-state' }));
+async function state(page: Page): Promise<IWorkspaceState> {
+	return page.evaluate((): Promise<IWorkspaceState> => window.receiptmatch.command({ type: 'get-state' }));
 }
 
 async function reports(page: Page): Promise<StoredBankImport[]> {

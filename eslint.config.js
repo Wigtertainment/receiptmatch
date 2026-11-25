@@ -1,12 +1,29 @@
 // @ts-check
-import eslint from '@eslint/js';
 import stylistic from '@stylistic/eslint-plugin';
+import { angular, electron, typescriptStandards, typescriptTests, typescriptTypeChecked } from '@wigtertainment-ltd/eslint-config';
 import { defineConfig } from 'eslint/config';
 import electronSecurity from 'eslint-plugin-electron-security';
 import sonarjs from 'eslint-plugin-sonarjs';
-import tseslint from 'typescript-eslint';
-import angular from 'angular-eslint';
 import globals from 'globals';
+
+const typescriptFiles = ['**/*.{ts,cts,mts,tsx}'];
+const electronProfiles = electron({
+  main: ['electron/**/*'],
+  preload: ['electron/**/preload.{ts,cts,mts,js,cjs,mjs}'],
+  renderer: ['src/**/*', 'electron/**/renderer.{ts,cts,mts,js,cjs,mjs}', 'electron/extraction/{geometry,image-input}.ts'],
+});
+const explicitTypeRestrictions = [
+  { selector: 'AccessorProperty:not([typeAnnotation])', message: 'Declare an explicit type for this class field.' },
+  { selector: 'CatchClause[param]:not([param.typeAnnotation])', message: 'Declare an explicit type for this catch binding.' },
+];
+// ESLint replaces rule options, so retain the Electron restrictions when adding ReceiptMatch's TypeScript selectors.
+const electronTypeScriptRestrictions = electronProfiles.flatMap(({ name, files, ignores, rules }) => {
+  const restrictions = rules?.['no-restricted-syntax'];
+  if (!Array.isArray(restrictions)) {
+    return [];
+  }
+  return defineConfig({ name: `${name}/receiptmatch`, files, ignores, rules: { 'no-restricted-syntax': ['error', ...restrictions.slice(1), ...explicitTypeRestrictions] } });
+});
 
 const constFunction = 'VariableDeclaration[kind="const"]:has(VariableDeclarator:matches([init.type="ArrowFunctionExpression"], [init.type="FunctionExpression"]))';
 const functionStatements = {
@@ -29,66 +46,40 @@ const callbackCalls = [
 
 export default defineConfig([
   { ignores: ['**/dist/**', '**/release/**', 'tmp/**', '**/.angular/**', '**/.build/**', '**/artifacts/**', '**/coverage/**', '**/node_modules/**'] },
+  typescriptStandards({ tsconfigRootDir: import.meta.dirname }),
   {
-    files: ['**/*.js', '**/*.mjs', '**/*.cjs'],
-    extends: [eslint.configs.recommended],
+    files: ['**/*.{js,mjs,cjs}'],
+    ignores: ['src/**', 'electron/**'],
     languageOptions: { globals: globals.node },
   },
   {
-    files: ['**/*.ts', '**/*.cts'],
-    extends: [eslint.configs.recommended, tseslint.configs.recommendedTypeChecked, tseslint.configs.stylisticTypeChecked, angular.configs.tsRecommended],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.app.json', './tsconfig.preview.json', './tsconfig.electron.json', './tsconfig.tests.json', './tsconfig.playwright.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-    },
-    processor: angular.processInlineTemplates,
+    files: ['src/**/*.ts', 'electron/preview/renderer.ts', '**/*.html'],
+    extends: [angular()],
+  },
+  electronProfiles,
+  typescriptTypeChecked({
+    tsconfigRootDir: import.meta.dirname,
+    project: ['./tsconfig.app.json', './tsconfig.preview.json', './tsconfig.electron.json', './tsconfig.tests.json', './tsconfig.playwright.json'],
+  }),
+  typescriptTests.map((config) => ({ ...config, files: [...(config.files ?? []), 'tests/unit/**/*.test.ts'] })),
+  {
+    files: typescriptFiles,
+    extends: [{ rules: { 'no-restricted-syntax': ['error', ...explicitTypeRestrictions] } }, ...electronTypeScriptRestrictions],
     rules: {
-      '@angular-eslint/directive-selector': ['error', { type: 'attribute', prefix: 'app', style: 'camelCase' }],
-      '@angular-eslint/component-selector': ['error', { type: 'element', prefix: 'app', style: 'kebab-case' }],
-      '@typescript-eslint/explicit-function-return-type': [
-        'error', { allowTypedFunctionExpressions: false, allowHigherOrderFunctions: false, allowDirectConstAssertionInArrowFunctions: false },
-      ],
-      '@typescript-eslint/no-inferrable-types': 'off',
       '@typescript-eslint/consistent-generic-constructors': ['error', 'type-annotation'],
-      'no-restricted-syntax': [
-        'error',
-        {
-          selector: 'VariableDeclaration:not(ForInStatement > .left, ForOfStatement > .left) > VariableDeclarator:not([id.typeAnnotation])',
-          message: 'Declare an explicit type for this variable.',
-        },
-        {
-          selector: ':matches(PropertyDefinition, AccessorProperty):not([typeAnnotation])',
-          message: 'Declare an explicit type for this class field.',
-        },
-        {
-          selector: ':matches(FunctionDeclaration, FunctionExpression, ArrowFunctionExpression) > .params:not([typeAnnotation], [left.typeAnnotation], TSParameterProperty)',
-          message: 'Declare an explicit type for this parameter.',
-        },
-        {
-          selector: 'TSParameterProperty:not([parameter.typeAnnotation], [parameter.left.typeAnnotation])',
-          message: 'Declare an explicit type for this parameter property.',
-        },
-        {
-          selector: 'CatchClause[param]:not([param.typeAnnotation])',
-          message: 'Declare an explicit type for this catch binding.',
-        },
-      ],
     },
   },
   {
-    files: ['**/*.{js,mjs,cjs,ts,cts}'],
-    plugins: { '@stylistic': stylistic, sonarjs },
+    files: ['**/*.{js,mjs,cjs,jsx,ts,cts,mts,tsx}'],
+    plugins: { 'receiptmatch-style': stylistic, sonarjs },
     rules: {
-      curly: ['error', 'all'],
-      '@stylistic/brace-style': ['error', '1tbs', { allowSingleLine: false }],
-      '@stylistic/padding-line-between-statements': [
+      'receiptmatch-style/brace-style': ['error', '1tbs', { allowSingleLine: false }],
+      'receiptmatch-style/padding-line-between-statements': [
         'error',
         { blankLine: 'always', prev: functionStatements, next: functionStatements },
         { blankLine: 'always', prev: callbackCalls, next: callbackCalls },
       ],
-      '@stylistic/lines-between-class-members': ['error', { enforce: [{ blankLine: 'always', prev: 'method', next: 'method' }] }],
+      'receiptmatch-style/lines-between-class-members': ['error', { enforce: [{ blankLine: 'always', prev: 'method', next: 'method' }] }],
       'sonarjs/cognitive-complexity': ['error', 15],
     },
   },
@@ -97,11 +88,7 @@ export default defineConfig([
     extends: [electronSecurity.configs.recommended],
   },
   {
-    files: ['electron/**/*.{ts,cts}'],
+    files: ['electron/**/*.{ts,cts,mts,tsx}'],
     rules: electronSecurity.configs['recommended-type-checked'].rules,
   },
-  {
-    files: ['**/*.html'],
-    extends: [angular.configs.templateRecommended, angular.configs.templateAccessibility],
-  }
 ]);

@@ -1,15 +1,32 @@
-import type { ImportIssue, SourceEvidence } from "./bank-import.js";
 import { z } from 'zod';
-import { calendarDateSchema, type TransactionCandidate, type UnresolvedDraft } from './bank-import.js';
-import { moneySchema } from './money.js';
+import { calendarDateSchema, type ImportIssue, type TransactionCandidate, type UnresolvedDraft } from './bank-import.js';
+import { moneySchema, type Money } from './money.js';
 import type { StoredBankImport } from './workspace-import.js';
 
-export const bankCorrectionChangesSchema: z.ZodObject<{ bookingDate: z.ZodOptional<z.ZodISODate>; accountAmount: z.ZodOptional<z.ZodObject<{ coefficient: z.ZodString; currency: z.ZodString; scale: z.ZodNumber; }, z.core.$strict>>; }, z.core.$strict> = z.strictObject({ bookingDate: calendarDateSchema.optional(), accountAmount: moneySchema.optional() })
-    .refine((value: { bookingDate?: string | undefined; accountAmount?: { coefficient: string; currency: string; scale: number; } | undefined; }): boolean => value.bookingDate !== undefined || value.accountAmount !== undefined, 'Enter a booking date or an account amount.');
-export const bankCorrectionSchema: z.ZodObject<{ bookingDate: z.ZodOptional<z.ZodISODate>; accountAmount: z.ZodOptional<z.ZodObject<{ coefficient: z.ZodString; currency: z.ZodString; scale: z.ZodNumber; }, z.core.$strict>>; rowId: z.ZodUUID; revision: z.ZodNumber; }, z.core.$strict> = bankCorrectionChangesSchema.safeExtend({ rowId: z.uuid(), revision: z.number().int().min(2).max(Number.MAX_SAFE_INTEGER) });
+interface IBankCorrectionChangesShape {
+    bookingDate: z.ZodOptional<typeof calendarDateSchema>;
+    accountAmount: z.ZodOptional<typeof moneySchema>;
+}
+
+interface IBankCorrectionShape extends IBankCorrectionChangesShape {
+    rowId: z.ZodUUID;
+    revision: z.ZodNumber;
+}
+
+export const bankCorrectionChangesSchema: z.ZodObject<z.core.util.Flatten<IBankCorrectionChangesShape>, z.core.$strict> =
+    z.strictObject({ bookingDate: calendarDateSchema.optional(), accountAmount: moneySchema.optional() })
+        .refine((value: Pick<BankCorrection, 'bookingDate' | 'accountAmount'>): boolean => value.bookingDate !== undefined || value.accountAmount !== undefined,
+            'Enter a booking date or an account amount.');
+export const bankCorrectionSchema: z.ZodObject<z.core.util.Flatten<IBankCorrectionShape>, z.core.$strict> =
+    bankCorrectionChangesSchema.safeExtend({ rowId: z.uuid(), revision: z.number().int().min(2).max(Number.MAX_SAFE_INTEGER) });
 export type BankCorrection = z.infer<typeof bankCorrectionSchema>;
 
-function correctedValues(row: TransactionCandidate | UnresolvedDraft, correction: BankCorrection, currency: string): { bookingDate: { value: string; basisLabel: string; evidence: SourceEvidence[]; } | null; accountAmount: { value: { coefficient: string; currency: string; scale: number; }; evidence: SourceEvidence[]; } | null; direction: "incoming" | "outgoing" | null; } {
+type CorrectedBankValues = Pick<UnresolvedDraft, 'bookingDate' | 'accountAmount' | 'direction'>;
+type StoredTransaction = StoredBankImport['transactions'][number];
+type StoredDraft = StoredBankImport['drafts'][number];
+type AccountSection = StoredBankImport['result']['accountSections'][number];
+
+function correctedValues(row: TransactionCandidate | UnresolvedDraft, correction: BankCorrection, currency: string): CorrectedBankValues {
     const { bookingDate, accountAmount }: BankCorrection = correction;
     const coefficient: bigint = accountAmount ? BigInt(accountAmount.coefficient) : 0n;
     const amountDirection: "incoming" | "outgoing" | null = coefficient < 0n ? 'outgoing' : coefficient > 0n ? 'incoming' : null;
@@ -30,11 +47,14 @@ export function applyBankCorrections(imports: StoredBankImport[], corrections: R
     }
     const pending: Map<string, BankCorrection> = new Map(corrections);
     const records: StoredBankImport[] = imports.map((record: StoredBankImport): StoredBankImport => {
-        const ids: Map<string, string> = new Map([...record.transactions.map((row: { rowId: string; transactionId: string; }): readonly [string, string] => [row.rowId, row.transactionId] as const), ...record.drafts.map((row: { rowId: string; draftId: string; }): readonly [string, string] => [row.rowId, row.draftId] as const)]);
+        const ids: Map<string, string> = new Map([
+            ...record.transactions.map((row: StoredTransaction): readonly [string, string] => [row.rowId, row.transactionId] as const),
+            ...record.drafts.map((row: StoredDraft): readonly [string, string] => [row.rowId, row.draftId] as const),
+        ]);
         if (![...ids.values()].some((id: string): boolean => pending.has(id))) {
             return record;
         }
-        const currencies: Map<string, string> = new Map(record.result.accountSections.map((section: { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; }): [string, string] => [section.sectionId, section.currency.value]));
+        const currencies: Map<string, string> = new Map(record.result.accountSections.map((section: AccountSection): [string, string] => [section.sectionId, section.currency.value]));
         const take: (row: TransactionCandidate | UnresolvedDraft) => BankCorrection | undefined = (row: TransactionCandidate | UnresolvedDraft): BankCorrection | undefined => {
             const id: string = ids.get(row.rowId)!;
             const correction: BankCorrection | undefined = pending.get(id);
@@ -58,7 +78,7 @@ export function applyBankCorrections(imports: StoredBankImport[], corrections: R
                 return [row];
             }
             const values: ReturnType<typeof correctedValues> = correctedValues(row, correction, currencies.get(row.accountSectionId)!);
-            const original: { coefficient: string; currency: string; scale: number; } | undefined = row.reportedOriginalAmount?.value;
+            const original: Money | undefined = row.reportedOriginalAmount?.value;
             const directionConflict: boolean | null | undefined = original && values.direction && (values.direction === 'incoming' ? BigInt(original.coefficient) < 0n : BigInt(original.coefficient) > 0n);
             const { issues, ...source }: UnresolvedDraft = row;
             const remainingIssue: boolean = issues.some((issue: ImportIssue): boolean => !((issue.field === 'bookingDate' && Boolean(correction.bookingDate)) || (issue.field === 'accountAmount' && Boolean(correction.accountAmount))));
@@ -69,8 +89,9 @@ export function applyBankCorrections(imports: StoredBankImport[], corrections: R
             transactions.push({ ...source, bookingDate: values.bookingDate, accountAmount: values.accountAmount, direction: values.direction, description: row.description });
             return [];
         });
-        return { ...record, result: { ...record.result, transactions, unresolvedDrafts }, drafts: record.drafts.filter((row: { rowId: string; draftId: string; }): boolean => !promoted.has(row.rowId)),
-            transactions: [...record.transactions, ...record.drafts.filter((row: { rowId: string; draftId: string; }): boolean => promoted.has(row.rowId)).map((row: { rowId: string; draftId: string; }): { rowId: string; transactionId: string; } => ({ rowId: row.rowId, transactionId: row.draftId }))] };
+        return { ...record, result: { ...record.result, transactions, unresolvedDrafts }, drafts: record.drafts.filter((row: StoredDraft): boolean => !promoted.has(row.rowId)),
+            transactions: [...record.transactions, ...record.drafts.filter((row: StoredDraft): boolean => promoted.has(row.rowId))
+                .map((row: StoredDraft): StoredTransaction => ({ rowId: row.rowId, transactionId: row.draftId }))] };
     });
     if (pending.size) {
         throw new Error('A correction refers to a bank row outside the workspace imports.');

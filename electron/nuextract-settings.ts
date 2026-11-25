@@ -3,7 +3,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { access, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { nuExtractDeviceSchema, type NuExtractDevice, type NuExtractDownload, type NuExtractSettingsStatus } from '../src/shared/local-ocr-settings.js';
+import { nuExtractDeviceSchema, type NuExtractDevice, type INuExtractDownload, type INuExtractSettingsStatus } from '../src/shared/local-ocr-settings.js';
 import { listNuExtractVulkanDevices, NuExtractGpuCheckCancelledError, NuExtractGpuUnavailableError, NuExtractRuntime, type NuExtractRuntimeFiles } from './extraction/nuextract-runtime.js';
 import { NUEXTRACT_ASSETS, type ModelAsset } from './local-ocr-assets.js';
 import { downloadModelAssets } from './local-ocr-transfer.js';
@@ -24,7 +24,7 @@ interface SavedGpuCheck {
 
 interface Operation {
     controller: AbortController;
-    download: NuExtractDownload | null;
+    download: INuExtractDownload | null;
     checkingGpu: boolean;
     done: Promise<void>;
 }
@@ -76,7 +76,7 @@ async function runtimeIssue(executable: string): Promise<string | undefined> {
 export class NuExtractSettings {
     private operation?: Operation;
     private gpuCheck?: GpuCheck;
-    private failedDownload: NuExtractDownload['kind'] | null = null;
+    private failedDownload: INuExtractDownload['kind'] | null = null;
 
     constructor(private readonly root: string, private readonly cpuExecutable: string, private readonly probeImage: string) {}
 
@@ -201,7 +201,7 @@ export class NuExtractSettings {
         }
     }
 
-    private gpuStatus(executable: string | undefined): NuExtractSettingsStatus['gpu'] {
+    private gpuStatus(executable: string | undefined): INuExtractSettingsStatus['gpu'] {
         if (!supportsVulkanRuntime()) {
             return 'unsupported';
         }
@@ -217,7 +217,7 @@ export class NuExtractSettings {
         return this.gpuCheck.device ? 'available' : 'unavailable';
     }
 
-    async status(): Promise<NuExtractSettingsStatus> {
+    async status(): Promise<INuExtractSettingsStatus> {
         const operation: Operation | undefined = this.operation;
         const [directory, cpuIssue, executable, preferred]: [string | undefined, string | undefined, string | undefined, NuExtractDevice] = await Promise.all([
             this.installedDirectory(), runtimeIssue(this.cpuExecutable), vulkanRuntimeExecutable(this.root), this.readDevice()
@@ -228,15 +228,15 @@ export class NuExtractSettings {
         if (operation !== this.operation) {
             return this.status();
         }
-        const gpu: NuExtractSettingsStatus['gpu'] = this.gpuStatus(executable);
-        const download: NuExtractDownload | null | undefined = operation?.download;
+        const gpu: INuExtractSettingsStatus['gpu'] = this.gpuStatus(executable);
+        const download: INuExtractDownload | null | undefined = operation?.download;
         const effectiveDevice: NuExtractDevice | null = directory && (preferred === 'gpu' ? gpu === 'available' : cpuIssue === undefined) ? preferred : null;
         return { installed: directory !== undefined, cpuAvailable: cpuIssue === undefined, cpuIssue, device: preferred, effectiveDevice,
             modelDownloadBytes, vulkanDownloadBytes: vulkanRuntimeDownloadBytes, gpu, gpuIssue: gpu === 'unavailable' ? this.gpuCheck?.issue : undefined,
             download: download ? { ...download } : null, busy: operation !== undefined, failedDownload: this.failedDownload };
     }
 
-    private run(action: (signal: AbortSignal) => Promise<void>, download: NuExtractDownload | null = null, checkingGpu: boolean = false): Promise<void> {
+    private run(action: (signal: AbortSignal) => Promise<void>, download: INuExtractDownload | null = null, checkingGpu: boolean = false): Promise<void> {
         if (this.operation) {
             throw new Error('A NuExtract3 operation is already running.');
         }
@@ -255,7 +255,7 @@ export class NuExtractSettings {
     }
 
     install(): Promise<void> {
-        const download: NuExtractDownload = { kind: 'model', receivedBytes: 0, totalBytes: modelDownloadBytes };
+        const download: INuExtractDownload = { kind: 'model', receivedBytes: 0, totalBytes: modelDownloadBytes };
         return this.run(async (signal: AbortSignal): Promise<void> => {
             if (await runtimeIssue(this.cpuExecutable)) {
                 throw new Error('The NuExtract3 CPU runtime is unavailable.');
@@ -291,7 +291,7 @@ export class NuExtractSettings {
     }
 
     installVulkan(): Promise<void> {
-        const download: NuExtractDownload = { kind: 'vulkan', receivedBytes: 0, totalBytes: vulkanRuntimeDownloadBytes };
+        const download: INuExtractDownload = { kind: 'vulkan', receivedBytes: 0, totalBytes: vulkanRuntimeDownloadBytes };
         return this.run(async (signal: AbortSignal): Promise<void> => {
             await installVulkanRuntime(this.root, signal, (bytes: number): void => {
  download.receivedBytes = bytes;

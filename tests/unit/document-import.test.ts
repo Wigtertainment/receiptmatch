@@ -12,7 +12,7 @@ import path from "node:path";
 import { FolderDocumentImportService } from "../../electron/documents/service.js";
 import { StatementImportService } from "../../electron/import/service.js";
 import { importIssue } from "../../src/shared/bank-import.js";
-import { storedDocumentImportSchema, type DocumentFormat, type DocumentImportProgress, type StoredDocumentImport } from "../../src/shared/workspace-documents.js";
+import { storedDocumentImportSchema, type DocumentFormat, type IDocumentImportProgress, type StoredDocumentImport } from "../../src/shared/workspace-documents.js";
 import { extractedDocument } from "./document-fixtures.js";
 import type { Mode } from 'node:fs';
 import type { BigIntStats } from 'node:fs';
@@ -42,7 +42,7 @@ test("a nested mixed folder preserves originals, records failures and skips iden
 	}
 	const before: NonSharedBuffer[] = await Promise.all(names.map((name: string): Promise<NonSharedBuffer> => readFile(path.join(root, name))));
 	const calls: string[] = [],
-		progress: DocumentImportProgress[] = [];
+		progress: IDocumentImportProgress[] = [];
 	const service: FolderDocumentImportService = new FolderDocumentImportService({
 		choose: async (): Promise<string> => Promise.resolve(root),
 		extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, format: "png" | "pdf" | "jpeg"): Promise<({ status: "complete"; input: BankImportInput; } & { status: "complete"; }) | { status: "failed"; issues: ImportIssue[]; }> => {
@@ -53,7 +53,7 @@ test("a nested mixed folder preserves originals, records failures and skips iden
 			return Promise.resolve(extractedDocument(bytes, id, format));
 		},
 	});
-	const run: StoredDocumentImport | null = await service.run({ existingSources: [], onProgress: (value: DocumentImportProgress): number => progress.push(value) });
+	const run: StoredDocumentImport | null = await service.run({ existingSources: [], onProgress: (value: IDocumentImportProgress): number => progress.push(value) });
 	assert.ok(run);
 	assert.equal(run.status, "finished");
 	assert.equal(run.files.length, 7);
@@ -65,7 +65,7 @@ test("a nested mixed folder preserves originals, records failures and skips iden
 	assert.ok(!calls.includes("d-copy.pdf"));
 	assert.deepEqual(new Set(imported(run).map((record: StoredSupportingDocument): "png" | "pdf" | "jpeg" => record.format)), new Set(["pdf", "png", "jpeg"]));
 	assert.equal(storedDocumentImportSchema.safeParse(run).success, true);
-	assert.ok(progress.some((value: DocumentImportProgress): string | false | null => value.phase === "extracting" && value.filePath));
+	assert.ok(progress.some((value: IDocumentImportProgress): string | false | null => value.phase === "extracting" && value.filePath));
 	assert.deepEqual(await Promise.all(names.map((name: string): Promise<NonSharedBuffer> => readFile(path.join(root, name)))), before);
 	const sources: { id: string; filePath: string; sha256: string; }[] = imported(run).map((record: StoredSupportingDocument): { id: string; filePath: string; sha256: string; } => ({ id: record.result.input!.source.sourceId, filePath: record.filePath, sha256: record.result.input!.source.sha256 }));
 	calls.length = 0;
@@ -94,7 +94,7 @@ test("cancellation keeps completed files, discards the pending file and ignores 
 	await writeFile(path.join(root, "a.pdf"), "first");
 	await writeFile(path.join(root, "b.pdf"), "second");
 	const controller: AbortController = new AbortController(),
-		progress: DocumentImportProgress[] = [];
+		progress: IDocumentImportProgress[] = [];
 	let release!: () => void, secondStarted!: () => void;
 	const started: Promise<void> = new Promise<void>((resolve: (value: void | PromiseLike<void>) => void): void => {
 		secondStarted = resolve;
@@ -113,7 +113,7 @@ test("cancellation keeps completed files, discards the pending file and ignores 
 			return extractedDocument(bytes, id, format);
 		},
 	});
-	const running: Promise<StoredDocumentImport | null> = service.run({ existingSources: [], signal: controller.signal, onProgress: (value: DocumentImportProgress): number => progress.push(value) });
+	const running: Promise<StoredDocumentImport | null> = service.run({ existingSources: [], signal: controller.signal, onProgress: (value: IDocumentImportProgress): number => progress.push(value) });
 	await started;
 	controller.abort();
 	const count: number = progress.length;

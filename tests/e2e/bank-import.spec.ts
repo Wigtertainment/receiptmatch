@@ -1,7 +1,7 @@
 import type { BankImportInput, ImportIssue, TransactionCandidate } from "../../src/shared/bank-import.js";
 import type { MatchApproval } from "../../src/shared/match-approvals.js";
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
-import type { MatchSummary } from "../../src/shared/workspace-matching.js";
+import type { IMatchSummary } from "../../src/shared/workspace-matching.js";
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, mkdir, mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
@@ -15,7 +15,7 @@ import { documentRun, retainedDocument } from '../unit/document-fixtures.js';
 import { storedBankImportSchema, type StoredBankImport } from '../../src/shared/workspace-import.js';
 import { createWorkspace, newMetadata, SCHEMA_VERSION } from '../../electron/store.js';
 import type { extractPdfBytes } from '../../electron/extraction/host.js';
-import type { WorkspaceCommand, WorkspaceState } from '../../src/shared/protocol.js';
+import type { WorkspaceCommand, IWorkspaceState } from '../../src/shared/protocol.js';
 
 type SingletonProbe = typeof globalThis & { importSingletonProbe?: ReturnType<typeof extractPdfBytes> };
 interface DialogPlan {
@@ -152,19 +152,19 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		await mockDialogs(application, plan);
 	}
 
-	async function command(value: WorkspaceCommand): Promise<WorkspaceState> {
-		return page.evaluate((payload: WorkspaceCommand): Promise<WorkspaceState> => window.receiptmatch.command(payload), value);
+	async function command(value: WorkspaceCommand): Promise<IWorkspaceState> {
+		return page.evaluate((payload: WorkspaceCommand): Promise<IWorkspaceState> => window.receiptmatch.command(payload), value);
 	}
 
 	async function records(): Promise<StoredBankImport[]> {
 		return page.evaluate((): Promise<StoredBankImport[]> => window.receiptmatch.bankImports());
 	}
 
-	async function reopen(file: string): Promise<WorkspaceState> {
+	async function reopen(file: string): Promise<IWorkspaceState> {
 		await close();
 		({ application, page } = await launch());
 		await dialogs({ opens: [file] });
-		const state: WorkspaceState = await command({ type: 'open' });
+		const state: IWorkspaceState = await command({ type: 'open' });
 		assert.equal(state.error, null);
 		assert.equal(state.workspace?.filePath, file);
 		return state;
@@ -192,7 +192,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		assert.deepEqual(await records(), []);
 		assert.equal((await command({ type: 'import-statement' })).workspace, null);
 		const unsupportedCommand: { readonly type: "import-statement"; readonly filePath: string; } = { type: 'import-statement', filePath: original } as const;
-		const denied: WorkspaceState = await command(unsupportedCommand);
+		const denied: IWorkspaceState = await command(unsupportedCommand);
 		assert.match(denied.error ?? '', /not supported/);
 		const probe: unknown = await application.evaluate(async ({ app, BrowserWindow }: typeof Electron.CrossProcessExports): Promise<unknown> => {
 			const extra: Electron.CrossProcessExports.BrowserWindow = new BrowserWindow({
@@ -228,7 +228,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 			(await readFile(original)).toString('base64')
 		);
 		await dialogs({ opens: [original] });
-		const state: WorkspaceState = await command({ type: 'import-statement' });
+		const state: IWorkspaceState = await command({ type: 'import-statement' });
 		assert.equal(state.error, null);
 		assert.equal(state.importOutcome?.status, 'imported');
 		assert.equal(state.workspace?.dirty, true);
@@ -248,7 +248,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 	});
 	await check('identical-unsaved-source-is-skipped-without-adding-records', async (): Promise<void> => {
 		await dialogs({ opens: [duplicate] });
-		const state: WorkspaceState = await command({ type: 'import-statement' });
+		const state: IWorkspaceState = await command({ type: 'import-statement' });
 		assert.equal(state.importOutcome?.status, 'skipped');
 		assert.equal(state.workspace?.dirty, true);
 		assert.deepEqual(await records(), [imported]);
@@ -259,7 +259,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		assert.deepEqual(await records(), [imported]);
 		const before: string = await fingerprint(file);
 		await dialogs({ opens: [duplicate] });
-		const state: WorkspaceState = await command({ type: 'import-statement' });
+		const state: IWorkspaceState = await command({ type: 'import-statement' });
 		assert.equal(state.importOutcome?.status, 'skipped');
 		assert.equal(state.workspace?.dirty, false);
 		assert.equal(await fingerprint(file), before);
@@ -267,7 +267,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 	let retained: StoredBankImport[];
 	await check('partial-import-preserves-unresolved-fields-evidence-and-exact-values-after-restart', async (): Promise<void> => {
 		await dialogs({ opens: [partial] });
-		const state: WorkspaceState = await command({ type: 'import-statement' });
+		const state: IWorkspaceState = await command({ type: 'import-statement' });
 		assert.equal(state.importOutcome?.status, 'imported');
 		assert.equal(state.workspace?.dirty, true);
 		retained = await records();
@@ -293,7 +293,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 			[null, 'cancelled']
 		] as const) {
 			await dialogs({ opens: [selected] });
-			const state: WorkspaceState = await command({ type: 'import-statement' });
+			const state: IWorkspaceState = await command({ type: 'import-statement' });
 			assert.equal(state.importOutcome?.status, outcome);
 			assert.equal(state.workspace?.dirty, false);
 			assert.deepEqual(await records(), retained);
@@ -302,7 +302,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 	});
 	await check('equal-amounts-in-different-sources-are-kept-and-failed-save-retains-unsaved-work', async (): Promise<void> => {
 		await dialogs({ opens: [independent] });
-		const state: WorkspaceState = await command({ type: 'import-statement' });
+		const state: IWorkspaceState = await command({ type: 'import-statement' });
 		assert.equal(state.importOutcome?.status, 'imported');
 		const pending: StoredBankImport[] = await records();
 		assert.equal(pending.length, 3);
@@ -310,7 +310,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		const before: string = await fingerprint(file);
 		await rename(file, `${file}.away`);
 		try {
-			const failed: WorkspaceState = await command({ type: 'save' });
+			const failed: IWorkspaceState = await command({ type: 'save' });
 			assert.ok(failed.error);
 			assert.equal(failed.workspace?.dirty, true);
 			assert.deepEqual(await records(), pending);
@@ -318,7 +318,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 			await rename(`${file}.away`, file);
 		}
 		assert.equal(await fingerprint(file), before);
-		const saved: WorkspaceState = await command({ type: 'save' });
+		const saved: IWorkspaceState = await command({ type: 'save' });
 		assert.equal(saved.workspace?.dirty, false);
 		await reopen(file);
 		retained = pending;
@@ -353,24 +353,24 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		await writeFile(selected, await scan.save());
 		const before: string = await fingerprint(file);
 		await dialogs({ opens: [selected] });
-		const result: { state: WorkspaceState; guarded: WorkspaceState[] | undefined; cancelled: boolean; } = await page.evaluate(async (): Promise<{ state: WorkspaceState; guarded: WorkspaceState[] | undefined; cancelled: boolean; }> => {
-			let guarded: Promise<WorkspaceState[]> | undefined;
-			let cancelling: Promise<WorkspaceState> | undefined;
-			const unsubscribe: () => void = window.receiptmatch.subscribe((state: WorkspaceState): void => {
+		const result: { state: IWorkspaceState; guarded: IWorkspaceState[] | undefined; cancelled: boolean; } = await page.evaluate(async (): Promise<{ state: IWorkspaceState; guarded: IWorkspaceState[] | undefined; cancelled: boolean; }> => {
+			let guarded: Promise<IWorkspaceState[]> | undefined;
+			let cancelling: Promise<IWorkspaceState> | undefined;
+			const unsubscribe: () => void = window.receiptmatch.subscribe((state: IWorkspaceState): void => {
 				if (state.statementImport?.progress?.phase === 'ocr' && !cancelling) {
-					guarded = Promise.all((['new', 'open', 'save'] as const).map((type: "new" | "open" | "save"): Promise<WorkspaceState> => window.receiptmatch.command({ type })));
+					guarded = Promise.all((['new', 'open', 'save'] as const).map((type: "new" | "open" | "save"): Promise<IWorkspaceState> => window.receiptmatch.command({ type })));
 					cancelling = window.receiptmatch.command({ type: 'cancel-import' });
 				}
 			});
 			try {
-				const state: WorkspaceState = await window.receiptmatch.command({ type: 'import-statement' });
+				const state: IWorkspaceState = await window.receiptmatch.command({ type: 'import-statement' });
 				return { state, guarded: await guarded, cancelled: Boolean(cancelling) };
 			} finally {
 				unsubscribe();
 			}
 		});
 		assert.equal(result.cancelled, true);
-		assert.ok(result.guarded?.length === 3 && result.guarded.every((state: WorkspaceState): string | null => state.error));
+		assert.ok(result.guarded?.length === 3 && result.guarded.every((state: IWorkspaceState): string | null => state.error));
 		assert.equal(result.state.importOutcome?.status, 'cancelled');
 		assert.equal(result.state.workspace?.filePath, file);
 		assert.equal(result.state.workspace?.dirty, false);
@@ -398,11 +398,11 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 			seed.close();
 		}
 		const before: string = await fingerprint(legacy);
-		const opened: WorkspaceState = await reopen(legacy);
+		const opened: IWorkspaceState = await reopen(legacy);
 		assert.equal(opened.workspace?.dirty, false);
 		assert.equal(await fingerprint(legacy), before);
 		await dialogs({ opens: [original] });
-		const importedState: WorkspaceState = await command({ type: 'import-statement' });
+		const importedState: IWorkspaceState = await command({ type: 'import-statement' });
 		assert.equal(importedState.importOutcome?.status, 'imported');
 		assert.equal(importedState.workspace?.dirty, true);
 		assert.equal(await fingerprint(legacy), before);
@@ -454,7 +454,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		await page.getByRole('button', { name: 'Match suggestions' }).click();
 		await expect(page.getByRole('row', { name: /Cedar Tools/ })).toBeVisible();
 		await command({ type: 'save' });
-		const reopened: WorkspaceState = await reopen(file);
+		const reopened: IWorkspaceState = await reopen(file);
 		assert.deepEqual(await records(), [source]);
 		assert.equal(reopened.workspace?.imports[0].drafts, 0);
 		assert.deepEqual(reopened.workspace?.bankCorrections[0], {
@@ -475,9 +475,9 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		const file: string = path.join(root, 'approved.receiptmatch');
 		const decisions: Map<string, string | null> = new Map([[assigned.transactionId, document.id], [second.transactionId, other.id], [completed.transactionId, null]]);
 		await createWorkspace(file, newMetadata(), [source], [documentRun(root, [document, other])], decisions);
-		const opened: WorkspaceState = await reopen(file);
+		const opened: IWorkspaceState = await reopen(file);
 		assert.ok(opened.workspace);
-		const summaries: (revision: number) => Promise<MatchSummary[] | null> = (revision: number): Promise<MatchSummary[] | null> => page.evaluate((value: number): Promise<MatchSummary[] | null> => window.receiptmatch.matchSummaries(value), revision);
+		const summaries: (revision: number) => Promise<IMatchSummary[] | null> = (revision: number): Promise<IMatchSummary[] | null> => page.evaluate((value: number): Promise<IMatchSummary[] | null> => window.receiptmatch.matchSummaries(value), revision);
 		await page.getByRole('button', { name: 'Match suggestions', exact: true }).click();
 		const view: Locator = page.getByRole('region', { name: 'Match suggestions', exact: true });
 		const approve: Locator = view.getByRole('button', { name: 'Approve selected' });
@@ -501,7 +501,7 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		await view.getByRole('button', { name: 'All 3' }).click();
 		await expect(view.getByText('2 selected for approval', { exact: true })).toBeVisible();
 		const before: string = await fingerprint(file);
-		const changed: WorkspaceState = await command({ type: 'correct-bank-row', revision: opened.workspace.matchRevision, rowId: second.transactionId,
+		const changed: IWorkspaceState = await command({ type: 'correct-bank-row', revision: opened.workspace.matchRevision, rowId: second.transactionId,
 			changes: { bookingDate: '2032-02-24' } });
 		assert.equal(changed.error, null);
 		await expect(approve).toBeEnabled();
@@ -510,32 +510,32 @@ test('packaged Electron bank import', async ({ bankImport: { root, report, launc
 		await expect(view.getByRole('row', { name: /River Studio/ })).toBeFocused();
 		await expect(firstChoice).toBeChecked();
 		await expect(secondChoice).not.toBeChecked();
-		assert.ok((await summaries(changed.workspace!.matchRevision))?.every((row: MatchSummary): boolean => row.approval === null));
+		assert.ok((await summaries(changed.workspace!.matchRevision))?.every((row: IMatchSummary): boolean => row.approval === null));
 		await secondChoice.check();
 		await approve.press('Enter');
 		await expect(view.getByText('Selected transactions approved.', { exact: true })).toBeVisible();
 		await expect(view.getByText('0 selected for approval', { exact: true })).toBeVisible();
 		await expect(firstChoice).toHaveCount(0);
-		const approved: WorkspaceState = await command({ type: 'get-state' });
+		const approved: IWorkspaceState = await command({ type: 'get-state' });
 		assert.equal(approved.workspace?.dirty, true);
 		assert.equal(await fingerprint(file), before);
-		const rows: MatchSummary[] | null = await summaries(approved.workspace.matchRevision);
-		const snapshot: MatchApproval | null | undefined = rows?.find((row: MatchSummary): boolean => row.transactionId === assigned.transactionId)?.approval;
+		const rows: IMatchSummary[] | null = await summaries(approved.workspace.matchRevision);
+		const snapshot: MatchApproval | null | undefined = rows?.find((row: IMatchSummary): boolean => row.transactionId === assigned.transactionId)?.approval;
 		assert.ok(snapshot);
 		assert.equal(snapshot.documentId, document.id);
-		assert.equal(rows?.find((row: MatchSummary): boolean => row.transactionId === second.transactionId)?.approval?.batchId, snapshot.batchId);
+		assert.equal(rows?.find((row: IMatchSummary): boolean => row.transactionId === second.transactionId)?.approval?.batchId, snapshot.batchId);
 		assert.equal((await command({ type: 'save' })).error, null);
-		const reopened: WorkspaceState = await reopen(file);
-		const restored: MatchSummary[] | null = await summaries(reopened.workspace!.matchRevision);
-		assert.deepEqual(restored?.find((row: MatchSummary): boolean => row.transactionId === assigned.transactionId)?.approval, snapshot);
-		assert.equal(restored?.find((row: MatchSummary): boolean => row.transactionId === completed.transactionId)?.approval, null);
+		const reopened: IWorkspaceState = await reopen(file);
+		const restored: IMatchSummary[] | null = await summaries(reopened.workspace!.matchRevision);
+		assert.deepEqual(restored?.find((row: IMatchSummary): boolean => row.transactionId === assigned.transactionId)?.approval, snapshot);
+		assert.equal(restored?.find((row: IMatchSummary): boolean => row.transactionId === completed.transactionId)?.approval, null);
 		await page.getByRole('button', { name: 'Match suggestions', exact: true }).click();
 		const matches: Locator = page.getByRole('region', { name: 'Match suggestions', exact: true });
 		const transaction: Locator = matches.getByRole('row', { name: /Orchard Workshop/ });
 		await transaction.getByRole('cell').nth(3).click();
 		const manual: Locator = matches.getByRole('region', { name: 'Manual review' });
 		await expect(manual.getByText('Approved', { exact: true })).toBeVisible();
-		const corrected: WorkspaceState = await command({ type: 'correct-bank-row', revision: reopened.workspace!.matchRevision, rowId: assigned.transactionId,
+		const corrected: IWorkspaceState = await command({ type: 'correct-bank-row', revision: reopened.workspace!.matchRevision, rowId: assigned.transactionId,
 			changes: { bookingDate: '2032-02-25' } });
 		assert.equal(corrected.error, null);
 		await expect(transaction.getByText('Approval needs review', { exact: true })).toBeVisible();

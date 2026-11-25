@@ -1,6 +1,6 @@
 import type { BankImportInput, PositionedSpan } from "../../src/shared/bank-import.js";
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
-import type { OriginalPreviewResult } from "../../src/shared/original-preview.js";
+import type { IOriginalPreviewResult } from "../../src/shared/original-preview.js";
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -75,7 +75,7 @@ test('opens local originals independently from statements, documents and match s
             dialog.showMessageBox = async (): Promise<{ response: number; checkboxChecked: false; }> => Promise.resolve(({ response: 1, checkboxChecked: false }));
         }, [workspaceFile, movedPng, null, changedReceipt, movedReceipt, movedStatement, workspaceFile]);
         await main.getByRole('button', { name: 'Open workspace', exact: false }).click();
-        const invalid: OriginalPreviewResult = await main.evaluate(async (): Promise<OriginalPreviewResult> => {
+        const invalid: IOriginalPreviewResult = await main.evaluate(async (): Promise<IOriginalPreviewResult> => {
             const payload: { kind: "statement"; id: `${string}-${string}-${string}-${string}-${string}`; loadRevision: number; filePath: string; } = { kind: 'statement' as const, id: crypto.randomUUID(), loadRevision: 1, filePath: 'unrelated.pdf' };
             return window.receiptmatch.openOriginal(payload);
         });

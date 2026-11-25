@@ -5,12 +5,12 @@ import type { Money } from '../src/shared/money.js';
 import type { DocumentSection } from '../src/shared/supporting-document.js';
 import type { StoredDocumentImport } from '../src/shared/workspace-documents.js';
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
-import type { MatchCandidate, MatchNameEvidence, ReviewMatch, ReviewMatchCandidate, TransactionMatch } from '../src/shared/workspace-matching.js';
+import type { MatchCandidate, IMatchNameEvidence, IReviewMatch, IReviewMatchCandidate, TransactionMatch } from '../src/shared/workspace-matching.js';
 import { hasFullDocumentReference, mergedLegacySections, recordedDocumentPayments } from './documents/interpret.js';
 import { bankReferenceFields, dateEvidence, documentReferenceFields, moneyKey, normalizeReference, outgoingAmounts, referenceEvidence } from './matching.js';
 
 type AmountEvidence = MatchCandidate['amounts'][number];
-type AmountSignal = ReviewMatchCandidate['signals']['amount'];
+type AmountSignal = IReviewMatchCandidate['signals']['amount'];
 interface NamedText { text: string; words: string[] }
 interface ReviewSection {
 	documentId: string;
@@ -36,13 +36,13 @@ function namedText(text: string, matchText: string = text): NamedText {
 	return { text, words: words.filter((word: string): boolean => /\p{L}/u.test(word) && !genericWords.has(word) && !/^(?:img|dscn?|pxl|scan|screenshot)[0-9]*$/.test(word)) };
 }
 
-function nameEvidence(bank: NamedText[], documents: NamedText[]): MatchNameEvidence {
+function nameEvidence(bank: NamedText[], documents: NamedText[]): IMatchNameEvidence {
 	const bankText: string | null = bank.find((item: NamedText): number => item.words.length)?.text ?? null;
 	const documentText: string | null = documents.find((item: NamedText): number => item.words.length)?.text ?? null;
 	if (!bankText || !documentText) {
 		return { state: 'missing', bankText, documentText };
 	}
-	let partial: MatchNameEvidence | undefined;
+	let partial: IMatchNameEvidence | undefined;
 	for (const left of bank) {
 		for (const right of documents) {
 		const a: string = left.words.join(' '), b: string = right.words.join(' ');
@@ -197,11 +197,11 @@ function evaluateAmounts(row: TransactionCandidate, entry: ReviewSection, exact?
 	return { amounts, score: hasEqualAmount ? exactAmountScore : bestAmount?.score ?? 0, signal: hasEqualAmount ? 'equal' : bestAmount?.signal ?? 'missing', equal: hasEqualAmount };
 }
 
-function referenceSignal(row: TransactionCandidate, entry: ReviewSection, hasReferences: boolean): ReviewMatchCandidate['signals']['reference'] {
+function referenceSignal(row: TransactionCandidate, entry: ReviewSection, hasReferences: boolean): IReviewMatchCandidate['signals']['reference'] {
 	return hasReferences ? 'match' : entry.references.size && bankReferenceFields(row).some((field: { label: string; value: string; evidence: SourceEvidence[]; }): string => field.value.trim()) ? 'different' : 'missing';
 }
 
-function scoreCandidate(merchant: MatchNameEvidence, filename: MatchNameEvidence, date: ReturnType<typeof dateEvidence>, amountScore: number, hasReferences: boolean): { score: number; supportingSignals: number } {
+function scoreCandidate(merchant: IMatchNameEvidence, filename: IMatchNameEvidence, date: ReturnType<typeof dateEvidence>, amountScore: number, hasReferences: boolean): { score: number; supportingSignals: number } {
 	const nameStates: ("match" | "partial" | "different" | "missing")[] = [merchant.state, filename.state];
 	const nameScore: 0 | 1 | 2 | -1 = nameStates.includes('match') ? 2 : nameStates.includes('partial') ? 1 : merchant.state === 'different' ? -1 : 0;
 	const dateScore: 0 | 1 | 2 | -1 = !date ? 0 : date.daysApart <= 2 ? 2 : date.withinWindow ? 1 : -1;
@@ -209,8 +209,8 @@ function scoreCandidate(merchant: MatchNameEvidence, filename: MatchNameEvidence
 	return { score, supportingSignals: Number(nameScore > 0) + Number(dateScore > 0) + Number(amountScore > 0) };
 }
 
-function candidateIssues(hasReferences: boolean, referenceConflict: boolean, amountScore: number, hasEqualAmount: boolean, exact?: MatchCandidate): ReviewMatchCandidate['issues'] {
-	const issues: ReviewMatchCandidate['issues'] = exact && hasEqualAmount ? [...exact.issues] :
+function candidateIssues(hasReferences: boolean, referenceConflict: boolean, amountScore: number, hasEqualAmount: boolean, exact?: MatchCandidate): IReviewMatchCandidate['issues'] {
+	const issues: IReviewMatchCandidate['issues'] = exact && hasEqualAmount ? [...exact.issues] :
 		hasReferences ? [amountScore === exactAmountScore ? 'conflicting-evidence' : 'amount-needs-review'] : ['missing-reference'];
 	if (!hasReferences && !issues.includes('missing-reference')) {
 		issues.push('missing-reference');
@@ -221,22 +221,22 @@ function candidateIssues(hasReferences: boolean, referenceConflict: boolean, amo
 	return issues;
 }
 
-function evaluate(row: TransactionCandidate, names: NamedText[], entry: ReviewSection, exact?: MatchCandidate): { candidate: ReviewMatchCandidate; score: number; reliable: boolean; } | null {
+function evaluate(row: TransactionCandidate, names: NamedText[], entry: ReviewSection, exact?: MatchCandidate): { candidate: IReviewMatchCandidate; score: number; reliable: boolean; } | null {
 	const { documentId, section }: ReviewSection = entry;
 	const { amounts, score: amountScore, signal: amountSignal, equal: hasEqualAmount }: EvaluatedAmounts = evaluateAmounts(row, entry, exact);
 	const date: { documentFieldId: string; bookingDate: string; documentDate: string; role: "payment" | "issue"; daysApart: number; withinWindow: boolean; } | null = dateEvidence(row, entry.dates);
 	const referenceResult: { matches: { normalized: string; bankLabel: string; bankValue: string; documentFieldId: string; documentValue: string; }[]; conflicting: boolean; } = referenceEvidence(row, section);
 	const references: { normalized: string; bankLabel: string; bankValue: string; documentFieldId: string; documentValue: string; }[] = referenceResult.matches;
-	const merchant: MatchNameEvidence = nameEvidence(names, entry.merchants);
-	const filename: MatchNameEvidence = nameEvidence(names, [entry.filename]);
+	const merchant: IMatchNameEvidence = nameEvidence(names, entry.merchants);
+	const filename: IMatchNameEvidence = nameEvidence(names, [entry.filename]);
 	const hasReferences: boolean = references.length > 0;
-	const reference: ReviewMatchCandidate['signals']['reference'] = referenceSignal(row, entry, hasReferences);
+	const reference: IReviewMatchCandidate['signals']['reference'] = referenceSignal(row, entry, hasReferences);
 	const { score, supportingSignals }: { score: number; supportingSignals: number } = scoreCandidate(merchant, filename, date, amountScore, hasReferences);
 	if (amountScore !== exactAmountScore && !references.length && (score < 3 || supportingSignals < 2)) {
 		return null;
 	}
-	const issues: ReviewMatchCandidate['issues'] = candidateIssues(hasReferences, referenceResult.conflicting, amountScore, hasEqualAmount, exact);
-	const candidate: ReviewMatchCandidate = { documentId, sectionId: section.sectionId, direction: row.direction, amounts, date, references, issues,
+	const issues: IReviewMatchCandidate['issues'] = candidateIssues(hasReferences, referenceResult.conflicting, amountScore, hasEqualAmount, exact);
+	const candidate: IReviewMatchCandidate = { documentId, sectionId: section.sectionId, direction: row.direction, amounts, date, references, issues,
 		signals: { amount: amountSignal, merchant, filename, reference } };
 	return { candidate, score, reliable: hasEqualAmount && issues.length === 0 };
 }
@@ -244,7 +244,7 @@ function evaluate(row: TransactionCandidate, names: NamedText[], entry: ReviewSe
 // Supplemental suggestions are derived from effective imports, including corrections, when a workspace is reviewed.
 export function evaluateReviewMatches(
 	matches: readonly TransactionMatch[], bankImports: readonly StoredBankImport[], documentImports: readonly StoredDocumentImport[],
-): ReviewMatch[] {
+): IReviewMatch[] {
 	const { sections, index }: { sections: Map<string, ReviewSection>; index: Map<string, Set<ReviewSection>>; } = indexSections(documentImports);
 	const bankRows: Map<string, TransactionCandidate> = new Map<string, TransactionCandidate>();
 	for (const record of bankImports) {
@@ -253,7 +253,7 @@ export function evaluateReviewMatches(
 			bankRows.set(transactionId, rows.get(rowId)!);
 		}
 	}
-	const evaluated: { transactionId: string; candidates: { candidate: ReviewMatchCandidate; score: number; reliable: boolean; }[]; }[] = matches.map((match: TransactionMatch): { transactionId: string; candidates: { candidate: ReviewMatchCandidate; score: number; reliable: boolean; }[]; } => {
+	const evaluated: { transactionId: string; candidates: { candidate: IReviewMatchCandidate; score: number; reliable: boolean; }[]; }[] = matches.map((match: TransactionMatch): { transactionId: string; candidates: { candidate: IReviewMatchCandidate; score: number; reliable: boolean; }[]; } => {
 		const row: TransactionCandidate = bankRows.get(match.transactionId)!;
 		const exact: Map<string, MatchCandidate> = new Map(match.candidates.map((candidate: MatchCandidate): [string, MatchCandidate] => [JSON.stringify([candidate.documentId, candidate.sectionId]), candidate]));
 		const names: NamedText[] = [namedText(row.counterpartyCandidate?.value ?? ''), namedText(row.description.value)];
@@ -284,13 +284,13 @@ export function evaluateReviewMatches(
 		for (let offset: number = -7; offset <= 7; offset++) {
 			include('date:' + new Date(booking + offset * day).toISOString().slice(0, 10));
 		}
-		const candidates: { candidate: ReviewMatchCandidate; score: number; reliable: boolean; }[] = [...pool].flatMap((entry: ReviewSection): { candidate: ReviewMatchCandidate; score: number; reliable: boolean; }[] => {
+		const candidates: { candidate: IReviewMatchCandidate; score: number; reliable: boolean; }[] = [...pool].flatMap((entry: ReviewSection): { candidate: IReviewMatchCandidate; score: number; reliable: boolean; }[] => {
 			const base: MatchCandidate | undefined = exact.get(JSON.stringify([entry.documentId, entry.section.sectionId]));
 			const credit: boolean = entry.incoming.length > 0 || entry.section.kind === 'credit-note';
 			if (!base && (row.direction === 'incoming' ? !credit : credit && !entry.outgoing.length)) {
 				return [];
 			}
-			const result: { candidate: ReviewMatchCandidate; score: number; reliable: boolean; } | null = evaluate(row, names, entry, base);
+			const result: { candidate: IReviewMatchCandidate; score: number; reliable: boolean; } | null = evaluate(row, names, entry, base);
 			return result ? [result] : [];
 		});
 		return { transactionId: match.transactionId, candidates };
@@ -303,10 +303,10 @@ export function evaluateReviewMatches(
 		}
 	}
 	}
-	return evaluated.map(({ transactionId, candidates }: { transactionId: string; candidates: { candidate: ReviewMatchCandidate; score: number; reliable: boolean; }[]; }): ReviewMatch => {
-		const referenced: number = candidates.filter(({ candidate }: { candidate: ReviewMatchCandidate; score: number; reliable: boolean; }): number => candidate.references.length).length;
+	return evaluated.map(({ transactionId, candidates }: { transactionId: string; candidates: { candidate: IReviewMatchCandidate; score: number; reliable: boolean; }[]; }): IReviewMatch => {
+		const referenced: number = candidates.filter(({ candidate }: { candidate: IReviewMatchCandidate; score: number; reliable: boolean; }): number => candidate.references.length).length;
 		for (const result of candidates) {
-			const { candidate }: { candidate: ReviewMatchCandidate; score: number; reliable: boolean; } = result;
+			const { candidate }: { candidate: IReviewMatchCandidate; score: number; reliable: boolean; } = result;
 			if (candidate.references.length && (referenced > 1 || candidate.references.every((ref: { normalized: string; bankLabel: string; bankValue: string; documentFieldId: string; documentValue: string; }): boolean => (counts.get(ref.normalized) ?? 0) > 1))) {
 				if (!candidate.issues.includes('competing-reference')) {
 					candidate.issues.push('competing-reference');
@@ -314,11 +314,11 @@ export function evaluateReviewMatches(
 				result.reliable = false;
 			}
 		}
-		candidates.sort((left: { candidate: ReviewMatchCandidate; score: number; reliable: boolean; }, right: { candidate: ReviewMatchCandidate; score: number; reliable: boolean; }): number => Number(right.reliable) - Number(left.reliable) || right.score - left.score ||
+		candidates.sort((left: { candidate: IReviewMatchCandidate; score: number; reliable: boolean; }, right: { candidate: IReviewMatchCandidate; score: number; reliable: boolean; }): number => Number(right.reliable) - Number(left.reliable) || right.score - left.score ||
 			Number(right.candidate.signals.amount === 'equal') - Number(left.candidate.signals.amount === 'equal') ||
 			filenameRank[right.candidate.signals.filename.state] - filenameRank[left.candidate.signals.filename.state] ||
 			left.candidate.documentId.localeCompare(right.candidate.documentId) || left.candidate.sectionId.localeCompare(right.candidate.sectionId));
-		return { transactionId, status: candidates.some((candidate: { candidate: ReviewMatchCandidate; score: number; reliable: boolean; }): boolean => candidate.reliable) ? 'reliable' : candidates.length ? 'uncertain' : 'unmatched',
-			candidates: candidates.map(({ candidate }: { candidate: ReviewMatchCandidate; score: number; reliable: boolean; }): ReviewMatchCandidate => candidate) };
+		return { transactionId, status: candidates.some((candidate: { candidate: IReviewMatchCandidate; score: number; reliable: boolean; }): boolean => candidate.reliable) ? 'reliable' : candidates.length ? 'uncertain' : 'unmatched',
+			candidates: candidates.map(({ candidate }: { candidate: IReviewMatchCandidate; score: number; reliable: boolean; }): IReviewMatchCandidate => candidate) };
 	});
 }

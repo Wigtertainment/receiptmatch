@@ -1,4 +1,4 @@
-import type { WorkspaceState } from "../../src/shared/protocol.js";
+import type { IWorkspaceState } from "../../src/shared/protocol.js";
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rename, writeFile } from 'node:fs/promises';
@@ -7,7 +7,7 @@ import { performance } from 'node:perf_hooks';
 import { expect, test as base, type ElectronApplication, type Page, type Locator, type TestInfo, type PlaywrightWorkerOptions, type PlaywrightWorkerArgs, type PlaywrightTestOptions, type PlaywrightTestArgs, type TestType } from '@playwright/test';
 import Database from 'better-sqlite3';
 import { createWorkspace, fingerprint, newMetadata } from '../../electron/store.js';
-import type { WorkspaceCommand, WorkspaceView } from '../../src/shared/protocol.js';
+import type { WorkspaceCommand, IWorkspaceView } from '../../src/shared/protocol.js';
 
 interface DialogPlan {
 	saves?: (string | null)[];
@@ -136,14 +136,14 @@ test('packaged Electron workspace smoke test', async ({ smoke: { root, report, c
 		await mockDialogs(application, plan);
 	}
 
-	async function state(): Promise<WorkspaceState> {
-		return page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'get-state' }));
+	async function state(): Promise<IWorkspaceState> {
+		return page.evaluate((): Promise<IWorkspaceState> => window.receiptmatch.command({ type: 'get-state' }));
 	}
 
-	async function waitState(expected: Partial<WorkspaceView>): Promise<void> {
-		await page.waitForFunction(async (values: Partial<WorkspaceView>): Promise<boolean> => {
-			const value: WorkspaceState = await window.receiptmatch.command({ type: 'get-state' });
-			return !value.busy && Object.entries(values).every(([key, wanted]: [string, WorkspaceView[keyof WorkspaceView]]): boolean => value.workspace?.[key as keyof WorkspaceView] === wanted);
+	async function waitState(expected: Partial<IWorkspaceView>): Promise<void> {
+		await page.waitForFunction(async (values: Partial<IWorkspaceView>): Promise<boolean> => {
+			const value: IWorkspaceState = await window.receiptmatch.command({ type: 'get-state' });
+			return !value.busy && Object.entries(values).every(([key, wanted]: [string, IWorkspaceView[keyof IWorkspaceView]]): boolean => value.workspace?.[key as keyof IWorkspaceView] === wanted);
 		}, expected);
 	}
 
@@ -186,7 +186,7 @@ test('packaged Electron workspace smoke test', async ({ smoke: { root, report, c
 			),
 			true
 		);
-		const invalid: WorkspaceState = await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'write-file', path: '/arbitrary' } as unknown as WorkspaceCommand));
+		const invalid: IWorkspaceState = await page.evaluate((): Promise<IWorkspaceState> => window.receiptmatch.command({ type: 'write-file', path: '/arbitrary' } as unknown as WorkspaceCommand));
 		assert.equal(invalid.workspace, null);
 		assert.match(invalid.error ?? '', /not supported/);
 		assert.equal(await application.evaluate(({ ipcMain }: typeof Electron.CrossProcessExports): number => ipcMain.listenerCount('write-file')), 0);

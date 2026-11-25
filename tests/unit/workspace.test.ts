@@ -1,4 +1,4 @@
-import type { WorkspaceState } from "../../src/shared/protocol.js";
+import type { IWorkspaceState } from "../../src/shared/protocol.js";
 import { test, vi, type Mock } from 'vitest';
 import assert from 'node:assert/strict';
 import fsModule from 'node:fs';
@@ -129,7 +129,7 @@ test('concurrent native operations cannot replace or rename a workspace during s
     release = resolve;
   }), open: async (): Promise<null> => Promise.resolve(null), unsaved: async (): Promise<"cancel"> => Promise.resolve('cancel') };
   const session: WorkspaceSession = new WorkspaceSession(dialogs); await session.dispatch({ type: 'new' });
-  const saving: Promise<WorkspaceState> = session.dispatch({ type: 'save' }); assert.equal(session.state().busy, true);
-  const rejected: WorkspaceState = await session.dispatch({ type: 'rename', name: 'Race' }); assert.ok(rejected.error); assert.equal(session.state().workspace!.name, 'Untitled workspace');
+  const saving: Promise<IWorkspaceState> = session.dispatch({ type: 'save' }); assert.equal(session.state().busy, true);
+  const rejected: IWorkspaceState = await session.dispatch({ type: 'rename', name: 'Race' }); assert.ok(rejected.error); assert.equal(session.state().workspace!.name, 'Untitled workspace');
   assert.equal(await session.requestClose(), false); assert.ok(release); release(null); await saving; assert.equal(session.state().busy, false);
 });

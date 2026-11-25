@@ -6,7 +6,7 @@ import {
     emptyImportResult,
     importIssue,
     sourceProvenance,
-    type BankAdapter,
+    type IBankAdapter,
     type BankImportInput,
     type BankImportResult,
     type ImportIssue,
@@ -557,7 +557,7 @@ function parse(input: BankImportInput): BankImportResult {
         : emptyImportResult(input, 'failed', importIssue('result-limit-or-contract', 'The interpreted statement exceeds result limits or cannot be represented safely.'));
 }
 
-export const revolutAdapter: BankAdapter = {
+export const revolutAdapter: IBankAdapter = {
     metadata,
     identify: (input: BankImportInput): boolean => {
         const lines: Line[] = input.pages.flatMap(linesOf);

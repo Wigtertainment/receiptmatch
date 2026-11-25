@@ -14,8 +14,8 @@ import { documentCorrectionKey, type DocumentCorrection } from '../../src/shared
 import { activeDocumentFieldDisposition, type DocumentFieldReview } from '../../src/shared/document-field-reviews.js';
 import { approvalSelectionFor, type ReviewApprovalState } from '../../src/shared/match-approvals.js';
 import type { OriginalAdoptionResult } from '../../src/shared/original-preview.js';
-import type { DocumentSnapshot, WorkspaceView } from '../../src/shared/protocol.js';
-import { NUEXTRACT_RECEIPT_VERSION, type ReceiptAiPreviewResult, type ReceiptAiProposal, type ReceiptAiRequest, type ReceiptAiResult } from '../../src/shared/receipt-ai.js';
+import type { IDocumentSnapshot, IWorkspaceView } from '../../src/shared/protocol.js';
+import { NUEXTRACT_RECEIPT_VERSION, type ReceiptAiPreviewResult, type IReceiptAiProposal, type ReceiptAiRequest, type ReceiptAiResult } from '../../src/shared/receipt-ai.js';
 import type { DocumentSection, SupportingDocument } from '../../src/shared/supporting-document.js';
 import type { DocumentFileResult, StoredDocumentImport, StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
@@ -93,8 +93,8 @@ async function fixture(context: TestContext, options: { corrected?: true; select
     return { file, document, report, session, transactionId, modelReading, correction };
 }
 
-function workspace(session: WorkspaceSession): WorkspaceView {
-    const state: WorkspaceView | null = session.state().workspace;
+function workspace(session: WorkspaceSession): IWorkspaceView {
+    const state: IWorkspaceView | null = session.state().workspace;
     assert.ok(state);
     return state;
 }
@@ -140,7 +140,7 @@ test('accepted reanalysis tombstones field decisions even when the reviewed fiel
 test('requires a current preview token and rechecks the original bytes before applying an OCR analysis', async (context: TestContext & object): Promise<void> => {
     const prepared: Fixture = await fixture(context);
     const { file, document, session }: Fixture = prepared;
-    const before: WorkspaceView = workspace(session);
+    const before: IWorkspaceView = workspace(session);
     const saved: NonSharedBuffer = await readFile(file);
     assert.equal((await accept(session, randomUUID())).status, 'failed');
     prepared.modelReading.total = '48.75';
@@ -166,7 +166,7 @@ test('applies only selected unverified fields and retains their user confirmatio
     const { file, session, document, report }: Fixture = prepared;
     const staged: Ready = await preview(prepared);
     assert.equal(staged.blockingConflict, undefined);
-    assert.deepEqual(staged.proposals?.map((item: ReceiptAiProposal): [ReceiptAiProposal['field'], boolean] => [item.field, item.verified]), [
+    assert.deepEqual(staged.proposals?.map((item: IReceiptAiProposal): [IReceiptAiProposal['field'], boolean] => [item.field, item.verified]), [
         ['reference', false], ['issue-date', false], ['billed-total', false]
     ]);
     const request: { token: string; loadRevision: number; acknowledgeConflicts: boolean } =
@@ -193,13 +193,13 @@ test('keeps an unselected manual correction when confirming a different receipt 
     const prepared: Fixture = await fixture(context, { selectable: true, corrected: true });
     const { document, session, correction }: Fixture = prepared;
     const staged: Ready = await preview(prepared);
-    const amount: ReceiptAiProposal | undefined = staged.proposals?.find((item: ReceiptAiProposal): boolean => item.field === 'billed-total');
+    const amount: IReceiptAiProposal | undefined = staged.proposals?.find((item: IReceiptAiProposal): boolean => item.field === 'billed-total');
     assert.match(amount?.unavailable ?? '', /manual correction/i);
     assert.deepEqual(await session.acceptReceiptAnalysis({ token: staged.token, loadRevision: workspace(session).loadRevision,
         acknowledgeConflicts: true, selectedFields: ['reference'] }), { status: 'adopted' });
     assert.deepEqual(workspace(session).documentCorrections, [correction]);
-    const view: WorkspaceView = workspace(session);
-    const snapshot: DocumentSnapshot | null = session.documentSnapshot({ loadRevision: view.loadRevision, revision: view.matchRevision });
+    const view: IWorkspaceView = workspace(session);
+    const snapshot: IDocumentSnapshot | null = session.documentSnapshot({ loadRevision: view.loadRevision, revision: view.matchRevision });
     assert.ok(snapshot);
     assert.equal(total(imported(snapshot.reports, document.id).result.sections).candidates[0].coefficient, '5040');
 });
@@ -214,7 +214,7 @@ test('offers a matching total for confirmation when its currency is still missin
     source.issues.push({ code: 'missing-currency', severity: 'warning', message: 'Currency could not be established.',
         sectionId: source.sections[0].sectionId, fieldId: field.id, field: 'billed-total', evidence: field.evidence });
     const staged: Extract<ReceiptAiResult, { status: 'ready' }> = reviewNuExtractResult(source, { gross_total: '9007199254740993.27' });
-    const proposals: ReceiptAiProposal[] = staged.proposals ?? [];
+    const proposals: IReceiptAiProposal[] = staged.proposals ?? [];
     assert.equal(proposals[0]?.needsCurrency, true);
     assert.equal(proposals[0]?.verified, false);
     assert.throws((): SupportingDocument => applySelectedReceiptAi(source, proposals, ['billed-total']), /three-letter currency/i);
@@ -278,10 +278,10 @@ test('preserves an existing manual correction and approval while applying a veri
     assert.equal(staged.blockingConflict, undefined);
     assert.deepEqual(staged.conflicts, []);
     assert.deepEqual(await accept(session, staged.token), { status: 'adopted' });
-    const view: WorkspaceView = workspace(session);
+    const view: IWorkspaceView = workspace(session);
     assert.equal(view.approvedDocumentCount, 1);
     assert.deepEqual(view.documentCorrections, [correction]);
-    const projected: DocumentSnapshot | null = session.documentSnapshot({ loadRevision: view.loadRevision, revision: view.matchRevision });
+    const projected: IDocumentSnapshot | null = session.documentSnapshot({ loadRevision: view.loadRevision, revision: view.matchRevision });
     assert.ok(projected);
     assert.equal(total(projected.originals[document.id].sections).candidates[0].coefficient, '4875');
     assert.equal(total(imported(projected.reports, document.id).result.sections).candidates[0].coefficient, '5040');
@@ -300,10 +300,10 @@ test('does not offer an AI reference suggestion over an explicit manual referenc
     assert.equal((await session.dispatch({ type: 'correct-document-field', revision: workspace(session).matchRevision, documentId: document.id, sectionId: section.sectionId,
         fieldId: reference.id, change: { kind: 'reference', role: reference.role, value: 'MANUAL-2047' } })).error, null);
     const staged: Ready = await preview(prepared);
-    assert.match(staged.proposals!.find((proposal: ReceiptAiProposal): boolean => proposal.field === 'reference')!.unavailable!, /manual correction/);
+    assert.match(staged.proposals!.find((proposal: IReceiptAiProposal): boolean => proposal.field === 'reference')!.unavailable!, /manual correction/);
     const result: OriginalAdoptionResult = await session.acceptReceiptAnalysis({ token: staged.token, loadRevision: workspace(session).loadRevision, acknowledgeConflicts: true, selectedFields: ['reference'] });
     assert.equal(result.status, 'failed');
-    const view: WorkspaceView = workspace(session);
-    const snapshot: DocumentSnapshot = session.documentSnapshot({ loadRevision: view.loadRevision, revision: view.matchRevision })!;
+    const view: IWorkspaceView = workspace(session);
+    const snapshot: IDocumentSnapshot = session.documentSnapshot({ loadRevision: view.loadRevision, revision: view.matchRevision })!;
     assert.deepEqual(imported(snapshot.reports, document.id).result.sections[0].references[0].candidates, ['MANUAL-2047']);
 });

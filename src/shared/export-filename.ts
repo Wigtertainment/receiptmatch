@@ -4,14 +4,14 @@ import type { Money } from './money.js';
 export const defaultExportFilenamePattern: "{date}_{counterparty}_{currency}_{amount}" = '{date}_{counterparty}_{currency}_{amount}';
 export const exportFilenamePatternLimit: number = 160;
 
-interface ExportFilenameData {
+interface IExportFilenameData {
 	date: string;
 	counterparty: string | null;
 	amount: Money;
 	extension: 'pdf' | 'png' | 'jpg' | 'jpeg';
 }
 
-export const exportFilenameExample: ExportFilenameData = {
+export const exportFilenameExample: IExportFilenameData = {
 	date: '2026-10-21',
 	counterparty: 'Example Merchant',
 	amount: { currency: 'EUR', coefficient: '-17677', scale: 2 },
@@ -41,7 +41,10 @@ function safeCounterparty(value: string | null): string {
 	return reservedName.test(name) ? '_' + name : name;
 }
 
-export function renderExportFilename(pattern: string, data: ExportFilenameData): { filename: string; error?: never } | { filename?: never; error: string } {
+interface IExportFilenameSuccess { filename: string; error?: never }
+interface IExportFilenameFailure { filename?: never; error: string }
+
+export function renderExportFilename(pattern: string, data: IExportFilenameData): IExportFilenameSuccess | IExportFilenameFailure {
 	const template: string = pattern.trim();
 	if (!template || pattern.length > exportFilenamePatternLimit) {
 		return { error: 'Enter a pattern of up to 160 characters.' };

@@ -1,14 +1,21 @@
-import type { SourceEvidence, TransactionCandidate } from "./bank-import.js";
+import type { TransactionCandidate } from './bank-import.js';
 import { z } from 'zod';
 import { bankTransactionIds, statementAccountKey } from './statement-overlaps.js';
 import type { StoredBankImport } from './workspace-import.js';
 
-const duplicateDecisionSchema: z.ZodObject<{ firstId: z.ZodUUID; secondId: z.ZodUUID; primaryId: z.ZodNullable<z.ZodUUID>; archivedReview: z.ZodNullable<z.ZodObject<{ documentId: z.ZodNullable<z.ZodUUID>; }, z.core.$strict>>; }, z.core.$strict> = z.strictObject({
+interface IDuplicateDecisionShape {
+	firstId: z.ZodUUID;
+	secondId: z.ZodUUID;
+	primaryId: z.ZodNullable<z.ZodUUID>;
+	archivedReview: z.ZodNullable<z.ZodObject<Record<'documentId', z.ZodNullable<z.ZodUUID>>, z.core.$strict>>;
+}
+
+const duplicateDecisionSchema: z.ZodObject<z.core.util.Flatten<IDuplicateDecisionShape>, z.core.$strict> = z.strictObject({
 	firstId: z.uuid(),
 	secondId: z.uuid(),
 	primaryId: z.uuid().nullable(),
 	archivedReview: z.strictObject({ documentId: z.uuid().nullable() }).nullable(),
-}).refine(({ firstId, secondId, primaryId, archivedReview }: { firstId: string; secondId: string; primaryId: string | null; archivedReview: { documentId: string | null; } | null; }): boolean => firstId < secondId &&
+}).refine(({ firstId, secondId, primaryId, archivedReview }: DuplicateDecision): boolean => firstId < secondId &&
 	(primaryId === null ? archivedReview === null : primaryId === firstId || primaryId === secondId));
 
 export type DuplicateDecision = z.infer<typeof duplicateDecisionSchema>;
@@ -21,13 +28,16 @@ export function secondaryDuplicateId({ firstId, secondId, primaryId }: Duplicate
 	return primaryId === null ? null : primaryId === firstId ? secondId : firstId;
 }
 
-interface BookingOwner { readonly statementId: string; readonly account: string | null; readonly scope: string; readonly references: Set<string> }
+interface IBookingOwner { readonly statementId: string; readonly account: string | null; readonly scope: string; readonly references: Set<string> }
+interface IBookingGroup { statements: Set<string>; accounts: Set<string>; references: Set<string> }
+type StoredTransaction = StoredBankImport['transactions'][number];
+type AccountSection = StoredBankImport['result']['accountSections'][number];
 
-function validateGroups(primaryBySecondary: ReadonlyMap<string, string>, owners: ReadonlyMap<string, BookingOwner>): void {
-	const groups: Map<string, { statements: Set<string>; accounts: Set<string>; references: Set<string>; }> = new Map<string, { statements: Set<string>; accounts: Set<string>; references: Set<string> }>();
+function validateGroups(primaryBySecondary: ReadonlyMap<string, string>, owners: ReadonlyMap<string, IBookingOwner>): void {
+	const groups: Map<string, IBookingGroup> = new Map<string, IBookingGroup>();
 	for (const [secondary, primary] of primaryBySecondary) {
-		const kept: BookingOwner = owners.get(primary)!, excluded: BookingOwner = owners.get(secondary)!;
-		const group: { statements: Set<string>; accounts: Set<string>; references: Set<string>; } = groups.get(primary) ?? { statements: new Set([kept.statementId]), accounts: new Set(kept.account ? [kept.account] : []), references: new Set(kept.references) };
+		const kept: IBookingOwner = owners.get(primary)!, excluded: IBookingOwner = owners.get(secondary)!;
+		const group: IBookingGroup = groups.get(primary) ?? { statements: new Set([kept.statementId]), accounts: new Set(kept.account ? [kept.account] : []), references: new Set(kept.references) };
 		if (group.statements.has(excluded.statementId)) {
 			throw new Error('A duplicate group can contain only one booking per statement.');
 		}
@@ -52,23 +62,23 @@ export function validateDuplicateDecisions(decisions: Iterable<DuplicateDecision
 		return result;
 	}
 	const referenced: Set<string> = new Set(parsed.flatMap(({ firstId, secondId }: DuplicateDecision): string[] => [firstId, secondId]));
-	const owners: Map<string, { readonly statementId: string; readonly account: string | null; readonly scope: string; readonly references: Set<string>; }> = new Map(imports.flatMap((record: StoredBankImport): (readonly [string, { readonly statementId: string; readonly account: string | null; readonly scope: string; readonly references: Set<string>; }])[] => {
+	const owners: Map<string, IBookingOwner> = new Map(imports.flatMap((record: StoredBankImport): (readonly [string, IBookingOwner])[] => {
 		const bank: string | undefined = record.result.adapter?.bankId ?? originalBankIds.get(record.id);
-		const selected: { rowId: string; transactionId: string; }[] = record.transactions.filter((row: { rowId: string; transactionId: string; }): boolean => referenced.has(row.transactionId));
+		const selected: StoredTransaction[] = record.transactions.filter((row: StoredTransaction): boolean => referenced.has(row.transactionId));
 		if (!bank || !selected.length) {
 			return [];
 		}
 		const rows: Map<string, TransactionCandidate> = new Map(record.result.transactions.map((row: TransactionCandidate): [string, TransactionCandidate] => [row.rowId, row]));
-		const accounts: Map<string, { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; }> = new Map(record.result.accountSections.map((account: { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; }): [string, { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; }] => [account.sectionId, account]));
-		return selected.flatMap(({ transactionId, rowId }: { rowId: string; transactionId: string; }): [] | [readonly [string, { readonly statementId: string; readonly account: string | null; readonly scope: string; readonly references: Set<string>; }]] => {
-			const row: TransactionCandidate | undefined = rows.get(rowId), account: { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; } | undefined = row && accounts.get(row.accountSectionId);
+		const accounts: Map<string, AccountSection> = new Map(record.result.accountSections.map((account: AccountSection): [string, AccountSection] => [account.sectionId, account]));
+		return selected.flatMap(({ transactionId, rowId }: StoredTransaction): [] | [readonly [string, IBookingOwner]] => {
+			const row: TransactionCandidate | undefined = rows.get(rowId), account: AccountSection | undefined = row && accounts.get(row.accountSectionId);
 			return row && account ? [[transactionId, { statementId: record.id, account: statementAccountKey(account.accountReference?.value),
 				scope: JSON.stringify([bank, account.currency.value, row.direction]), references: bankTransactionIds(row.references) }] as const] : [];
 		});
 	}));
 	for (const decision of parsed) {
 		const { firstId, secondId, primaryId }: DuplicateDecision = decision;
-		const firstOwner: { readonly statementId: string; readonly account: string | null; readonly scope: string; readonly references: Set<string>; } | undefined = owners.get(firstId), secondOwner: { readonly statementId: string; readonly account: string | null; readonly scope: string; readonly references: Set<string>; } | undefined = owners.get(secondId);
+		const firstOwner: IBookingOwner | undefined = owners.get(firstId), secondOwner: IBookingOwner | undefined = owners.get(secondId);
 		const key: string = duplicatePairKey(firstId, secondId);
 		if (!firstOwner || !secondOwner || firstOwner.statementId === secondOwner.statementId || result.has(key)) {
 			throw new Error('Duplicate decisions must refer to two bookings from different statements.');
@@ -114,11 +124,11 @@ export function excludeTransactions(imports: StoredBankImport[], excluded: Reado
 		return imports;
 	}
 	return imports.map((record: StoredBankImport): StoredBankImport => {
-		const transactions: { rowId: string; transactionId: string; }[] = record.transactions.filter((row: { rowId: string; transactionId: string; }): boolean => !excluded.has(row.transactionId));
+		const transactions: StoredTransaction[] = record.transactions.filter((row: StoredTransaction): boolean => !excluded.has(row.transactionId));
 		if (transactions.length === record.transactions.length) {
 			return record;
 		}
-		const keptRows: Set<string> = new Set(transactions.map((row: { rowId: string; transactionId: string; }): string => row.rowId));
+		const keptRows: Set<string> = new Set(transactions.map((row: StoredTransaction): string => row.rowId));
 		return { ...record, transactions, result: { ...record.result, transactions: record.result.transactions.filter((row: TransactionCandidate): boolean => keptRows.has(row.rowId)) } };
 	});
 }

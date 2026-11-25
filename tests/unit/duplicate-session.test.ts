@@ -1,8 +1,8 @@
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
 import type { SourceEvidence, TransactionCandidate } from "../../src/shared/bank-import.js";
-import type { MatchSummary } from "../../src/shared/workspace-matching.js";
-import type { WorkspaceState } from "../../src/shared/protocol.js";
+import type { IMatchSummary } from "../../src/shared/workspace-matching.js";
+import type { IWorkspaceState } from "../../src/shared/protocol.js";
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -16,7 +16,7 @@ import { approvalSelectionFor } from '../../src/shared/match-approvals.js';
 import type { WorkspaceCommand } from '../../src/shared/protocol.js';
 import { documentRun, retainedBank, retainedDocument } from './document-fixtures.js';
 
-async function fixture(context: TestContext): Promise<{ root: string; file: string; banks: StoredBankImport[]; firstId: string; secondId: string; thirdId: string; receipts: StoredSupportingDocument[]; session: WorkspaceSession; decide: (decision: Extract<WorkspaceCommand, { type: "set-duplicate-decision"; }>["decision"], transactionId?: string, otherTransactionId?: string, revision?: number) => Promise<WorkspaceState>; summaries: () => Map<string, MatchSummary>; }> {
+async function fixture(context: TestContext): Promise<{ root: string; file: string; banks: StoredBankImport[]; firstId: string; secondId: string; thirdId: string; receipts: StoredSupportingDocument[]; session: WorkspaceSession; decide: (decision: Extract<WorkspaceCommand, { type: "set-duplicate-decision"; }>["decision"], transactionId?: string, otherTransactionId?: string, revision?: number) => Promise<IWorkspaceState>; summaries: () => Map<string, IMatchSummary>; }> {
 	const root: string = await mkdtemp(path.join(tmpdir(), 'receiptmatch-duplicates-'));
 	context.onTestFinished((): Promise<void> => rm(root, { recursive: true, force: true }));
 	const file: string = path.join(root, 'test.receiptmatch');
@@ -30,11 +30,11 @@ async function fixture(context: TestContext): Promise<{ root: string; file: stri
 	const [firstId, secondId, thirdId]: string[] = banks.map((bank: StoredBankImport): string => bank.transactions[0].transactionId);
 	const receipts: StoredSupportingDocument[] = [retainedDocument(root, 'first.pdf'), retainedDocument(root, 'second.pdf')];
 	const session: WorkspaceSession = new WorkspaceSession({ open: async (): Promise<string> => Promise.resolve(file), save: async (): Promise<string> => Promise.resolve(file), unsaved: async (): Promise<"discard"> => Promise.resolve('discard') });
-	const decide: (decision: Extract<WorkspaceCommand, { type: "set-duplicate-decision"; }>["decision"], transactionId?: string, otherTransactionId?: string, revision?: number) => Promise<WorkspaceState> = (decision: Extract<WorkspaceCommand, { type: 'set-duplicate-decision' }>['decision'],
-		transactionId: string = firstId, otherTransactionId: string = secondId, revision: number = session.state().workspace!.matchRevision): Promise<WorkspaceState> =>
+	const decide: (decision: Extract<WorkspaceCommand, { type: "set-duplicate-decision"; }>["decision"], transactionId?: string, otherTransactionId?: string, revision?: number) => Promise<IWorkspaceState> = (decision: Extract<WorkspaceCommand, { type: 'set-duplicate-decision' }>['decision'],
+		transactionId: string = firstId, otherTransactionId: string = secondId, revision: number = session.state().workspace!.matchRevision): Promise<IWorkspaceState> =>
 		session.dispatch({ type: 'set-duplicate-decision', revision, transactionId, otherTransactionId, decision });
 
-	const summaries: () => Map<string, MatchSummary> = (): Map<string, MatchSummary> => new Map(session.matchSummaries(session.state().workspace!.matchRevision)!.map((row: MatchSummary): [string, MatchSummary] => [row.transactionId, row]));
+	const summaries: () => Map<string, IMatchSummary> = (): Map<string, IMatchSummary> => new Map(session.matchSummaries(session.state().workspace!.matchRevision)!.map((row: IMatchSummary): [string, IMatchSummary] => [row.transactionId, row]));
 	return { root, file, banks, firstId, secondId, thirdId, receipts, session, decide, summaries };
 }
 
@@ -49,12 +49,12 @@ test('archives an excluded review, revokes only its approval and restores the re
 	const bytes: NonSharedBuffer = await readFile(file);
 	await session.dispatch({ type: 'open' });
 	assert.equal(summaries().get(secondId)?.approvalStatus.status, 'approved');
-	const separate: WorkspaceState = await decide('separate');
+	const separate: IWorkspaceState = await decide('separate');
 	assert.equal(separate.error, null);
 	assert.equal(separate.workspace?.duplicateDecisions[0].primaryId, null);
 	assert.equal(summaries().size, 3);
 	assert.equal((await decide('clear')).error, null);
-	const excluded: WorkspaceState = await decide('keep-first');
+	const excluded: IWorkspaceState = await decide('keep-first');
 	assert.equal(excluded.error, null);
 	assert.equal(excluded.workspace?.duplicateDecisions[0].primaryId, firstId);
 	assert.deepEqual(excluded.workspace?.duplicateDecisions[0].archivedReview, { documentId: secondDocument });
@@ -89,7 +89,7 @@ test('rejects stale and conflicting duplicate decisions and preserves explicitly
 	assert.equal((await decide('separate')).error, null);
 	assert.match((await decide('keep-first', thirdId, firstId, revision)).error ?? '', /changed/);
 	assert.equal((await decide('keep-first', thirdId, firstId)).error, null);
-	const conflict: WorkspaceState = await decide('keep-first', thirdId, secondId);
+	const conflict: IWorkspaceState = await decide('keep-first', thirdId, secondId);
 	assert.match(conflict.error ?? '', /kept separate/);
 	assert.equal(conflict.workspace?.duplicateDecisions.length, 2);
 	assert.equal(summaries().has(secondId), true);
@@ -104,10 +104,10 @@ test('requires resolving a reassigned document before restoring its archived rev
 	await createWorkspace(file, newMetadata(), banks, [documentRun(root, [receipt])], new Map([[secondId, receipt.id]]));
 	await session.dispatch({ type: 'open' });
 	assert.equal((await decide('keep-first')).error, null);
-	const assign: WorkspaceState = await session.dispatch({ type: 'review-match', revision: session.state().workspace!.matchRevision,
+	const assign: IWorkspaceState = await session.dispatch({ type: 'review-match', revision: session.state().workspace!.matchRevision,
 		transactionId: firstId, review: { status: 'assigned', documentId: receipt.id } });
 	assert.equal(assign.error, null);
-	const blocked: WorkspaceState = await decide('clear');
+	const blocked: IWorkspaceState = await decide('clear');
 	assert.match(blocked.error ?? '', /archived document is now assigned/);
 	assert.equal(blocked.workspace?.duplicateDecisions.length, 1);
 	assert.equal(summaries().has(secondId), false);
@@ -124,7 +124,7 @@ test('rejects excluding multiple bookings from one statement against a single le
 	await createWorkspace(file, newMetadata(), banks);
 	await session.dispatch({ type: 'open' });
 	assert.equal((await decide('keep-first', secondId, firstId)).error, null);
-	const rejected: WorkspaceState = await decide('keep-first', secondId, additionalId);
+	const rejected: IWorkspaceState = await decide('keep-first', secondId, additionalId);
 	assert.match(rejected.error ?? '', /one booking per statement/);
 	assert.equal(rejected.workspace?.duplicateDecisions.length, 1);
 	assert.equal(summaries().has(additionalId), true);
@@ -140,7 +140,7 @@ test.for(['account', 'reference'])('rejects bridging conflicting known %s identi
 	await createWorkspace(file, newMetadata(), banks);
 	await session.dispatch({ type: 'open' });
 	assert.equal((await decide('keep-first', firstId, secondId)).error, null);
-	const rejected: WorkspaceState = await decide('keep-first', firstId, thirdId);
+	const rejected: IWorkspaceState = await decide('keep-first', firstId, thirdId);
 	assert.match(rejected.error ?? '', /conflicting bank, account or transaction identifiers/);
 	assert.equal(rejected.workspace?.duplicateDecisions.length, 1);
 	assert.equal(summaries().has(thirdId), true);

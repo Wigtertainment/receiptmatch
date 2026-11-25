@@ -12,9 +12,9 @@ import {
 	storedDocumentImportSchema,
 	storedSupportingDocumentSchema,
 	type DocumentFormat,
-	type DocumentImportProgress,
+	type IDocumentImportProgress,
 	type StoredDocumentImport,
-	type WorkspaceSource,
+	type IWorkspaceSource,
 } from "../../src/shared/workspace-documents.js";
 import { assertSourceNotCancelled, readSourceSnapshot, SourceReadError } from "../import/source.js";
 import { interpretSupportingDocument } from "./interpret.js";
@@ -23,9 +23,9 @@ import type { Dirent } from 'node:fs';
 import type { BigIntStats } from 'node:fs';
 
 export interface DocumentImportOptions {
-	existingSources: readonly WorkspaceSource[];
+	existingSources: readonly IWorkspaceSource[];
 	signal?: AbortSignal;
-	onProgress?: (progress: DocumentImportProgress) => void;
+	onProgress?: (progress: IDocumentImportProgress) => void;
 }
 export interface DocumentImportService {
 	run(options: DocumentImportOptions): Promise<StoredDocumentImport | null>;
@@ -98,7 +98,7 @@ export class FolderDocumentImportService implements DocumentImportService {
 				throw new SourceReadError("invalid-source", "Choose an absolute local folder using the document dialog.");
 			}
 		const folderPath: string = path.resolve(selected),
-			identities: Set<string> = new Set(options.existingSources.map((source: WorkspaceSource): string => source.id.toLowerCase()));
+			identities: Set<string> = new Set(options.existingSources.map((source: IWorkspaceSource): string => source.id.toLowerCase()));
 		const freshId: () => string = (): string => {
 			let id: string;
 			do {
@@ -116,11 +116,11 @@ export class FolderDocumentImportService implements DocumentImportService {
 			files: [],
 			directoryIssues: [],
 		};
-		const seen: Map<string, string> = new Map(options.existingSources.filter((source: WorkspaceSource): boolean => source.sha256 !== null).map((source: WorkspaceSource): [string, string] => [source.sha256!, source.id]));
+		const seen: Map<string, string> = new Map(options.existingSources.filter((source: IWorkspaceSource): boolean => source.sha256 !== null).map((source: IWorkspaceSource): [string, string] => [source.sha256!, source.id]));
 		let canonicalRoot: string = "",
 			directories: number = 0,
 			stopped: boolean = false;
-		const progress: (phase: DocumentImportProgress["phase"], filePath?: string | null, extraction?: ExtractionProgress | null) => void = (phase: DocumentImportProgress["phase"], filePath: string | null = null, extraction: ExtractionProgress | null = null): void => {
+		const progress: (phase: IDocumentImportProgress["phase"], filePath?: string | null, extraction?: ExtractionProgress | null) => void = (phase: IDocumentImportProgress["phase"], filePath: string | null = null, extraction: ExtractionProgress | null = null): void => {
 			if (!options.signal?.aborted) {
 				options.onProgress?.({ phase, filePath, completedFiles: report.files.length, extraction });
 			}

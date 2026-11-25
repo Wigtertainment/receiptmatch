@@ -15,7 +15,7 @@ import { activeDocumentFieldDisposition, documentFieldConfirmationIssue, documen
     isDocumentFieldConfirmed, type DocumentFieldDisposition, type DocumentFieldReview, type DocumentFieldReviewTarget } from '../../src/shared/document-field-reviews.js';
 import { approvalSelectionFor, documentRevisionIndex, type ReviewApprovalState } from '../../src/shared/match-approvals.js';
 import { randomUUID } from 'node:crypto';
-import type { DocumentSnapshot } from '../../src/shared/protocol.js';
+import type { IDocumentSnapshot } from '../../src/shared/protocol.js';
 import { supportingDocumentSchema, type DocumentSection, type SupportingDocument } from '../../src/shared/supporting-document.js';
 import { storedDocumentImportSchema, type StoredDocumentImport, type StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
@@ -40,7 +40,7 @@ function imported(reports: StoredDocumentImport[]): SupportingDocument {
     return file.record.result;
 }
 
-function snapshot(session: WorkspaceSession): DocumentSnapshot {
+function snapshot(session: WorkspaceSession): IDocumentSnapshot {
     const workspace: NonNullable<ReturnType<WorkspaceSession['state']>['workspace']> = session.state().workspace!;
     return session.documentSnapshot({ revision: workspace.matchRevision, loadRevision: workspace.loadRevision })!;
 }
@@ -163,7 +163,7 @@ test('required-field decisions persist and reset, invalidate approvals, reject s
     const target: DocumentFieldReviewTarget = { documentId: document.id, sectionId: section.sectionId, fieldId: total.id };
     const previousRevision: number = session.state().workspace!.matchRevision;
     await setDisposition(session, target, 'unavailable');
-    const current: DocumentSnapshot = snapshot(session);
+    const current: IDocumentSnapshot = snapshot(session);
     assert.deepEqual(imported(current.reports).sections[0].amounts[0].candidates, []);
     assert.deepEqual(current.originals[document.id].sections, document.result.sections);
     assert.deepEqual(current.reviewBases![document.id].sections, document.result.sections);

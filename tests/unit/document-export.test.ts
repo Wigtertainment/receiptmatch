@@ -2,9 +2,9 @@ import type { StoredBankImport } from "../../src/shared/workspace-import.js";
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
 import type { MatchApprovalSelection } from "../../src/shared/match-approvals.js";
 import type { DocumentExportOutcome } from "../../src/shared/document-export.js";
-import type { DocumentExportReport } from "../../src/shared/document-export.js";
-import type { MatchSummary } from "../../src/shared/workspace-matching.js";
-import type { WorkspaceView } from "../../src/shared/protocol.js";
+import type { IDocumentExportReport } from "../../src/shared/document-export.js";
+import type { IMatchSummary } from "../../src/shared/workspace-matching.js";
+import type { IWorkspaceView } from "../../src/shared/protocol.js";
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -47,11 +47,11 @@ test('exports only current approvals using effective bookings and leaves the wor
 	const before: NonSharedBuffer = await fs.readFile(workspacePath);
 	const session: WorkspaceSession = new WorkspaceSession({ open: async (): Promise<string> => Promise.resolve(workspacePath), save: async (): Promise<string> => Promise.resolve(workspacePath), unsaved: async (): Promise<"discard"> => Promise.resolve('discard') });
 	assert.equal((await session.dispatch({ type: 'open' })).error, null);
-	const workspace: () => WorkspaceView = (): WorkspaceView => session.state().workspace!;
+	const workspace: () => IWorkspaceView = (): IWorkspaceView => session.state().workspace!;
 
-	const selections: () => MatchApprovalSelection[] = (): MatchApprovalSelection[] => session.matchSummaries(workspace().matchRevision)!.map((row: MatchSummary): MatchApprovalSelection => row.approvalSelection!);
+	const selections: () => MatchApprovalSelection[] = (): MatchApprovalSelection[] => session.matchSummaries(workspace().matchRevision)!.map((row: IMatchSummary): MatchApprovalSelection => row.approvalSelection!);
 
-	const exportCurrent: () => Promise<DocumentExportReport> = (): Promise<DocumentExportReport> => session.exportApprovedDocuments(workspace().loadRevision, destination, defaultExportFilenamePattern);
+	const exportCurrent: () => Promise<IDocumentExportReport> = (): Promise<IDocumentExportReport> => session.exportApprovedDocuments(workspace().loadRevision, destination, defaultExportFilenamePattern);
 	assert.deepEqual(await exportCurrent(), { directory: null, outcomes: [] });
 	assert.deepEqual(await fs.readdir(destination), []);
 	assert.equal((await session.dispatch({ type: 'correct-bank-row', revision: workspace().matchRevision, rowId: first,
@@ -60,7 +60,7 @@ test('exports only current approvals using effective bookings and leaves the wor
 	assert.equal((await session.dispatch({ type: 'correct-bank-row', revision: workspace().matchRevision, rowId: second,
 		changes: { bookingDate: '2032-03-12' } })).error, null);
 	await assert.rejects(session.exportApprovedDocuments(workspace().loadRevision + 1, destination, defaultExportFilenamePattern), /workspace changed/i);
-	const pending: Promise<DocumentExportReport> = exportCurrent();
+	const pending: Promise<IDocumentExportReport> = exportCurrent();
 	await assert.rejects(exportCurrent(), /current workspace action/i);
 	const directory: string = path.join(destination, 'documents');
 	const filename: "2032-02-26_Orchard-Workshop_EUR_-1234.56.pdf" = '2032-02-26_Orchard-Workshop_EUR_-1234.56.pdf';
@@ -85,14 +85,14 @@ test('reports collisions and source failures independently and preserves the JPE
 	await Promise.all([fs.writeFile(first.source!.filePath, 'first'), fs.writeFile(second.source!.filePath, 'second'),
 		fs.writeFile(changed.source!.filePath, 'new'), fs.writeFile(jpeg.source!.filePath, 'photo')]);
 	const sources: string[] = documents.map((document: ApprovedExportDocument): string => document.source!.filePath);
-	const result: DocumentExportReport = await copyApprovedDocuments(destination, '{counterparty}', documents, sources);
+	const result: IDocumentExportReport = await copyApprovedDocuments(destination, '{counterparty}', documents, sources);
 	assert.deepEqual(result.outcomes.map((outcome: DocumentExportOutcome): (string | null)[] => [outcome.status, outcome.filename, 'reason' in outcome ? outcome.reason : null]), [
 		['copied', 'Same.pdf', null], ['skipped', 'Same.pdf', 'collision'], ['failed', 'Changed.pdf', 'source-changed'],
 		['failed', 'Missing.pdf', 'source-missing'], ['copied', 'Photo.jpeg', null],
 	]);
 	assert.equal(await fs.readFile(path.join(result.directory!, 'Same.pdf'), 'utf8'), 'first');
 	assert.equal(await fs.readFile(path.join(result.directory!, 'Photo.jpeg'), 'utf8'), 'photo');
-	const retry: DocumentExportReport = await copyApprovedDocuments(destination, '{counterparty}', [second], sources);
+	const retry: IDocumentExportReport = await copyApprovedDocuments(destination, '{counterparty}', [second], sources);
 	assert.equal(retry.outcomes[0].status, 'skipped');
 	assert.deepEqual((await fs.readdir(result.directory!)).sort(), ['Photo.jpeg', 'Same.pdf']);
 	assert.equal(await fs.readFile(path.join(result.directory!, 'Same.pdf'), 'utf8'), 'first');
@@ -136,7 +136,7 @@ test('protects imported and relocated originals from use as a document export di
 
 	const permitted: string = path.join(root, 'permitted');
 	await fs.mkdir(permitted);
-	const result: DocumentExportReport = await copyApprovedDocuments(permitted, '{counterparty}', [item], []);
+	const result: IDocumentExportReport = await copyApprovedDocuments(permitted, '{counterparty}', [item], []);
 	assert.equal(result.outcomes[0].sourcePath, relocatedPath);
 	assert.equal(result.outcomes[0].status, 'copied');
 	assert.equal(await fs.readFile(path.join(result.directory!, 'Relocated.pdf'), 'utf8'), 'original');
@@ -163,7 +163,7 @@ test('removes an incomplete copy and keeps exporting after a write failure', asy
 	const link: Mock<(existingPath: PathLike, newPath: PathLike) => Promise<void>> = vi.spyOn(fs, 'link').mockRejectedValue(Object.assign(new Error('No hard links'), { code: 'ENOTSUP' }));
 	syncBuiltinESMExports();
 	try {
-		const result: DocumentExportReport = await copyApprovedDocuments(destination, '{counterparty}', [broken, healthy], sources);
+		const result: IDocumentExportReport = await copyApprovedDocuments(destination, '{counterparty}', [broken, healthy], sources);
 		assert.deepEqual(result.outcomes.map((outcome: DocumentExportOutcome): "failed" | "skipped" | "copied" => outcome.status), ['failed', 'copied']);
 		assert.deepEqual(await fs.readdir(result.directory!), ['Healthy.pdf']);
 		assert.equal(await fs.readFile(path.join(result.directory!, 'Healthy.pdf'), 'utf8'), 'healthy');

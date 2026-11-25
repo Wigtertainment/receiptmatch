@@ -8,7 +8,7 @@ import { prepareStatementAnalysis } from '../../electron/import/prepare-statemen
 import { createWorkspace, newMetadata } from '../../electron/store.js';
 import type { LocalOcrStatus } from '../../src/shared/local-ocr-settings.js';
 import type { OriginalAdoptionResult } from '../../src/shared/original-preview.js';
-import type { WorkspaceCommand, WorkspaceState } from '../../src/shared/protocol.js';
+import type { WorkspaceCommand, IWorkspaceState } from '../../src/shared/protocol.js';
 import type { StatementAiAcceptRequest, StatementAiDiscardRequest, StatementAiPreviewResult, StatementAiRequest } from '../../src/shared/statement-ai.js';
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
 import { retainedBank } from '../unit/document-fixtures.js';
@@ -17,7 +17,7 @@ import { statement } from '../unit/bank-fixtures.js';
 type Preview = Extract<StatementAiPreviewResult, { status: 'ready' }>;
 type Mode = 'ready' | 'blocked' | 'progress' | 'error' | 'accept-error';
 interface UiFixture {
-    mode: Mode; state: WorkspaceState; current: StoredBankImport; suggested: StoredBankImport; preview: Preview;
+    mode: Mode; state: IWorkspaceState; current: StoredBankImport; suggested: StoredBankImport; preview: Preview;
     discarded: string[]; accepted: StatementAiAcceptRequest[]; pending?: (value: StatementAiPreviewResult) => void;
 }
 interface MainGlobals { statementAiUi?: UiFixture }
@@ -60,7 +60,7 @@ async function mockAnalysis(application: ElectronApplication, fixture: UiFixture
 
         ipcMain.handle('workspace:bank-imports', (): StoredBankImport[] => [fixture.current]);
 
-        ipcMain.handle('workspace:command', (_event: Electron.IpcMainInvokeEvent, command: WorkspaceCommand): WorkspaceState => {
+        ipcMain.handle('workspace:command', (_event: Electron.IpcMainInvokeEvent, command: WorkspaceCommand): IWorkspaceState => {
             if (command.type === 'cancel-import' && fixture.pending) {
                 fixture.state.busy = false;
                 fixture.state.statementImport = null;
@@ -193,7 +193,7 @@ test('reviews local AI statement changes safely, keeps drafts on discard and sup
         await cancelRemoval.press('Escape');
         await expect(removal).not.toBeVisible();
         await expect(remove).toBeFocused();
-        const state: WorkspaceState = await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'get-state' }));
+        const state: IWorkspaceState = await page.evaluate((): Promise<IWorkspaceState> => window.receiptmatch.command({ type: 'get-state' }));
         await nativeChecks(page, prepared.original.id, state.workspace!.loadRevision);
         await analyze.click();
         await expect(panel.getByRole('alert')).toContainText('Download NuExtract3');

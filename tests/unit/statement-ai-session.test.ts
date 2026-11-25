@@ -6,7 +6,7 @@ import path from 'node:path';
 import { test } from 'vitest';
 import type { BankImportInput } from '../../src/shared/bank-import.js';
 import { importIssue } from '../../src/shared/bank-import.js';
-import type { StatementFallbackState, WorkspaceState } from '../../src/shared/protocol.js';
+import type { StatementFallbackState, IWorkspaceState } from '../../src/shared/protocol.js';
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
 import type { BankImportAttempt, BankImportOptions, BankImportService, StatementFallback, StatementFallbackResult } from '../../electron/import/service.js';
 import { parseBankStatement } from '../../electron/import/registry.js';
@@ -52,7 +52,7 @@ function fixture(root: string, recognize?: StatementFallback['run'], cancelSelec
     return { session: new WorkspaceSession(dialogs, undefined, service), dialogs, record, savedFile };
 }
 
-function pending(state: WorkspaceState, stage: StatementFallbackState['stage']): StatementFallbackState {
+function pending(state: IWorkspaceState, stage: StatementFallbackState['stage']): StatementFallbackState {
     assert.ok(state.statementFallback);
     assert.equal(state.statementFallback.stage, stage);
     return state.statementFallback;
@@ -87,7 +87,7 @@ test('a local AI preview changes neither workspace nor matching until the review
 
         assert.equal(review.stage, 'review');
         review.result.transactions.length = 0;
-        const imported: WorkspaceState = await session.dispatch({ type: 'confirm-statement-ai', token: review.token });
+        const imported: IWorkspaceState = await session.dispatch({ type: 'confirm-statement-ai', token: review.token });
         assert.equal(imported.statementFallback, undefined);
         assert.equal(imported.importOutcome?.status, 'imported');
         assert.equal(imported.workspace?.imports[0].bankId, null);
@@ -114,7 +114,7 @@ test('rejects a changed PDF at confirmation and invalidates offers when switchin
         const offer: StatementFallbackState = pending(await session.dispatch({ type: 'import-statement' }), 'offer');
         const review: StatementFallbackState = pending(await session.dispatch({ type: 'try-statement-ai', token: offer.token }), 'review');
         await writeFile(record.filePath, 'Different PDF bytes');
-        const failed: WorkspaceState = await session.dispatch({ type: 'confirm-statement-ai', token: review.token });
+        const failed: IWorkspaceState = await session.dispatch({ type: 'confirm-statement-ai', token: review.token });
         assert.equal(failed.importOutcome?.issues[0].code, 'source-changed');
         assert.equal(failed.statementFallback, undefined);
         assert.deepEqual(session.bankImports(), []);
@@ -143,10 +143,10 @@ test('preserves the offer on unavailable recognition and cancellation until the 
     });
     await session.dispatch({ type: 'new' });
     const offer: StatementFallbackState = pending(await session.dispatch({ type: 'import-statement' }), 'offer');
-    const unavailable: WorkspaceState = await session.dispatch({ type: 'try-statement-ai', token: offer.token });
+    const unavailable: IWorkspaceState = await session.dispatch({ type: 'try-statement-ai', token: offer.token });
     assert.equal(unavailable.importOutcome?.issues[0].code, 'model-unavailable');
     assert.equal(unavailable.statementFallback?.token, offer.token);
-    const running: Promise<WorkspaceState> = session.dispatch({ type: 'try-statement-ai', token: offer.token });
+    const running: Promise<IWorkspaceState> = session.dispatch({ type: 'try-statement-ai', token: offer.token });
     assert.equal(session.state().statementImport?.localAi, true);
     await session.dispatch({ type: 'cancel-import' });
     assert.equal((await running).importOutcome?.status, 'cancelled');

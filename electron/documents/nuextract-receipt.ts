@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { calendarDateSchema, type BankImportInput, type SourceEvidence } from '../../src/shared/bank-import.js';
 import { originalSourceExtensions } from '../../src/shared/original-preview.js';
-import { NUEXTRACT_RECEIPT_VERSION, type ReceiptAiChange, type ReceiptAiField, type ReceiptAiProposal, type ReceiptAiResult } from '../../src/shared/receipt-ai.js';
+import { NUEXTRACT_RECEIPT_VERSION, type IReceiptAiChange, type ReceiptAiField, type IReceiptAiProposal, type ReceiptAiResult } from '../../src/shared/receipt-ai.js';
 import { supportingDocumentSchema, type DocumentSection, type SupportingDocument } from '../../src/shared/supporting-document.js';
 import type { DocumentFormat } from '../../src/shared/workspace-documents.js';
 import type { DocumentImagesResult, ExtractionOptions } from '../extraction/host.js';
@@ -240,7 +240,7 @@ function verifyTotal(analysis: SupportingDocument, section: DocumentSection, lin
     return true;
 }
 
-function unrecognized(label: string, value: unknown): ReceiptAiChange[] {
+function unrecognized(label: string, value: unknown): IReceiptAiChange[] {
     if (value === null || value === undefined) {
         return [];
     }
@@ -306,13 +306,13 @@ function verifyField(analysis: SupportingDocument, section: DocumentSection, lin
 }
 
 function reviewFields(analysis: SupportingDocument, input: BankImportInput, result: Record<string, unknown>): {
-    pending: ReceiptAiChange[];
-    proposals: ReceiptAiProposal[];
+    pending: IReceiptAiChange[];
+    proposals: IReceiptAiProposal[];
 } {
     const section: DocumentSection | undefined = primarySection(analysis);
     const lines: Line[] = section ? sectionLines(input, analysis, section) : [];
-    const pending: ReceiptAiChange[] = [];
-    const proposals: ReceiptAiProposal[] = [];
+    const pending: IReceiptAiChange[] = [];
+    const proposals: IReceiptAiProposal[] = [];
     for (const { field, label, key } of modelFields) {
         const raw: unknown = result[key];
         const before: string | null = currentField(section, field);
@@ -324,7 +324,7 @@ function reviewFields(analysis: SupportingDocument, input: BankImportInput, resu
         if (value === undefined || (verified && currentField(section, field) === before)) {
             continue;
         }
-        const proposal: ReceiptAiProposal = { field, label, before, value, verified, sectionId: section?.sectionId };
+        const proposal: IReceiptAiProposal = { field, label, before, value, verified, sectionId: section?.sectionId };
         if (!section) {
             proposal.unavailable = 'No single invoice or receipt section could be identified.';
         } else if (field === 'billed-total') {
@@ -343,8 +343,8 @@ function replaceConfirmed<T extends { id: string }>(analysis: SupportingDocument
         : [...fields, replacement];
 }
 
-function confirmField(analysis: SupportingDocument, section: DocumentSection, proposal: ReceiptAiProposal, currency?: string): void {
-    const { field, label, value }: ReceiptAiProposal = proposal;
+function confirmField(analysis: SupportingDocument, section: DocumentSection, proposal: IReceiptAiProposal, currency?: string): void {
+    const { field, label, value }: IReceiptAiProposal = proposal;
     switch (field) {
         case 'reference': {
             const existing: ReferenceField | undefined = section.references.find(isDocumentReference);
@@ -384,7 +384,7 @@ function finalizeAnalysis(analysis: SupportingDocument, input: BankImportInput):
     return supportingDocumentSchema.parse(analysis);
 }
 
-export function applySelectedReceiptAi(previous: SupportingDocument, proposals: ReceiptAiProposal[], selection: readonly ReceiptAiField[],
+export function applySelectedReceiptAi(previous: SupportingDocument, proposals: IReceiptAiProposal[], selection: readonly ReceiptAiField[],
     currency?: string): SupportingDocument {
     const analysis: SupportingDocument = structuredClone(previous);
     const input: BankImportInput | null = analysis.input;
@@ -394,7 +394,7 @@ export function applySelectedReceiptAi(previous: SupportingDocument, proposals: 
     }
     const lines: Line[] = sectionLines(input, analysis, section);
     for (const field of selection) {
-        const proposal: ReceiptAiProposal | undefined = proposals.find((item: ReceiptAiProposal): boolean => item.field === field);
+        const proposal: IReceiptAiProposal | undefined = proposals.find((item: IReceiptAiProposal): boolean => item.field === field);
         if (!proposal || proposal.unavailable) {
             throw new Error('A selected suggestion is no longer available. Analyze the receipt again.');
         }

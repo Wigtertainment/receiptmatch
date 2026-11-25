@@ -2,17 +2,37 @@ import { z } from 'zod';
 import type { DocumentCorrection } from './document-corrections.js';
 
 const revision: z.ZodNumber = z.number().int().positive();
-export const matchApprovalSelectionSchema: z.ZodObject<{ transactionId: z.ZodUUID; documentId: z.ZodUUID; transactionRevision: z.ZodNumber; documentRevision: z.ZodNumber; associationRevision: z.ZodNumber; }, z.core.$strict> = z.strictObject({
+interface IMatchApprovalSelectionShape {
+    transactionId: z.ZodUUID;
+    documentId: z.ZodUUID;
+    transactionRevision: z.ZodNumber;
+    documentRevision: z.ZodNumber;
+    associationRevision: z.ZodNumber;
+}
+
+interface IMatchApprovalShape extends IMatchApprovalSelectionShape {
+    batchId: z.ZodUUID;
+    approvedAt: z.ZodISODateTime;
+}
+
+export const matchApprovalSelectionSchema: z.ZodObject<z.core.util.Flatten<IMatchApprovalSelectionShape>, z.core.$strict> = z.strictObject({
     transactionId: z.uuid(), documentId: z.uuid(), transactionRevision: revision, documentRevision: revision, associationRevision: revision,
 });
-const matchApprovalSchema: z.ZodObject<{ transactionId: z.ZodUUID; documentId: z.ZodUUID; transactionRevision: z.ZodNumber; documentRevision: z.ZodNumber; associationRevision: z.ZodNumber; batchId: z.ZodUUID; approvedAt: z.ZodISODateTime; }, z.core.$strict> = matchApprovalSelectionSchema.extend({ batchId: z.uuid(), approvedAt: z.iso.datetime() });
-export const reviewApprovalStateSchema: z.ZodObject<{ associationRevision: z.ZodNumber; approval: z.ZodNullable<typeof matchApprovalSchema>; }, z.core.$strict> = z.strictObject({ associationRevision: revision, approval: matchApprovalSchema.nullable() });
+const matchApprovalSchema: z.ZodObject<z.core.util.Flatten<IMatchApprovalShape>, z.core.$strict> =
+    matchApprovalSelectionSchema.extend({ batchId: z.uuid(), approvedAt: z.iso.datetime() });
+interface IReviewApprovalStateShape {
+    associationRevision: z.ZodNumber;
+    approval: z.ZodNullable<typeof matchApprovalSchema>;
+}
+
+export const reviewApprovalStateSchema: z.ZodObject<z.core.util.Flatten<IReviewApprovalStateShape>, z.core.$strict> = z.strictObject({
+    associationRevision: revision, approval: matchApprovalSchema.nullable()
+});
 export type MatchApprovalSelection = z.infer<typeof matchApprovalSelectionSchema>;
 export type MatchApproval = z.infer<typeof matchApprovalSchema>;
 export type ReviewApprovalState = z.infer<typeof reviewApprovalStateSchema>;
-export type MatchApprovalStatus =
-    | { status: 'none' | 'approved' | 'revoked' }
-    | { status: 'stale'; change: 'booking' | 'document' | 'booking-and-document' };
+interface IStaleMatchApproval { status: 'stale'; change: 'booking' | 'document' | 'booking-and-document' }
+export type MatchApprovalStatus = Record<'status', 'none' | 'approved' | 'revoked'> | IStaleMatchApproval;
 
 export function advanceReviewRevision(previous?: ReviewApprovalState): ReviewApprovalState {
     return { associationRevision: revision.parse((previous?.associationRevision ?? 1) + 1), approval: previous?.approval ?? null };
@@ -39,7 +59,7 @@ export function approvalSelectionFor(
 
 export function currentMatchApprovals(
     reviews: ReadonlyMap<string, ReviewApprovalState>, decisions: ReadonlyMap<string, string | null>,
-    bookingRevisions: ReadonlyMap<string, { revision: number }>, documentRevisions: ReadonlyMap<string, number>,
+    bookingRevisions: ReadonlyMap<string, Record<'revision', number>>, documentRevisions: ReadonlyMap<string, number>,
 ): Map<string, MatchApproval> {
     const approvals: Map<string, MatchApproval> = new Map<string, MatchApproval>();
     for (const [transactionId, { approval, associationRevision }] of reviews) {

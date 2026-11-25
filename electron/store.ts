@@ -17,7 +17,7 @@ import { originalSourceExtensions } from '../src/shared/original-preview.js';
 import { activeStatements, activeSupportingDocuments } from '../src/shared/source-replacements.js';
 import { excludedDuplicateIds, validateDuplicateDecisions, type DuplicateDecision } from '../src/shared/transaction-duplicates.js';
 import { storedBankImportSchema, type StoredBankImport } from '../src/shared/workspace-import.js';
-import { storedDocumentImportSchema, type DocumentFormat, type StoredDocumentImport, type WorkspaceSource } from '../src/shared/workspace-documents.js';
+import { storedDocumentImportSchema, type DocumentFormat, type StoredDocumentImport, type IWorkspaceSource } from '../src/shared/workspace-documents.js';
 import { transactionMatchSchema, type TransactionMatch } from '../src/shared/workspace-matching.js';
 import type { TransactionCandidate } from '../src/shared/bank-import.js';
 import { suggestWorkspaceMatches } from './matching.js';
@@ -34,7 +34,7 @@ const metadataSchema: z.ZodObject<{ id: z.ZodUUID; name: z.ZodString; createdAt:
 export type WorkspaceMetadata = z.infer<typeof metadataSchema>;
 export interface SavedWorkspace {
   metadata: WorkspaceMetadata; filePath: string; fingerprint: string; schemaVersion: number;
-  imports: StoredBankImport[]; documentImports: StoredDocumentImport[]; sources: WorkspaceSource[]; matches: TransactionMatch[];
+  imports: StoredBankImport[]; documentImports: StoredDocumentImport[]; sources: IWorkspaceSource[]; matches: TransactionMatch[];
   matchDecisions: Map<string, string | null>;
   bankCorrections: Map<string, BankCorrection>;
   documentCorrections: Map<string, DocumentCorrection>;
@@ -184,9 +184,9 @@ function entityIdentities(db: Database.Database): Map<string, string[]> {
   return identities;
 }
 
-function sourceCatalog(db: Database.Database): WorkspaceSource[] {
-  const sources: WorkspaceSource[] = db.prepare('SELECT id,path AS filePath,fingerprint AS sha256 FROM sources ORDER BY rowid').all() as WorkspaceSource[];
-  if (sources.some((source: WorkspaceSource): boolean => typeof source.id !== 'string' || typeof source.filePath !== 'string' || (source.sha256 !== null && typeof source.sha256 !== 'string'))) {
+function sourceCatalog(db: Database.Database): IWorkspaceSource[] {
+  const sources: IWorkspaceSource[] = db.prepare('SELECT id,path AS filePath,fingerprint AS sha256 FROM sources ORDER BY rowid').all() as IWorkspaceSource[];
+  if (sources.some((source: IWorkspaceSource): boolean => typeof source.id !== 'string' || typeof source.filePath !== 'string' || (source.sha256 !== null && typeof source.sha256 !== 'string'))) {
     throw new Error('The workspace contains invalid source information.');
   }
   return sources;
@@ -420,7 +420,7 @@ function validateImports(db: Database.Database, imports: StoredBankImport[], own
 
 function validateDocumentProjection(
   documentRecord: StoredSupportingDocument, source: Database.Statement, document: Database.Statement, sourceDocuments: Database.Statement,
-  sourceStatements: Database.Statement, sources: WorkspaceSource[], revisions: ReadonlyMap<string, number>
+  sourceStatements: Database.Statement, sources: IWorkspaceSource[], revisions: ReadonlyMap<string, number>
 ): { sourceId: string; sha256: string } {
   const provenance: { sourceId: string; sha256: string; } = documentRecord.result.input!.source;
   const savedSource: { path: string; fingerprint: string; } | undefined = source.get(provenance.sourceId) as { path: string; fingerprint: string } | undefined;
@@ -434,16 +434,16 @@ function validateDocumentProjection(
   if (projected.length !== 1 || projected[0] !== documentRecord.id || sourceStatements.all(provenance.sourceId).length) {
     throw new Error('The stored document import contains unexpected projected records.');
   }
-  if (sources.some((source: WorkspaceSource): boolean => source.id !== provenance.sourceId && source.sha256 === provenance.sha256)) {
+  if (sources.some((source: IWorkspaceSource): boolean => source.id !== provenance.sourceId && source.sha256 === provenance.sha256)) {
     throw new Error('The workspace contains duplicate document content.');
   }
   return provenance;
 }
 
 function validateDocumentImports(db: Database.Database, imports: StoredDocumentImport[], owned: Set<string>, revisions: ReadonlyMap<string, number>): void {
-  const identities: Map<string, string[]> = entityIdentities(db); const sources: WorkspaceSource[] = sourceCatalog(db);
+  const identities: Map<string, string[]> = entityIdentities(db); const sources: IWorkspaceSource[] = sourceCatalog(db);
   const documentSourceIds: Set<string> = new Set(imports.flatMap((record: StoredDocumentImport): string[] => record.files.flatMap((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): string[] => file.status === 'imported' ? [file.record.result.input!.source.sourceId] : [])));
-  const available: Map<string, string | null> = new Map(sources.filter((source: WorkspaceSource): boolean => !documentSourceIds.has(source.id)).map((source: WorkspaceSource): [string, string | null] => [source.id, source.sha256]));
+  const available: Map<string, string | null> = new Map(sources.filter((source: IWorkspaceSource): boolean => !documentSourceIds.has(source.id)).map((source: IWorkspaceSource): [string, string | null] => [source.id, source.sha256]));
   const source: Database.Statement<unknown[], unknown> = db.prepare('SELECT path,fingerprint FROM sources WHERE id=?');
   const document: Database.Statement<unknown[], unknown> = db.prepare('SELECT source_id,revision FROM documents WHERE id=?');
   const sourceDocuments: Database.Statement<unknown[], unknown> = db.prepare('SELECT id FROM documents WHERE source_id=? ORDER BY id');
@@ -482,9 +482,9 @@ function validateAppend(
     throw new Error('Saved document imports cannot be removed, reordered or rewritten.');
   }
   const identities: Set<string> = new Set(entityIdentities(db).keys());
-  const sources: WorkspaceSource[] = sourceCatalog(db).filter((source: WorkspaceSource): boolean => !removedSources.has(source.id));
-  const hashes: Set<string> = new Set(sources.flatMap((source: WorkspaceSource): string[] => source.sha256 === null ? [] : [source.sha256]));
-  const available: Map<string, string | null> = new Map(sources.map((source: WorkspaceSource): [string, string | null] => [source.id, source.sha256]));
+  const sources: IWorkspaceSource[] = sourceCatalog(db).filter((source: IWorkspaceSource): boolean => !removedSources.has(source.id));
+  const hashes: Set<string> = new Set(sources.flatMap((source: IWorkspaceSource): string[] => source.sha256 === null ? [] : [source.sha256]));
+  const available: Map<string, string | null> = new Map(sources.map((source: IWorkspaceSource): [string, string | null] => [source.id, source.sha256]));
   for (const record of previous) {
     for (const [id] of importIdentities(record)) {
       identities.add(id.toLowerCase());

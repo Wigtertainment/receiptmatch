@@ -1,22 +1,22 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { DocumentSnapshot, DocumentSnapshotRequest, ExportSettingsRequest, WorkspaceBridge, WorkspaceCommand, WorkspaceState } from '../src/shared/protocol.js';
+import type { IDocumentSnapshot, DocumentSnapshotRequest, ExportSettingsRequest, IWorkspaceBridge, WorkspaceCommand, IWorkspaceState } from '../src/shared/protocol.js';
 import type { DocumentExportResponse } from '../src/shared/document-export.js';
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
 import type { StoredDocumentImport } from '../src/shared/workspace-documents.js';
-import type { MatchDetails, MatchSummary } from '../src/shared/workspace-matching.js';
-import type { OriginalAdoptionRequest, OriginalAdoptionResult, OriginalAnalysisResult, OriginalPreviewRequest, OriginalPreviewResult, OriginalRelinkResult } from '../src/shared/original-preview.js';
+import type { IMatchDetails, IMatchSummary } from '../src/shared/workspace-matching.js';
+import type { OriginalAdoptionRequest, OriginalAdoptionResult, OriginalAnalysisResult, OriginalPreviewRequest, IOriginalPreviewResult, OriginalRelinkResult } from '../src/shared/original-preview.js';
 import type { LocalOcrRequest, LocalOcrStatus } from '../src/shared/local-ocr-settings.js';
 import type { ReceiptAiAcceptRequest, ReceiptAiDiscardRequest, ReceiptAiPreviewResult, ReceiptAiRequest } from '../src/shared/receipt-ai.js';
 import type { StatementAiAcceptRequest, StatementAiDiscardRequest, StatementAiPreviewResult, StatementAiRequest } from '../src/shared/statement-ai.js';
 
-const bridge: WorkspaceBridge = Object.freeze({
-  command: (command: WorkspaceCommand): Promise<WorkspaceState> => ipcRenderer.invoke('workspace:command', command) as Promise<WorkspaceState>,
+const bridge: IWorkspaceBridge = Object.freeze({
+  command: (command: WorkspaceCommand): Promise<IWorkspaceState> => ipcRenderer.invoke('workspace:command', command) as Promise<IWorkspaceState>,
   bankImports: (): Promise<StoredBankImport[]> => ipcRenderer.invoke('workspace:bank-imports') as Promise<StoredBankImport[]>,
   documentImports: (): Promise<StoredDocumentImport[]> => ipcRenderer.invoke('workspace:document-imports') as Promise<StoredDocumentImport[]>,
-  documentSnapshot: (request: DocumentSnapshotRequest): Promise<DocumentSnapshot | null> => ipcRenderer.invoke('workspace:document-snapshot', request) as Promise<DocumentSnapshot | null>,
-  matchSummaries: (revision: number): Promise<MatchSummary[] | null> => ipcRenderer.invoke('workspace:matches', { revision }) as Promise<MatchSummary[] | null>,
-  matchDetails: (revision: number, transactionId: string): Promise<MatchDetails | null> => ipcRenderer.invoke('workspace:matches', { revision, transactionId }) as Promise<MatchDetails | null>,
-  openOriginal: (request: OriginalPreviewRequest): Promise<OriginalPreviewResult> => ipcRenderer.invoke('workspace:open-original', request) as Promise<OriginalPreviewResult>,
+  documentSnapshot: (request: DocumentSnapshotRequest): Promise<IDocumentSnapshot | null> => ipcRenderer.invoke('workspace:document-snapshot', request) as Promise<IDocumentSnapshot | null>,
+  matchSummaries: (revision: number): Promise<IMatchSummary[] | null> => ipcRenderer.invoke('workspace:matches', { revision }) as Promise<IMatchSummary[] | null>,
+  matchDetails: (revision: number, transactionId: string): Promise<IMatchDetails | null> => ipcRenderer.invoke('workspace:matches', { revision, transactionId }) as Promise<IMatchDetails | null>,
+  openOriginal: (request: OriginalPreviewRequest): Promise<IOriginalPreviewResult> => ipcRenderer.invoke('workspace:open-original', request) as Promise<IOriginalPreviewResult>,
   relinkOriginal: (request: OriginalPreviewRequest): Promise<OriginalRelinkResult> => ipcRenderer.invoke('workspace:relink-original', request) as Promise<OriginalRelinkResult>,
   analyzeOriginal: (request: OriginalPreviewRequest): Promise<OriginalAnalysisResult> => ipcRenderer.invoke('workspace:analyze-original', request) as Promise<OriginalAnalysisResult>,
   reanalyzeReceipt: (request: ReceiptAiRequest): Promise<ReceiptAiPreviewResult> => ipcRenderer.invoke('workspace:reanalyze-receipt', request) as Promise<ReceiptAiPreviewResult>,
@@ -30,8 +30,8 @@ const bridge: WorkspaceBridge = Object.freeze({
   localOcr: (request: LocalOcrRequest): Promise<LocalOcrStatus> => ipcRenderer.invoke('app:local-ocr', request) as Promise<LocalOcrStatus>,
   exportDocuments: (loadRevision: number): Promise<DocumentExportResponse> => ipcRenderer.invoke('workspace:export-documents', { loadRevision }) as Promise<DocumentExportResponse>,
   exportReconciliation: (loadRevision: number): Promise<DocumentExportResponse> => ipcRenderer.invoke('workspace:export-documents', { loadRevision, includeCsv: true }) as Promise<DocumentExportResponse>,
-  subscribe: (listener: (state: WorkspaceState) => void): () => Electron.IpcRenderer => {
-    const handler: (_event: Electron.IpcRendererEvent, state: WorkspaceState) => void = (_event: Electron.IpcRendererEvent, state: WorkspaceState): void => listener(state);
+  subscribe: (listener: (state: IWorkspaceState) => void): () => Electron.IpcRenderer => {
+    const handler: (_event: Electron.IpcRendererEvent, state: IWorkspaceState) => void = (_event: Electron.IpcRendererEvent, state: IWorkspaceState): void => listener(state);
     ipcRenderer.on('workspace:state', handler);
     return (): Electron.IpcRenderer => ipcRenderer.removeListener('workspace:state', handler);
   },

@@ -9,7 +9,7 @@ import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERS
 import { WorkspaceDocumentState } from '../../electron/documents/document-state.js';
 import { documentFieldConfirmationIssue, documentFieldReviewKey, documentFieldSignature, isDocumentFieldConfirmed, type DocumentFieldReview, type DocumentFieldReviewTarget } from '../../src/shared/document-field-reviews.js';
 import { documentRevisionIndex } from '../../src/shared/match-approvals.js';
-import type { DocumentSnapshot, WorkspaceState } from '../../src/shared/protocol.js';
+import type { IDocumentSnapshot, IWorkspaceState } from '../../src/shared/protocol.js';
 import type { SupportingDocument, DocumentSection } from '../../src/shared/supporting-document.js';
 import type { StoredSupportingDocument, StoredDocumentImport } from '../../src/shared/workspace-documents.js';
 import { documentRun, retainedBank, retainedDocument } from './document-fixtures.js';
@@ -19,8 +19,8 @@ function reviewFor(document: StoredSupportingDocument, section: DocumentSection,
 }
 
 function effective(session: WorkspaceSession): SupportingDocument {
-    const workspace: NonNullable<WorkspaceState['workspace']> = session.state().workspace!;
-    const snapshot: DocumentSnapshot = session.documentSnapshot({ loadRevision: workspace.loadRevision, revision: workspace.matchRevision })!;
+    const workspace: NonNullable<IWorkspaceState['workspace']> = session.state().workspace!;
+    const snapshot: IDocumentSnapshot = session.documentSnapshot({ loadRevision: workspace.loadRevision, revision: workspace.matchRevision })!;
     const file: StoredDocumentImport['files'][number] = snapshot.reports[0].files[0];
     assert.equal(file.status, 'imported');
     return file.record.result;

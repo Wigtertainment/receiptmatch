@@ -3,8 +3,8 @@ import { Component, DestroyRef, ElementRef, Injector, afterNextRender, computed,
 import { WigButtonComponent, WigIconButtonComponent } from '@wigtertainment-ltd/comp-lib';
 import type { LocalOcrStatus } from '../../shared/local-ocr-settings.js';
 import type { OriginalAdoptionResult } from '../../shared/original-preview.js';
-import type { WorkspaceState, WorkspaceView } from '../../shared/protocol.js';
-import type { StatementAiChange, StatementAiPreviewResult, StatementAiRequest } from '../../shared/statement-ai.js';
+import type { IWorkspaceState, IWorkspaceView } from '../../shared/protocol.js';
+import type { IStatementAiChange, StatementAiPreviewResult, StatementAiRequest } from '../../shared/statement-ai.js';
 import type { StoredBankImport } from '../../shared/workspace-import.js';
 import { LocalAiIcon } from '../shared/local-ai-icon.component.js';
 import { OriginalPreviewButton } from '../shared/original-preview-button.component.js';
@@ -17,7 +17,7 @@ interface AnalysisReview { context: AnalysisContext; result: Preview }
 @Component({ selector: 'app-statement-reanalysis', standalone: true, imports: [WigButtonComponent, WigIconButtonComponent, LocalAiIcon, OriginalPreviewButton, AnalysisBooking],
     templateUrl: './statement-reanalysis.component.html' })
 export class StatementReanalysis {
-    readonly state: InputSignal<WorkspaceState> = input.required<WorkspaceState>();
+    readonly state: InputSignal<IWorkspaceState> = input.required<IWorkspaceState>();
     readonly record: InputSignal<StoredBankImport> = input.required<StoredBankImport>();
     readonly active: InputSignal<boolean> = input(true);
     readonly applied: OutputEmitterRef<void> = output<void>();
@@ -38,23 +38,23 @@ export class StatementReanalysis {
     readonly feedback: WritableSignal<string | null> = signal<string | null>(null);
     readonly needsSettings: WritableSignal<boolean> = signal(false);
     readonly archived: Signal<boolean> = computed((): boolean => this.state().workspace?.supersededStatements.includes(this.record().id) ?? false);
-    readonly changes: Signal<StatementAiChange[]> = computed((): StatementAiChange[] => (this.review()?.result.changes ?? [])
-        .filter((change: StatementAiChange): boolean => this.includeUnchanged() || change.kind !== 'unchanged')
-        .sort((a: StatementAiChange, b: StatementAiChange): number => Number(a.kind === 'unchanged') - Number(b.kind === 'unchanged')));
+    readonly changes: Signal<IStatementAiChange[]> = computed((): IStatementAiChange[] => (this.review()?.result.changes ?? [])
+        .filter((change: IStatementAiChange): boolean => this.includeUnchanged() || change.kind !== 'unchanged')
+        .sort((a: IStatementAiChange, b: IStatementAiChange): number => Number(a.kind === 'unchanged') - Number(b.kind === 'unchanged')));
     readonly pageCount: Signal<number> = computed((): number => Math.max(1, Math.ceil(this.changes().length / 20)));
-    readonly visibleChanges: Signal<StatementAiChange[]> = computed((): StatementAiChange[] => this.changes().slice(this.page() * 20, (this.page() + 1) * 20));
+    readonly visibleChanges: Signal<IStatementAiChange[]> = computed((): IStatementAiChange[] => this.changes().slice(this.page() * 20, (this.page() + 1) * 20));
     readonly canApply: Signal<boolean> = computed((): boolean => {
         const preview: Preview | undefined = this.review()?.result;
         return !!preview && !preview.blockingConflict && (!preview.conflicts.length || this.acknowledged()) && !this.applying() && !this.state().busy;
     });
-    readonly labels: Record<StatementAiChange['kind'], string> = { unchanged: 'Unchanged', added: 'Added', removed: 'Removed', changed: 'Changed', promoted: 'Resolved draft', demoted: 'Now unresolved' };
+    readonly labels: Record<IStatementAiChange['kind'], string> = { unchanged: 'Unchanged', added: 'Added', removed: 'Removed', changed: 'Changed', promoted: 'Resolved draft', demoted: 'Now unresolved' };
 
     constructor() {
         effect((): void => {
             const review: AnalysisReview | null = this.review();
             const pending: AnalysisContext | null = this.pending();
             const active: boolean = this.active();
-            const workspace: WorkspaceView | null = this.state().workspace;
+            const workspace: IWorkspaceView | null = this.state().workspace;
             const id: string = this.record().id;
             if (pending && !active && this.state().statementImport?.localAi && !this.state().statementImport?.cancelling) {
                 untracked((): void => {
@@ -80,12 +80,12 @@ export class StatementReanalysis {
     }
 
     private current(context: AnalysisContext): boolean {
-        const workspace: WorkspaceView | null = this.state().workspace;
+        const workspace: IWorkspaceView | null = this.state().workspace;
         return !this.destroyed.destroyed && this.active() && workspace?.id === context.workspaceId && workspace.loadRevision === context.request.loadRevision && this.record().id === context.request.importId;
     }
 
     async analyze(): Promise<void> {
-        const workspace: WorkspaceView | null = this.state().workspace;
+        const workspace: IWorkspaceView | null = this.state().workspace;
         if (!workspace || this.state().busy || this.pending() || this.review() || this.archived()) {
             return;
         }

@@ -2,7 +2,7 @@ import { BrowserWindow, ipcMain, session, type Session, type WebContents } from 
 import { createHash, randomBytes } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { originalSourceExtensions, type OriginalPreviewData, type OriginalPreviewResult } from '../src/shared/original-preview.js';
+import { originalSourceExtensions, type IOriginalPreviewData, type IOriginalPreviewResult } from '../src/shared/original-preview.js';
 import { imageInputDimensions } from './extraction/image-input.js';
 import { readSourceSnapshot } from './import/source.js';
 
@@ -14,10 +14,10 @@ const policy: string = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'
 export interface OriginalSource {
     filePath: string;
     sha256: string;
-    format: OriginalPreviewData['format'];
+    format: IOriginalPreviewData['format'];
 }
 
-function previewReadFailure(error: unknown): OriginalPreviewResult {
+function previewReadFailure(error: unknown): IOriginalPreviewResult {
     const code: unknown = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
     if (code === 'ENOENT' || code === 'ENOTDIR') {
         return { status: 'missing', error: 'The original file is no longer at its imported location or its last linked path.' };
@@ -69,13 +69,13 @@ async function createPreviewSession(): Promise<Session> {
 
 export class OriginalPreviewWindows {
     private readonly windows: Map<string, BrowserWindow> = new Map<string, BrowserWindow>();
-    private readonly payloads: Map<Electron.WebContents, OriginalPreviewData> = new Map<WebContents, OriginalPreviewData>();
+    private readonly payloads: Map<Electron.WebContents, IOriginalPreviewData> = new Map<WebContents, IOriginalPreviewData>();
     private previewSession?: Promise<Session>;
     private generation: number = 0;
 
     constructor(private readonly hidden: boolean, private readonly icon: string) {
-        ipcMain.handle('preview:read', (event: Electron.IpcMainInvokeEvent, ...args: unknown[]): OriginalPreviewData => {
-            const data: OriginalPreviewData | undefined = this.payloads.get(event.sender);
+        ipcMain.handle('preview:read', (event: Electron.IpcMainInvokeEvent, ...args: unknown[]): IOriginalPreviewData => {
+            const data: IOriginalPreviewData | undefined = this.payloads.get(event.sender);
             if (!data || args.length || event.senderFrame !== event.sender.mainFrame || event.senderFrame.url !== previewUrl) {
                 throw new Error('Preview request denied.');
             }
@@ -95,7 +95,7 @@ export class OriginalPreviewWindows {
         this.payloads.clear();
     }
 
-    async open(key: string, source: OriginalSource): Promise<OriginalPreviewResult> {
+    async open(key: string, source: OriginalSource): Promise<IOriginalPreviewResult> {
         const generation: number = this.generation;
         let bytes: Uint8Array;
         try {

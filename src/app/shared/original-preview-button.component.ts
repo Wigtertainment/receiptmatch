@@ -1,14 +1,14 @@
 import { NgTemplateOutlet } from '@angular/common';
 import { Component, DestroyRef, ElementRef, TemplateRef, computed, inject, input, signal, viewChild, type Signal, type WritableSignal, type InputSignal } from '@angular/core';
 import { WigButtonComponent, WigCheckboxComponent, WigIconButtonComponent } from '@wigtertainment-ltd/comp-lib';
-import type { OriginalAdoptionResult, OriginalAnalysisComparison, OriginalAnalysisResult, OriginalPreviewRequest, OriginalPreviewResult, OriginalRelinkResult } from '../../shared/original-preview.js';
+import type { OriginalAdoptionResult, IOriginalAnalysisComparison, OriginalAnalysisResult, OriginalPreviewRequest, IOriginalPreviewResult, OriginalRelinkResult } from '../../shared/original-preview.js';
 
-interface PreviewFeedback extends OriginalPreviewResult {
+interface PreviewFeedback extends IOriginalPreviewResult {
     source: OriginalPreviewRequest;
     pending: 'open' | 'relink' | 'analyze' | 'adopt' | null;
     actionError?: string;
     notice?: string;
-    comparison?: OriginalAnalysisComparison;
+    comparison?: IOriginalAnalysisComparison;
 }
 
 @Component({
@@ -61,7 +61,7 @@ export class OriginalPreviewButton {
         const request: PreviewFeedback = { source: { kind: this.kind(), id, loadRevision }, pending: 'open', error: null };
         this.request.set(request);
         try {
-            const result: OriginalPreviewResult = await window.receiptmatch.openOriginal(request.source);
+            const result: IOriginalPreviewResult = await window.receiptmatch.openOriginal(request.source);
             if (this.request() === request) {
                 this.request.set({ ...request, ...result, pending: null });
             }

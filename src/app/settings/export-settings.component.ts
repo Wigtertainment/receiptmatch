@@ -3,14 +3,14 @@ import { type TableConfig, WigAlertComponent, WigButtonComponent, WigInputCompon
 import { InputLength } from '../shared/input-length.directive.js';
 import { defaultExportFilenamePattern, exportFilenameExample, exportFilenamePatternLimit, renderExportFilename } from '../../shared/export-filename.js';
 import type { DocumentExportFailure, DocumentExportOutcome, DocumentExportResponse } from '../../shared/document-export.js';
-import type { WorkspaceView } from '../../shared/protocol.js';
+import type { IWorkspaceView } from '../../shared/protocol.js';
 
 @Component({
 	selector: 'app-export-settings', standalone: true, templateUrl: './export-settings.component.html',
 	imports: [WigAlertComponent, WigButtonComponent, WigInputComponent, WigTableComponent, WigTemplateDirective, InputLength],
 })
 export class ExportSettings {
-	readonly workspace: InputSignal<WorkspaceView> = input.required<WorkspaceView>();
+	readonly workspace: InputSignal<IWorkspaceView> = input.required<IWorkspaceView>();
 	readonly workspaceBusy: InputSignal<boolean> = input.required<boolean>();
 	readonly pattern: WritableSignal<string> = signal<string>(defaultExportFilenamePattern);
 	readonly savedPattern: WritableSignal<string | null> = signal<string | null>(null);
@@ -117,7 +117,7 @@ export class ExportSettings {
 	}
 
 	async exportDocuments(includeCsv: boolean = false): Promise<void> {
-		const { loadRevision, approvedDocumentCount, filePath }: WorkspaceView = this.workspace();
+		const { loadRevision, approvedDocumentCount, filePath }: IWorkspaceView = this.workspace();
 		if ((includeCsv ? !filePath : !approvedDocumentCount) || this.exporting() || this.busy() || this.workspaceBusy()) {
 			return;
 		}

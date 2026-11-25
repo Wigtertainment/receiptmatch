@@ -3,18 +3,18 @@ import type { SupportingDocument } from "../src/shared/supporting-document.js";
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { extractionResultSchema, PDF_EXTRACTION_VERSION, type ExtractionResult } from '../src/shared/pdf-extraction.js';
-import type { OriginalPreviewData } from '../src/shared/original-preview.js';
+import type { IOriginalPreviewData } from '../src/shared/original-preview.js';
 import { storedBankImportSchema, type StoredBankImport } from '../src/shared/workspace-import.js';
 import { storedDocumentImportSchema, type StoredDocumentImport, type StoredSupportingDocument } from '../src/shared/workspace-documents.js';
 import { interpretSupportingDocument } from './documents/interpret.js';
 import { parseBankStatement } from './import/registry.js';
 
-export type ReplacementExtraction = (bytes: Uint8Array, sourceId: string, format: OriginalPreviewData['format']) => Promise<ExtractionResult>;
+export type ReplacementExtraction = (bytes: Uint8Array, sourceId: string, format: IOriginalPreviewData['format']) => Promise<ExtractionResult>;
 export type AnalyzedSource = { kind: 'statement'; record: StoredBankImport } |
     { kind: 'document'; record: StoredSupportingDocument; run: StoredDocumentImport };
 
 export async function analyzeSource(
-    kind: AnalyzedSource['kind'], filePath: string, format: OriginalPreviewData['format'], bytes: Uint8Array, extract: ReplacementExtraction,
+    kind: AnalyzedSource['kind'], filePath: string, format: IOriginalPreviewData['format'], bytes: Uint8Array, extract: ReplacementExtraction,
 ): Promise<AnalyzedSource> {
     const sourceId: `${string}-${string}-${string}-${string}-${string}` = randomUUID(), sha256: string = createHash('sha256').update(bytes).digest('hex');
     const extraction: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; } = extractionResultSchema.parse(await extract(bytes, sourceId, format));

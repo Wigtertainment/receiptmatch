@@ -2,8 +2,8 @@ import type { StoredBankImport } from "../../src/shared/workspace-import.js";
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
 import type { BankImportInput, SourceEvidence } from "../../src/shared/bank-import.js";
 import type { DocumentSection } from "../../src/shared/supporting-document.js";
-import type { WorkspaceState } from "../../src/shared/protocol.js";
-import type { DocumentSnapshot } from "../../src/shared/protocol.js";
+import type { IWorkspaceState } from "../../src/shared/protocol.js";
+import type { IDocumentSnapshot } from "../../src/shared/protocol.js";
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { expect, test, type Locator, type Page, type ElectronApplication, type TestInfo, type PlaywrightWorkerOptions, type PlaywrightWorkerArgs, type PlaywrightTestOptions, type PlaywrightTestArgs } from '@playwright/test';
@@ -98,8 +98,8 @@ test('shows the same current receipt total in Sources and Match suggestions', as
 		await expect(sourceRow).toContainText(/118[.,]90/);
 		await nav.getByRole('button', { name: 'Match suggestions' }).click();
 		await expect(matches.getByText(/Document total.*118[.,]90/)).toBeVisible();
-		const stale: DocumentSnapshot | null = await page.evaluate(async (): Promise<DocumentSnapshot | null> => {
-			const { workspace }: WorkspaceState = await window.receiptmatch.command({ type: 'get-state' });
+		const stale: IDocumentSnapshot | null = await page.evaluate(async (): Promise<IDocumentSnapshot | null> => {
+			const { workspace }: IWorkspaceState = await window.receiptmatch.command({ type: 'get-state' });
 			return window.receiptmatch.documentSnapshot({ loadRevision: workspace!.loadRevision, revision: workspace!.matchRevision - 1 });
 		});
 		expect(stale).toBeNull();

@@ -2,12 +2,12 @@ import { Component, computed, signal, type Signal, type WritableSignal } from '@
 import { bootstrapApplication } from '@angular/platform-browser';
 import { WigButtonComponent, WigDropdownComponent } from '@wigtertainment-ltd/comp-lib';
 import { getDocument, GlobalWorkerOptions, type PageViewport, type PDFDocumentProxy, type PDFPageProxy, type RenderTask } from 'pdfjs-dist';
-import type { OriginalPreviewData } from '../../src/shared/original-preview.js';
+import type { IOriginalPreviewData } from '../../src/shared/original-preview.js';
 import { PDF_EXTRACTION_LIMITS } from '../../src/shared/pdf-extraction.js';
 
 declare global {
     interface Window {
-        receiptmatchOriginal: { read(): Promise<OriginalPreviewData> };
+        receiptmatchOriginal: { read(): Promise<IOriginalPreviewData> };
     }
 }
 
@@ -182,7 +182,7 @@ function resizeImage(): void {
 }
 
 async function openDocument(): Promise<void> {
-    const source: OriginalPreviewData = await window.receiptmatchOriginal.read();
+    const source: IOriginalPreviewData = await window.receiptmatchOriginal.read();
     name.textContent = source.name;
     document.title = `${source.name} — ReceiptMatch`;
     if (source.format === 'pdf') {

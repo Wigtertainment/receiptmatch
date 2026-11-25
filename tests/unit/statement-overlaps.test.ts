@@ -1,11 +1,11 @@
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
 import type { SourceEvidence } from "../../src/shared/bank-import.js";
-import type { StatementOverlap } from "../../src/shared/statement-overlaps.js";
+import type { IStatementOverlap } from "../../src/shared/statement-overlaps.js";
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'vitest';
 import type { TransactionCandidate } from '../../src/shared/bank-import.js';
-import { indexStatementOverlaps, type StatementOverlaps } from '../../src/shared/statement-overlaps.js';
+import { indexStatementOverlaps, type IStatementOverlaps } from '../../src/shared/statement-overlaps.js';
 import { retainedBank } from './document-fixtures.js';
 
 function imported(accountReference: string | null = 'SYNTHETIC-ACCOUNT-A'): { record: StoredBankImport; row: TransactionCandidate; id: string; } {
@@ -43,7 +43,7 @@ test('matches equivalent booking details only across compatible accounts and sep
 	const otherDay: ReturnType<typeof imported> = imported();
 	otherDay.row.bookingDate.value = '2032-02-27';
 
-	const all: (statementId: string) => StatementOverlaps = indexStatementOverlaps([original, repeated, sameAmount, otherAccount, otherBank, otherCurrency, opposite, otherDay].map((item: { record: StoredBankImport; row: TransactionCandidate; id: string; }): StoredBankImport => item.record));
+	const all: (statementId: string) => IStatementOverlaps = indexStatementOverlaps([original, repeated, sameAmount, otherAccount, otherBank, otherCurrency, opposite, otherDay].map((item: { record: StoredBankImport; row: TransactionCandidate; id: string; }): StoredBankImport => item.record));
 	assert.deepEqual(all(original.record.id).get(original.id), [{
 		statementId: repeated.record.id, transactionId: repeated.id, filePath: repeated.record.filePath, transactionNumber: 1, basis: 'details', accountConfirmed: true,
 	}]);
@@ -66,16 +66,16 @@ test('uses a bank transaction ID without treating ordinary payment references as
 	const knownAccount: ReturnType<typeof imported> = imported();
 	reference(knownAccount.row, 'SYNTHETIC-TRANSACTION-ID');
 
-	const all: (statementId: string) => StatementOverlaps = indexStatementOverlaps([original, repeated, samePaymentReference, distinctId, knownAccount, otherAccount].map((item: { record: StoredBankImport; row: TransactionCandidate; id: string; }): StoredBankImport => item.record));
-	assert.deepEqual(all(original.record.id).get(original.id)?.map((candidate: StatementOverlap): (string | boolean)[] => [candidate.transactionId, candidate.basis, candidate.accountConfirmed]), [
+	const all: (statementId: string) => IStatementOverlaps = indexStatementOverlaps([original, repeated, samePaymentReference, distinctId, knownAccount, otherAccount].map((item: { record: StoredBankImport; row: TransactionCandidate; id: string; }): StoredBankImport => item.record));
+	assert.deepEqual(all(original.record.id).get(original.id)?.map((candidate: IStatementOverlap): (string | boolean)[] => [candidate.transactionId, candidate.basis, candidate.accountConfirmed]), [
 		[repeated.id, 'transaction-id', false], [knownAccount.id, 'transaction-id', false], [otherAccount.id, 'transaction-id', false],
 	]);
-	assert.ok(!all(knownAccount.record.id).get(knownAccount.id)?.some((candidate: StatementOverlap): boolean => candidate.transactionId === otherAccount.id));
+	assert.ok(!all(knownAccount.record.id).get(knownAccount.id)?.some((candidate: IStatementOverlap): boolean => candidate.transactionId === otherAccount.id));
 });
 
 test('marks unverified accounts and excludes generic descriptions from booking-detail matches', (): void => {
 	const original: ReturnType<typeof imported> = imported(), unknown: ReturnType<typeof imported> = imported(null);
-	const candidates: () => StatementOverlap[] = (): StatementOverlap[] => indexStatementOverlaps([original.record, unknown.record])(original.record.id).get(original.id);
+	const candidates: () => IStatementOverlap[] = (): IStatementOverlap[] => indexStatementOverlaps([original.record, unknown.record])(original.record.id).get(original.id);
 	assert.equal(candidates()?.[0].accountConfirmed, false);
 	original.row.description.value = unknown.row.description.value = 'Card';
 	assert.deepEqual(candidates(), []);
@@ -86,7 +86,7 @@ test('marks unverified accounts and excludes generic descriptions from booking-d
 test('treats masked account references as unverified even when they agree', (): void => {
 	for (const masked of ['ending in 1234', '****1234', 'xxxx1234', 'last 4 digits: 1234']) {
 		const first: ReturnType<typeof imported> = imported(masked), second: ReturnType<typeof imported> = imported(masked);
-		const [candidate]: StatementOverlap[] = indexStatementOverlaps([first.record, second.record])(first.record.id).get(first.id);
+		const [candidate]: IStatementOverlap[] = indexStatementOverlaps([first.record, second.record])(first.record.id).get(first.id);
 		assert.equal(candidate.accountConfirmed, false);
 	}
 });
@@ -102,9 +102,9 @@ test('uses each row’s account section and only returns matches from another st
 	const sameStatementId: `${string}-${string}-${string}-${string}-${string}` = randomUUID(), otherAccountId: `${string}-${string}-${string}-${string}-${string}` = randomUUID();
 	first.record.transactions.push({ rowId: sameStatementRow.rowId, transactionId: sameStatementId }, { rowId: otherAccountRow.rowId, transactionId: otherAccountId });
 
-	const overlaps: (statementId: string) => StatementOverlaps = indexStatementOverlaps([first.record, otherStatement.record]);
+	const overlaps: (statementId: string) => IStatementOverlaps = indexStatementOverlaps([first.record, otherStatement.record]);
 	assert.equal(overlaps(first.record.id).get(first.id)?.[0].transactionId, otherStatement.id);
 	assert.equal(overlaps(first.record.id).get(sameStatementId)?.[0].transactionId, otherStatement.id);
 	assert.equal(overlaps(first.record.id).has(otherAccountId), false);
-	assert.deepEqual(overlaps(otherStatement.record.id).get(otherStatement.id)?.map((candidate: StatementOverlap): number => candidate.transactionNumber), [1, 2]);
+	assert.deepEqual(overlaps(otherStatement.record.id).get(otherStatement.id)?.map((candidate: IStatementOverlap): number => candidate.transactionNumber), [1, 2]);
 });

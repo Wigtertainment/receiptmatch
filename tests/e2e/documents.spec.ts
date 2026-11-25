@@ -1,7 +1,7 @@
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
 import type { ImportIssue, ImportPage, PositionedSpan, SourceEvidence } from "../../src/shared/bank-import.js";
 import type { SupportingDocument } from "../../src/shared/supporting-document.js";
-import type { DocumentImportSummary } from "../../src/shared/protocol.js";
+import type { IDocumentImportSummary } from "../../src/shared/protocol.js";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -9,13 +9,13 @@ import path from "node:path";
 import { PDFDocument, StandardFonts, type PDFPage, type PDFFont } from "pdf-lib";
 import { expect, test as base, type ElectronApplication, type Locator, type Page, type PlaywrightWorkerOptions, type PlaywrightWorkerArgs, type PlaywrightTestOptions, type PlaywrightTestArgs, type TestType } from "@playwright/test";
 import type { BrowserWindow, OpenDialogOptions } from "electron";
-import type { WorkspaceCommand, WorkspaceState } from "../../src/shared/protocol.js";
+import type { WorkspaceCommand, IWorkspaceState } from "../../src/shared/protocol.js";
 import type { StoredDocumentImport } from "../../src/shared/workspace-documents.js";
 
 declare global {
 	interface Window {
 		documentTestInjection?: number;
-		documentTestState?: WorkspaceState | null;
+		documentTestState?: IWorkspaceState | null;
 		unsubscribeDocumentTest?: () => void;
 	}
 }
@@ -176,7 +176,7 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 	await writeFile(files[4], "Synthetic unreadable PDF");
 	await writeFile(files[5], "Unsupported synthetic note");
 	const originalHashes: string[] = await Promise.all(files.map(async (file: string): Promise<string> => sha(await readFile(file))));
-	const command: (value: WorkspaceCommand) => Promise<WorkspaceState> = (value: WorkspaceCommand): Promise<WorkspaceState> => page.evaluate((value: WorkspaceCommand): Promise<WorkspaceState> => window.receiptmatch.command(value), value);
+	const command: (value: WorkspaceCommand) => Promise<IWorkspaceState> = (value: WorkspaceCommand): Promise<IWorkspaceState> => page.evaluate((value: WorkspaceCommand): Promise<IWorkspaceState> => window.receiptmatch.command(value), value);
 
 	const records: () => Promise<StoredDocumentImport[]> = (): Promise<StoredDocumentImport[]> => page.evaluate((): Promise<StoredDocumentImport[]> => window.receiptmatch.documentImports());
 
@@ -234,10 +234,10 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		await documents().getByRole("button", { name: /^mixed ·/ }).waitFor();
 		await documents().getByRole("table", { name: "Files in mixed", exact: true }).waitFor();
 		assert.deepEqual(await application.evaluate((): ("openDirectory" | "openFile" | "multiSelections" | "showHiddenFiles" | "createDirectory" | "promptToCreate" | "noResolveAliases" | "treatPackageAsDirectory" | "dontAddToRecent")[] | undefined => (globalThis as DocumentTestMainGlobals).documentTestDialogProperties), ["openDirectory"]);
-		const state: WorkspaceState = await command({ type: "get-state" });
+		const state: IWorkspaceState = await command({ type: "get-state" });
 		assert.equal(state.documentOutcome?.status, "finished");
 		assert.equal(state.workspace?.dirty, true);
-		const summary: DocumentImportSummary = state.workspace?.documentImports[0];
+		const summary: IDocumentImportSummary = state.workspace?.documentImports[0];
 		assert.equal(summary?.imported, 3);
 		assert.equal(summary?.skipped, 1);
 		assert.equal(summary?.failed, 1);
@@ -349,7 +349,7 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 			.filter({ hasText: /Invoice reference.*SYNTHETIC-PDF/ })
 			.waitFor();
 		await closeFile(pdf);
-		const state: WorkspaceState = await command({ type: "get-state" });
+		const state: IWorkspaceState = await command({ type: "get-state" });
 		assert.equal(state.workspace?.dirty, false);
 		assert.deepEqual(await records(), expected);
 	});
@@ -367,18 +367,18 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		await originalReport.press("Enter");
 		await expect(originalReport).toHaveAttribute("aria-expanded", "false");
 		await dialogs([folder]);
-		const state: WorkspaceState = await command({ type: "import-documents" });
-		const summary: DocumentImportSummary | undefined = state.workspace?.documentImports.at(-1);
+		const state: IWorkspaceState = await command({ type: "import-documents" });
+		const summary: IDocumentImportSummary | undefined = state.workspace?.documentImports.at(-1);
 		assert.equal(summary?.imported, 0);
 		assert.equal(summary?.skipped, 4);
 		assert.equal(summary?.failed, 1);
 		await expect(documents().getByRole("button", { name: /^mixed · Finished · 0 imported/ })).toHaveAttribute("aria-expanded", "true");
 		await expect(originalReport).toHaveAttribute("aria-expanded", "false");
 		await command({ type: "save" });
-		const clean: WorkspaceState = await command({ type: "get-state" });
+		const clean: IWorkspaceState = await command({ type: "get-state" });
 		assert.equal(clean.workspace?.dirty, false);
 		await dialogs([files[0]]);
-		const bankSkip: WorkspaceState = await command({ type: "import-statement" });
+		const bankSkip: IWorkspaceState = await command({ type: "import-statement" });
 		assert.equal(bankSkip.importOutcome?.status, "skipped");
 		assert.equal(bankSkip.importOutcome?.importId, null);
 		assert.equal(bankSkip.workspace?.dirty, false);
@@ -393,7 +393,7 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		await dialogs([cancellationFolder]);
 		await page.evaluate((): void => {
 			window.documentTestState = null;
-			window.unsubscribeDocumentTest = window.receiptmatch.subscribe((state: WorkspaceState): void => {
+			window.unsubscribeDocumentTest = window.receiptmatch.subscribe((state: IWorkspaceState): void => {
 				window.documentTestState = state;
 			});
 		});
@@ -404,7 +404,7 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 			.waitFor();
 		await documents().getByRole("button", { name: "Cancel analysis" }).press("Enter");
 		await page.waitForFunction((): boolean => window.documentTestState?.documentOutcome?.status === "cancelled", undefined, { polling: 50 });
-		const state: WorkspaceState = await command({ type: "get-state" });
+		const state: IWorkspaceState = await command({ type: "get-state" });
 		await page.evaluate((): void => {
 			if (!window.unsubscribeDocumentTest) {
 				throw new Error("Document test subscription is missing");

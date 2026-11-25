@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { PDFDocument, type PDFPage } from 'pdf-lib';
 import { expect, test, type ElectronApplication, type Page, type PlaywrightWorkerArgs } from '@playwright/test';
 import type { LocalOcrStatus } from '../../src/shared/local-ocr-settings.js';
-import type { WorkspaceState } from '../../src/shared/protocol.js';
+import type { IWorkspaceState } from '../../src/shared/protocol.js';
 import type { DocumentFileResult, StoredDocumentImport, StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
 
 const legacyVersion: string = 'pdfjs-6.5.438+paddleocr-vl-1.6-gguf-spotting+document-2';
@@ -107,11 +107,11 @@ test('packaged recognition opens fresh and legacy profiles with Standard and opt
             await page.getByRole('heading', { name: 'ReceiptMatch', exact: true }).waitFor();
             await verifyResources(fresh);
             await dialogs(fresh, folder, workspace);
-            await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'new' }));
-            await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'import-documents' }));
+            await page.evaluate((): Promise<IWorkspaceState> => window.receiptmatch.command({ type: 'new' }));
+            await page.evaluate((): Promise<IWorkspaceState> => window.receiptmatch.command({ type: 'import-documents' }));
             oldReceipt = await importedReceipt(page);
             assert.match(oldReceipt.result.input!.extraction.version, /tesseract/);
-            const saved: WorkspaceState = await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'save' }));
+            const saved: IWorkspaceState = await page.evaluate((): Promise<IWorkspaceState> => window.receiptmatch.command({ type: 'save' }));
             assert.equal(saved.workspace?.filePath, workspace);
             await verifyRecognitionSettings(page);
         } finally {
@@ -129,7 +129,7 @@ test('packaged recognition opens fresh and legacy profiles with Standard and opt
             await page.getByRole('heading', { name: 'ReceiptMatch', exact: true }).waitFor();
             assert.equal(await readFile(selection, 'utf8'), '"standard"');
             await dialogs(legacy, folder, workspace);
-            await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'open' }));
+            await page.evaluate((): Promise<IWorkspaceState> => window.receiptmatch.command({ type: 'open' }));
             const saved: StoredSupportingDocument = await importedReceipt(page);
             assert.equal(saved.id, oldReceipt.id);
             assert.deepEqual(saved.result.input?.extraction, { runId, version: legacyVersion });

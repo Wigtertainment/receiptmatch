@@ -11,14 +11,14 @@ import {
     type ExtractionResult
 } from '../../src/shared/pdf-extraction.js';
 import { storedBankImportSchema, type BankImportRunResult, type StoredBankImport } from '../../src/shared/workspace-import.js';
-import type { WorkspaceSource } from '../../src/shared/workspace-documents.js';
+import type { IWorkspaceSource } from '../../src/shared/workspace-documents.js';
 import type { StatementProposalExtraction } from './nuextract-statement.js';
 import { parseBankStatement } from './registry.js';
 import { readSourceSnapshot, SourceReadError as ImportFailure } from './source.js';
 
 export interface BankImportOptions {
     existing: readonly StoredBankImport[];
-    existingSources?: readonly WorkspaceSource[];
+    existingSources?: readonly IWorkspaceSource[];
     signal?: AbortSignal;
     onProgress?: (progress: ExtractionProgress) => void;
 }
@@ -157,7 +157,7 @@ export class StatementImportService implements BankImportService {
             if (duplicate) {
                 return { status: 'skipped', importId: duplicate.id };
             }
-            const existingSource: WorkspaceSource | undefined = options.existingSources?.find((source: WorkspaceSource): boolean => source.sha256 === sha256);
+            const existingSource: IWorkspaceSource | undefined = options.existingSources?.find((source: IWorkspaceSource): boolean => source.sha256 === sha256);
             if (existingSource) {
                 return { status: 'skipped', importId: null, existingSourceId: existingSource.id };
             }

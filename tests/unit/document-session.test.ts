@@ -1,7 +1,7 @@
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
 import type { ImportIssue } from "../../src/shared/bank-import.js";
 import type { SupportingDocument } from "../../src/shared/supporting-document.js";
-import type { WorkspaceState } from "../../src/shared/protocol.js";
+import type { IWorkspaceState } from "../../src/shared/protocol.js";
 import type BetterSqlite3 from 'better-sqlite3';
 import { test } from "vitest";
 import assert from "node:assert/strict";
@@ -43,7 +43,7 @@ test("document analysis remains unsaved until explicit save and reopens with imm
 	};
 	const session: WorkspaceSession = new WorkspaceSession(script.handlers, undefined, undefined, service);
 	await session.dispatch({ type: "new" });
-	const result: WorkspaceState = await session.dispatch({ type: "import-documents" });
+	const result: IWorkspaceState = await session.dispatch({ type: "import-documents" });
 	assert.equal(result.documentOutcome?.status, "finished");
 	assert.equal(result.workspace?.documentImports[0].imported, 1);
 	assert.equal(result.workspace?.dirty, true);
@@ -94,11 +94,11 @@ test("cancelled document runs retain completed files while concurrent actions an
 	});
 	await session.dispatch({ type: "new" });
 	const id: string = session.state().workspace!.id;
-	const running: Promise<WorkspaceState> = session.dispatch({ type: "import-documents" });
+	const running: Promise<IWorkspaceState> = session.dispatch({ type: "import-documents" });
 	assert.equal(session.state().busy, true);
 	assert.ok(session.state().documentImport);
 	for (const command of [{ type: "new" }, { type: "open" }, { type: "save" }, { type: "import-statement" }, { type: "rename", name: "Blocked" }] as const) {
-		const blocked: WorkspaceState = await session.dispatch(command);
+		const blocked: IWorkspaceState = await session.dispatch(command);
 		assert.ok(blocked.error);
 		assert.equal(blocked.workspace?.id, id);
 	}

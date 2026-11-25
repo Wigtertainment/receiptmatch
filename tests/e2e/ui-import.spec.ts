@@ -1,7 +1,7 @@
 import type { BankImportInput, BankImportResult, PositionedSpan, SourceEvidence, TransactionCandidate, UnresolvedDraft } from "../../src/shared/bank-import.js";
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
-import type { BankImportSummary } from "../../src/shared/workspace-import.js";
-import type { DocumentImportProgress } from "../../src/shared/workspace-documents.js";
+import type { IBankImportSummary } from "../../src/shared/workspace-import.js";
+import type { IDocumentImportProgress } from "../../src/shared/workspace-documents.js";
 import type { ExtractionProgress } from "../../src/shared/pdf-extraction.js";
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
@@ -18,7 +18,7 @@ import { parseBankStatement } from '../../electron/import/registry.js';
 import { createWorkspace, newMetadata } from '../../electron/store.js';
 import { storedBankImportSchema } from '../../src/shared/workspace-import.js';
 import type { ImportIssue } from '../../src/shared/bank-import.js';
-import type { ImportOutcome, WorkspaceCommand, WorkspaceState, WorkspaceView } from '../../src/shared/protocol.js';
+import type { IImportOutcome, WorkspaceCommand, IWorkspaceState, IWorkspaceView } from '../../src/shared/protocol.js';
 import type { ChildProcess } from 'node:child_process';
 
 interface DialogPlan {
@@ -32,7 +32,7 @@ interface CommandTraceEntry {
 	phase: 'start' | 'end' | 'throw';
 	at: string;
 	busy?: boolean;
-	outcome?: ImportOutcome['status'] | null;
+	outcome?: IImportOutcome['status'] | null;
 	importId?: string | null;
 	dirty?: boolean | null;
 	workspaceId?: string | null;
@@ -53,8 +53,8 @@ interface ImportHook {
 interface ImportAttempt {
 	started: boolean;
 	finished: boolean;
-	result: WorkspaceState | null;
-	events: { busy: boolean; active: boolean; outcome: ImportOutcome['status'] | null }[];
+	result: IWorkspaceState | null;
+	events: { busy: boolean; active: boolean; outcome: IImportOutcome['status'] | null }[];
 	unsubscribe: (() => void) | null;
 }
 declare global {
@@ -79,7 +79,7 @@ interface UiImportReport {
 	stage?: string;
 	rendererLocale?: string;
 	commandTrace?: CommandTraceEntry[];
-	unexpectedBusy?: { stage?: string; state: WorkspaceState; commands: CommandTraceEntry[] }[];
+	unexpectedBusy?: { stage?: string; state: IWorkspaceState; commands: CommandTraceEntry[] }[];
 	captureDetails?: { file: string; width: number; height: number; bytes: number; sampledColors: number; visible: boolean; contentBounds: Rectangle }[];
 	limits?: string[];
 	error?: string;
@@ -216,7 +216,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 			}
 			globalThis.uiCommandTrace = [];
 			globalThis.uiCommandSequence = 0;
-			const snapshot: (value: WorkspaceState) => { busy: boolean; outcome: "failed" | "unsupported" | "imported" | "skipped" | "cancelled" | null; importId: string | null; dirty: boolean | null; workspaceId: string | null; loadRevision: number | null; error: string | null; } = (value: WorkspaceState): { busy: boolean; outcome: "failed" | "unsupported" | "imported" | "skipped" | "cancelled" | null; importId: string | null; dirty: boolean | null; workspaceId: string | null; loadRevision: number | null; error: string | null; } => ({
+			const snapshot: (value: IWorkspaceState) => { busy: boolean; outcome: "failed" | "unsupported" | "imported" | "skipped" | "cancelled" | null; importId: string | null; dirty: boolean | null; workspaceId: string | null; loadRevision: number | null; error: string | null; } = (value: IWorkspaceState): { busy: boolean; outcome: "failed" | "unsupported" | "imported" | "skipped" | "cancelled" | null; importId: string | null; dirty: boolean | null; workspaceId: string | null; loadRevision: number | null; error: string | null; } => ({
 				busy: value.busy,
 				outcome: value.importOutcome?.status ?? null,
 				importId: value.importOutcome?.importId ?? null,
@@ -234,10 +234,10 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 				const type: WorkspaceCommand['type'] = command.type;
 				const entry: CommandTraceEntry = { id, type, phase: 'start', at: new Date().toISOString() };
 				globalThis.uiCommandTrace.push(entry);
-				Object.assign(entry, snapshot((await original(event, { type: 'get-state' })) as WorkspaceState));
+				Object.assign(entry, snapshot((await original(event, { type: 'get-state' })) as IWorkspaceState));
 				try {
 					const result: unknown = await original(event, command);
-					globalThis.uiCommandTrace.push({ id, type, phase: 'end', at: new Date().toISOString(), ...snapshot(result as WorkspaceState) });
+					globalThis.uiCommandTrace.push({ id, type, phase: 'end', at: new Date().toISOString(), ...snapshot(result as IWorkspaceState) });
 					return result;
 				} catch (error: unknown) {
 					globalThis.uiCommandTrace.push({ id, type, phase: 'throw', at: new Date().toISOString(), error: String(error) });
@@ -273,8 +273,8 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		);
 	}
 
-	async function state(): Promise<{ workspace: WorkspaceView; busy: boolean; error: string | null; approvalIssue?: { transactionId: string; reason: "selection-changed" | "not-assigned" | "document-unavailable"; }; statementImport: { cancelling: boolean; progress: ExtractionProgress | null; } | null; importOutcome: ImportOutcome | null; documentImport: { cancelling: boolean; progress: DocumentImportProgress | null; } | null; documentOutcome: { status: "finished" | "cancelled" | "failed"; importId: string | null; issues: ImportIssue[]; } | null; }> {
-		const result: WorkspaceState = await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'get-state' }));
+	async function state(): Promise<{ workspace: IWorkspaceView; busy: boolean; error: string | null; approvalIssue?: { transactionId: string; reason: "selection-changed" | "not-assigned" | "document-unavailable"; }; statementImport: { cancelling: boolean; progress: ExtractionProgress | null; } | null; importOutcome: IImportOutcome | null; documentImport: { cancelling: boolean; progress: IDocumentImportProgress | null; } | null; documentOutcome: { status: "finished" | "cancelled" | "failed"; importId: string | null; issues: ImportIssue[]; } | null; }> {
+		const result: IWorkspaceState = await page.evaluate((): Promise<IWorkspaceState> => window.receiptmatch.command({ type: 'get-state' }));
 		assert.ok(result.workspace);
 		return { ...result, workspace: result.workspace };
 	}
@@ -309,17 +309,17 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		return commandEnd(type, sequence);
 	}
 
-	async function waitState(expected: Partial<WorkspaceView>): Promise<void> {
-		await page.waitForFunction(async (expected: Partial<WorkspaceView>): Promise<boolean> => {
-			const value: WorkspaceState = await window.receiptmatch.command({ type: 'get-state' });
-			return !value.busy && Object.entries(expected).every(([key, wanted]: [string, WorkspaceView[keyof WorkspaceView]]): boolean => value.workspace?.[key as keyof WorkspaceView] === wanted);
+	async function waitState(expected: Partial<IWorkspaceView>): Promise<void> {
+		await page.waitForFunction(async (expected: Partial<IWorkspaceView>): Promise<boolean> => {
+			const value: IWorkspaceState = await window.receiptmatch.command({ type: 'get-state' });
+			return !value.busy && Object.entries(expected).every(([key, wanted]: [string, IWorkspaceView[keyof IWorkspaceView]]): boolean => value.workspace?.[key as keyof IWorkspaceView] === wanted);
 		}, expected);
 	}
 
-	async function outcome(status: ImportOutcome['status'], issueCode?: ImportIssue['code']): Promise<{ workspace: WorkspaceView; busy: boolean; error: string | null; approvalIssue?: { transactionId: string; reason: "selection-changed" | "not-assigned" | "document-unavailable"; }; statementImport: { cancelling: boolean; progress: ExtractionProgress | null; } | null; importOutcome: ImportOutcome | null; documentImport: { cancelling: boolean; progress: DocumentImportProgress | null; } | null; documentOutcome: { status: "finished" | "cancelled" | "failed"; importId: string | null; issues: ImportIssue[]; } | null; }> {
+	async function outcome(status: IImportOutcome['status'], issueCode?: ImportIssue['code']): Promise<{ workspace: IWorkspaceView; busy: boolean; error: string | null; approvalIssue?: { transactionId: string; reason: "selection-changed" | "not-assigned" | "document-unavailable"; }; statementImport: { cancelling: boolean; progress: ExtractionProgress | null; } | null; importOutcome: IImportOutcome | null; documentImport: { cancelling: boolean; progress: IDocumentImportProgress | null; } | null; documentOutcome: { status: "finished" | "cancelled" | "failed"; importId: string | null; issues: ImportIssue[]; } | null; }> {
 		await page.waitForFunction(
 			async ({ status, issueCode }: { status: "failed" | "unsupported" | "imported" | "skipped" | "cancelled"; issueCode: string | undefined; }): Promise<boolean> => {
-				const value: WorkspaceState = await window.receiptmatch.command({ type: 'get-state' });
+				const value: IWorkspaceState = await window.receiptmatch.command({ type: 'get-state' });
 				return !value.busy && value.importOutcome?.status === status && (!issueCode || value.importOutcome.issues.some((issue: ImportIssue): boolean => issue.code === issueCode));
 			},
 			{ status, issueCode }
@@ -328,7 +328,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		return state();
 	}
 
-	async function importFile(file: string | null, status: ImportOutcome['status'] = 'imported', issueCode?: ImportIssue['code']): Promise<{ workspace: WorkspaceView; importOutcome: ImportOutcome; busy: boolean; error: string | null; approvalIssue?: { transactionId: string; reason: "selection-changed" | "not-assigned" | "document-unavailable"; }; statementImport: { cancelling: boolean; progress: ExtractionProgress | null; } | null; documentImport: { cancelling: boolean; progress: DocumentImportProgress | null; } | null; documentOutcome: { status: "finished" | "cancelled" | "failed"; importId: string | null; issues: ImportIssue[]; } | null; }> {
+	async function importFile(file: string | null, status: IImportOutcome['status'] = 'imported', issueCode?: ImportIssue['code']): Promise<{ workspace: IWorkspaceView; importOutcome: IImportOutcome; busy: boolean; error: string | null; approvalIssue?: { transactionId: string; reason: "selection-changed" | "not-assigned" | "document-unavailable"; }; statementImport: { cancelling: boolean; progress: ExtractionProgress | null; } | null; documentImport: { cancelling: boolean; progress: IDocumentImportProgress | null; } | null; documentOutcome: { status: "finished" | "cancelled" | "failed"; importId: string | null; issues: ImportIssue[]; } | null; }> {
 		const before: Awaited<ReturnType<typeof state>> = await state();
 		if (before.busy || before.statementImport) {
 			report.unexpectedBusy ??= [];
@@ -341,7 +341,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		await page.evaluate((attempt: `${string}-${string}-${string}-${string}-${string}`): void => {
 			const probe: ImportAttempt = { started: false, finished: false, result: null, events: [], unsubscribe: null };
 			(window.uiImportAttempts ??= {})[attempt] = probe;
-			probe.unsubscribe = window.receiptmatch.subscribe((value: WorkspaceState): void => {
+			probe.unsubscribe = window.receiptmatch.subscribe((value: IWorkspaceState): void => {
 				probe.events.push({ busy: value.busy, active: value.statementImport !== null, outcome: value.importOutcome?.status ?? null });
 				if (value.busy && value.statementImport !== null) {
 					probe.started = true;
@@ -359,7 +359,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 			await page.waitForFunction((attempt: `${string}-${string}-${string}-${string}-${string}`): boolean => window.uiImportAttempts?.[attempt]?.started === true, attempt);
 			const completion: CommandTraceEntry = await commandEnd('import-statement', sequence);
 			await page.waitForFunction((attempt: `${string}-${string}-${string}-${string}-${string}`): boolean => window.uiImportAttempts?.[attempt]?.finished === true, attempt);
-			const result: WorkspaceState | null | undefined = await page.evaluate((attempt: `${string}-${string}-${string}-${string}-${string}`): WorkspaceState | null | undefined => window.uiImportAttempts?.[attempt]?.result, attempt);
+			const result: IWorkspaceState | null | undefined = await page.evaluate((attempt: `${string}-${string}-${string}-${string}-${string}`): IWorkspaceState | null | undefined => window.uiImportAttempts?.[attempt]?.result, attempt);
 			assert.ok(result?.workspace && result.importOutcome);
 			assert.equal(result.importOutcome.status, status);
 			assert.equal(result.busy, false);
@@ -371,7 +371,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 			}
 			await page.getByTestId('import-outcome').waitFor();
 			if (status === 'imported') {
-				const imported: BankImportSummary | undefined = result.workspace.imports.find((record: BankImportSummary): boolean => record.id === result.importOutcome?.importId);
+				const imported: IBankImportSummary | undefined = result.workspace.imports.find((record: IBankImportSummary): boolean => record.id === result.importOutcome?.importId);
 				assert.ok(imported);
 				await page.getByRole('combobox', { name: 'Statement', exact: true }).getByText(path.basename(imported.filePath) + ' ·', { exact: false }).waitFor();
 			}
@@ -730,7 +730,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		await clickCommand(page.getByRole('button', { name: 'Save', exact: true }), 'save');
 		await waitState({ dirty: false });
 		const saved: Awaited<ReturnType<typeof state>> = await state();
-		const ids: string[] = saved.workspace.imports.map((record: BankImportSummary): string => record.id);
+		const ids: string[] = saved.workspace.imports.map((record: IBankImportSummary): string => record.id);
 		await close();
 		await launch();
 		await dialogs({ opens: [workspaceFile] });
@@ -738,20 +738,20 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		await waitState({ filePath: workspaceFile, dirty: false });
 		await transactions().waitFor();
 		assert.deepEqual(
-			(await state()).workspace.imports.map((record: BankImportSummary): string => record.id),
+			(await state()).workspace.imports.map((record: IBankImportSummary): string => record.id),
 			ids
 		);
 		assert.equal(await transactions().locator('tbody > tr').count(), 2);
 		assert.equal(await fingerprint(original), beforeOriginal);
 	});
 	await check('identical-import-and-renaming-do-not-refetch-or-duplicate-clean-records', async (): Promise<void> => {
-		const ids: string[] = (await state()).workspace.imports.map((record: BankImportSummary): string => record.id);
+		const ids: string[] = (await state()).workspace.imports.map((record: IBankImportSummary): string => record.id);
 		await hook('workspace:bank-imports', 'count');
 		try {
 			const skipped: Awaited<ReturnType<typeof importFile>> = await importFile(duplicate, 'skipped');
 			assert.equal(skipped.workspace.dirty, false);
 			assert.deepEqual(
-				skipped.workspace.imports.map((record: BankImportSummary): string => record.id),
+				skipped.workspace.imports.map((record: IBankImportSummary): string => record.id),
 				ids
 			);
 			await page.getByLabel('Workspace name', { exact: true }).fill('UI import records renamed');
@@ -948,8 +948,8 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		const secondState: Awaited<ReturnType<typeof state>> = await state();
 		assert.equal(secondState.workspace.id, firstState.workspace.id);
 		assert.deepEqual(
-			secondState.workspace.imports.map((record: BankImportSummary): string => record.id),
-			firstState.workspace.imports.map((record: BankImportSummary): string => record.id)
+			secondState.workspace.imports.map((record: IBankImportSummary): string => record.id),
+			firstState.workspace.imports.map((record: IBankImportSummary): string => record.id)
 		);
 		assert.equal(secondState.workspace.savedAt, firstState.workspace.savedAt);
 		assert.match(normalized(await transactions().locator('tbody > tr').first().textContent()), /-2,02 EUR/);
@@ -965,8 +965,8 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 	await check('keyboard-source-details-and-680px-layout-keep-tables-contained-with-real-visible-captures', async (): Promise<{ bounds: { width: number; content: number; client: number; }; screenshot: string; }> => {
 		await openFile(workspaceFile);
 		await transactions().waitFor();
-		const imports: BankImportSummary[] = (await state()).workspace.imports;
-		const partialImport: BankImportSummary | undefined = imports.find((record: BankImportSummary): boolean => path.basename(record.filePath) === path.basename(partial));
+		const imports: IBankImportSummary[] = (await state()).workspace.imports;
+		const partialImport: IBankImportSummary | undefined = imports.find((record: IBankImportSummary): boolean => path.basename(record.filePath) === path.basename(partial));
 		assert.ok(partialImport);
 		await selectStatement(partialImport);
 		await drafts().waitFor();

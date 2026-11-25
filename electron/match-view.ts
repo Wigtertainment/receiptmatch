@@ -2,8 +2,8 @@ import type { ImportIssue, ImportPage, TransactionCandidate } from "../src/share
 import type { MatchApproval, MatchApprovalSelection } from "../src/shared/match-approvals.js";
 import type { StoredSupportingDocument } from "../src/shared/workspace-documents.js";
 import type { DocumentSection, SupportingDocument } from "../src/shared/supporting-document.js";
-import type { MatchCandidateView } from "../src/shared/workspace-matching.js";
-import type { ReviewMatchCandidate } from "../src/shared/workspace-matching.js";
+import type { IMatchCandidateView } from "../src/shared/workspace-matching.js";
+import type { IReviewMatchCandidate } from "../src/shared/workspace-matching.js";
 import type { MatchApprovalStatus } from "../src/shared/match-approvals.js";
 import type { SourceEvidence } from '../src/shared/bank-import.js';
 import type { BankCorrection } from '../src/shared/bank-corrections.js';
@@ -11,19 +11,19 @@ import type { DocumentCorrection } from '../src/shared/document-corrections.js';
 import { approvalSelectionFor, matchApprovalStatus, type ReviewApprovalState } from '../src/shared/match-approvals.js';
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
 import type { StoredDocumentImport } from '../src/shared/workspace-documents.js';
-import type { MatchDetails, MatchSourceExcerpt, MatchSummary, ReviewMatch } from '../src/shared/workspace-matching.js';
+import type { IMatchDetails, IMatchSourceExcerpt, IMatchSummary, IReviewMatch } from '../src/shared/workspace-matching.js';
 
 export function summarizeMatches(
-	matches: ReviewMatch[], imports: StoredBankImport[], decisions: ReadonlyMap<string, string | null>, corrections: ReadonlyMap<string, BankCorrection>,
+	matches: IReviewMatch[], imports: StoredBankImport[], decisions: ReadonlyMap<string, string | null>, corrections: ReadonlyMap<string, BankCorrection>,
 	reviewApprovals: ReadonlyMap<string, ReviewApprovalState>, documentRevisions: ReadonlyMap<string, number>, ignoredTransactions: ReadonlySet<string>,
 	ignoredByRule: ReadonlySet<string> = new Set(),
-): MatchSummary[] {
-	const byTransaction: Map<string, ReviewMatch> = new Map(matches.map((match: ReviewMatch): [string, ReviewMatch] => [match.transactionId, match]));
-	return imports.flatMap((record: StoredBankImport): MatchSummary[] => {
+): IMatchSummary[] {
+	const byTransaction: Map<string, IReviewMatch> = new Map(matches.map((match: IReviewMatch): [string, IReviewMatch] => [match.transactionId, match]));
+	return imports.flatMap((record: StoredBankImport): IMatchSummary[] => {
 		const ids: Map<string, string> = new Map(record.transactions.map(({ rowId, transactionId }: { rowId: string; transactionId: string; }): [string, string] => [rowId, transactionId]));
-		return record.result.transactions.map((row: TransactionCandidate): MatchSummary => {
+		return record.result.transactions.map((row: TransactionCandidate): IMatchSummary => {
 			const transactionId: string = ids.get(row.rowId)!;
-			const match: ReviewMatch | undefined = byTransaction.get(transactionId);
+			const match: IReviewMatch | undefined = byTransaction.get(transactionId);
 			const ignored: boolean = ignoredTransactions.has(transactionId);
 			const documentId: string | null | undefined = decisions.get(transactionId);
 			const reviewApproval: ReviewApprovalState | undefined = reviewApprovals.get(transactionId);
@@ -39,8 +39,8 @@ export function summarizeMatches(
 	});
 }
 
-function excerpts(evidence: SourceEvidence[], pages: ReadonlyMap<string, number>): MatchSourceExcerpt[] {
-	const result: Map<string, MatchSourceExcerpt> = new Map<string, MatchSourceExcerpt>();
+function excerpts(evidence: SourceEvidence[], pages: ReadonlyMap<string, number>): IMatchSourceExcerpt[] {
+	const result: Map<string, IMatchSourceExcerpt> = new Map<string, IMatchSourceExcerpt>();
 	for (const item of evidence) {
 		const page: number | undefined = pages.get(item.pageId);
 		if (page === undefined) {
@@ -49,19 +49,19 @@ function excerpts(evidence: SourceEvidence[], pages: ReadonlyMap<string, number>
 		const { x, y }: { x: number; y: number; width: number; height: number; } = item.region;
 		result.set(JSON.stringify([page, x, y, item.method, item.rawText]), { page, x, y, method: item.method, text: item.rawText });
 	}
-	return [...result.values()].sort((left: MatchSourceExcerpt, right: MatchSourceExcerpt): number => left.page - right.page || left.y - right.y || left.x - right.x);
+	return [...result.values()].sort((left: IMatchSourceExcerpt, right: IMatchSourceExcerpt): number => left.page - right.page || left.y - right.y || left.x - right.x);
 }
 
 export function describeMatch(
-	match: ReviewMatch, imports: StoredBankImport[], documentImports: StoredDocumentImport[], corrections: ReadonlyMap<string, DocumentCorrection>,
-): MatchDetails {
+	match: IReviewMatch, imports: StoredBankImport[], documentImports: StoredDocumentImport[], corrections: ReadonlyMap<string, DocumentCorrection>,
+): IMatchDetails {
 	const bank: StoredBankImport = imports.find((record: StoredBankImport): boolean => record.transactions.some((row: { rowId: string; transactionId: string; }): boolean => row.transactionId === match.transactionId))!;
 	const rowId: string = bank.transactions.find((row: { rowId: string; transactionId: string; }): boolean => row.transactionId === match.transactionId)!.rowId;
 	const transaction: TransactionCandidate = bank.result.transactions.find((row: TransactionCandidate): boolean => row.rowId === rowId)!;
 	const bankPages: Map<string, number> = new Map(bank.result.sourceProvenance!.pages.map((page: { pageId: string; pageNumber: number; width: number; height: number; }): [string, number] => [page.pageId, page.pageNumber]));
 	const documents: Map<string, StoredSupportingDocument> = new Map(documentImports.flatMap((record: StoredDocumentImport): (readonly [string, StoredSupportingDocument])[] => record.files.flatMap((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): [] | [readonly [string, StoredSupportingDocument]] => file.status === 'imported' ? [[file.record.id, file.record] as const] : [])));
 	const correctedSections: Set<string> = new Set([...corrections.values()].map(({ documentId, sectionId }: DocumentCorrection): string => JSON.stringify([documentId, sectionId])));
-	const candidates: MatchDetails['candidates'] = match.candidates.map((candidate: ReviewMatchCandidate): MatchCandidateView => {
+	const candidates: IMatchDetails['candidates'] = match.candidates.map((candidate: IReviewMatchCandidate): IMatchCandidateView => {
 		const document: StoredSupportingDocument = documents.get(candidate.documentId)!;
 		const sectionIndex: number = document.result.sections.findIndex((section: DocumentSection): boolean => section.sectionId === candidate.sectionId);
 		const section: DocumentSection = document.result.sections[sectionIndex];
