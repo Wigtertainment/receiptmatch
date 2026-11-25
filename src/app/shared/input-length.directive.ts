@@ -2,9 +2,6 @@ import { afterNextRender, Directive, ElementRef, inject, input, Renderer2, type 
 
 @Directive({ selector: 'wig-input[appInputLength]' })
 export class InputLength {
-  readonly appInputLength: InputSignal<number> = input.required<number>();
-  readonly appDisableSpellcheck: InputSignal<boolean> = input(false);
-
   constructor() {
     const host: HTMLElement = inject<ElementRef<HTMLElement>>(ElementRef).nativeElement;
     const renderer: Renderer2 = inject(Renderer2);
@@ -19,4 +16,7 @@ export class InputLength {
       }
     });
   }
+
+  readonly appInputLength: InputSignal<number> = input.required<number>();
+  readonly appDisableSpellcheck: InputSignal<boolean> = input(false);
 }

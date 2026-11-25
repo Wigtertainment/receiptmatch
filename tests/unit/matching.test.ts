@@ -1,9 +1,9 @@
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
-import type { BankImportInput, ImportPage, SourceEvidence, TransactionCandidate } from "../../src/shared/bank-import.js";
+import type { ImportPage, PositionedSpan, SourceEvidence, TransactionCandidate } from "../../src/shared/bank-import.js";
 import type { MatchCandidate, TransactionMatch } from "../../src/shared/workspace-matching.js";
-import type { MatchNameEvidence } from "../../src/shared/workspace-matching.js";
-import type { ReviewMatchCandidate } from "../../src/shared/workspace-matching.js";
-import type { ReviewMatch } from "../../src/shared/workspace-matching.js";
+import type { IMatchNameEvidence } from "../../src/shared/workspace-matching.js";
+import type { IReviewMatchCandidate } from "../../src/shared/workspace-matching.js";
+import type { IReviewMatch } from "../../src/shared/workspace-matching.js";
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'vitest';
@@ -12,12 +12,19 @@ import { suggestTransactionMatches } from '../../electron/matching.js';
 import { evaluateReviewMatches } from '../../electron/review-matching.js';
 import { storedSupportingDocumentSchema } from '../../src/shared/workspace-documents.js';
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
+import type { DocumentSection } from '../../src/shared/supporting-document.js';
 import { documentRun, extractedDocument, retainedBank } from './document-fixtures.js';
 
+type AmountField = DocumentSection['amounts'][number];
+type MatchAmount = MatchCandidate['amounts'][number];
+type AmountBasis = MatchAmount['basis'];
+
 function document(...lines: string[]): StoredSupportingDocument {
-	const { input }: { status: "complete"; input: BankImportInput; } & { status: "complete"; } = extractedDocument(Buffer.from(lines.join('\n')), randomUUID());
+	const { input }: ReturnType<typeof extractedDocument> = extractedDocument(Buffer.from(lines.join('\n')), randomUUID());
 	const page: ImportPage = input.pages[0];
-	page.spans = lines.map((text: string, index: number): { text: string; region: { x: number; y: number; width: number; height: number; }; method: "embedded-text"; } => ({ text, region: { x: 30, y: 30 + index * 25, width: 540, height: 12 }, method: 'embedded-text' }));
+	page.spans = lines.map((text: string, index: number): PositionedSpan & Record<'method', 'embedded-text'> => ({
+		text, region: { x: 30, y: 30 + index * 25, width: 540, height: 12 }, method: 'embedded-text'
+	}));
 	return storedSupportingDocumentSchema.parse({ id: randomUUID(), importedAt: '2032-05-20T12:00:00Z', filePath: `${process.cwd()}/synthetic.pdf`, format: 'pdf', result: interpretSupportingDocument(input) });
 }
 
@@ -26,7 +33,7 @@ function invoice(...lines: string[]): StoredSupportingDocument {
 }
 
 function matchFor(bank: StoredBankImport, index: number, ...documents: ReturnType<typeof document>[]): TransactionMatch {
-	const { transactionId }: { rowId: string; transactionId: string; } = bank.transactions[index];
+	const { transactionId }: StoredBankImport['transactions'][number] = bank.transactions[index];
 	return suggestTransactionMatches([bank], documents).find((match: TransactionMatch): boolean => match.transactionId === transactionId)!;
 }
 
@@ -40,7 +47,7 @@ test('rechecks the amounts of a historically reliable candidate before displayin
 	candidate.documentId = replacement.id;
 	candidate.sectionId = replacement.result.sections[0].sectionId;
 	candidate.amounts[0].documentAmount.coefficient = '123457';
-	const [reviewed]: ReviewMatch[] = evaluateReviewMatches([historical], [bank], [documentRun(root, [replacement])]);
+	const [reviewed]: IReviewMatch[] = evaluateReviewMatches([historical], [bank], [documentRun(root, [replacement])]);
 	assert.equal(historical.status, 'reliable');
 	assert.equal(reviewed.status, 'uncertain');
 	assert.equal(reviewed.candidates[0].signals.amount, 'close');
@@ -97,11 +104,14 @@ test('compares original and settlement currency separately and retains both base
 	assert.equal(matchFor(bank, 0, wrongCurrency, wrongAmount).status, 'unmatched');
 	const match: ReturnType<typeof matchFor> = matchFor(bank, 0, original, wrongCurrency, wrongAmount);
 	assert.equal(match.status, 'reliable');
-	assert.deepEqual(match.candidates.map((candidate: MatchCandidate): (string | ("account-settlement" | "reported-original")[])[] => [candidate.documentId, candidate.amounts.map((amount: { basis: "account-settlement" | "reported-original"; transactionAmount: { coefficient: string; currency: string; scale: number; }; documentFieldId: string; documentAmount: { coefficient: string; currency: string; scale: number; }; }): "account-settlement" | "reported-original" => amount.basis)]), [[original.id, ['reported-original']]]);
+	assert.deepEqual(match.candidates.map((candidate: MatchCandidate): (string | AmountBasis[])[] => [
+		candidate.documentId, candidate.amounts.map((amount: MatchAmount): AmountBasis => amount.basis)
+	]), [[original.id, ['reported-original']]]);
 	const row: TransactionCandidate = bank.result.transactions[0];
 	row.reportedOriginalAmount = row.accountAmount;
 	const same: ReturnType<typeof matchFor> = matchFor(bank, 0, invoice('Invoice Total: EUR 1,234.56'));
-	assert.deepEqual(same.candidates.map((candidate: MatchCandidate): ("account-settlement" | "reported-original")[] => candidate.amounts.map((amount: { basis: "account-settlement" | "reported-original"; transactionAmount: { coefficient: string; currency: string; scale: number; }; documentFieldId: string; documentAmount: { coefficient: string; currency: string; scale: number; }; }): "account-settlement" | "reported-original" => amount.basis)), [['account-settlement', 'reported-original']]);
+	assert.deepEqual(same.candidates.map((candidate: MatchCandidate): AmountBasis[] =>
+		candidate.amounts.map((amount: MatchAmount): AmountBasis => amount.basis)), [['account-settlement', 'reported-original']]);
 });
 
 test('prefers explicit payments and ignores balance due, line items and FX as payment bases', (): void => {
@@ -111,12 +121,12 @@ test('prefers explicit payments and ignores balance due, line items and FX as pa
 	const actual: ReturnType<typeof invoice> = invoice('Invoice Number: SYNTHETIC-A', 'Invoice Total: EUR 1,254.56', 'Amount Paid: EUR 1,234.56', 'Balance Due: EUR 20.00');
 	const match: ReturnType<typeof matchFor> = matchFor(bank, 0, actual);
 	assert.equal(match.status, 'reliable');
-	assert.equal(actual.result.sections[0].amounts.find((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.id === match.candidates[0].amounts[0].documentFieldId)?.role, 'payment');
+	assert.equal(actual.result.sections[0].amounts.find((field: AmountField): boolean => field.id === match.candidates[0].amounts[0].documentFieldId)?.role, 'payment');
 	const scheduled: ReturnType<typeof invoice> = invoice('Invoice Number: SYNTHETIC-A', 'Invoice Total: EUR 20.00', 'Payment scheduled: EUR 1,234.56');
 	assert.equal(matchFor(bank, 0, scheduled).status, 'unmatched');
 	const applied: ReturnType<typeof invoice> = invoice('Invoice Number: SYNTHETIC-A', 'Invoice Total: EUR 1,254.56', 'Applied Transactions:', 'PAYMENT-SYNTHETIC March 14, 2032 -EUR 1,234.56');
 	assert.equal(matchFor(bank, 0, applied).status, 'reliable');
-	const payment: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; } = applied.result.sections[0].amounts.find((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.role === 'payment')!;
+	const payment: AmountField = applied.result.sections[0].amounts.find((field: AmountField): boolean => field.role === 'payment')!;
 	payment.evidence = payment.evidence.filter((item: SourceEvidence): boolean => item.rawText !== 'Applied Transactions:');
 	assert.equal(matchFor(bank, 0, applied).status, 'reliable');
 });
@@ -129,7 +139,7 @@ test('requires explicit executed refund evidence for incoming transactions', ():
 	const match: ReturnType<typeof matchFor> = matchFor(bank, 1, note, refund);
 	assert.equal(match.status, 'uncertain');
 	assert.deepEqual(match.candidates.map(({ documentId, direction }: MatchCandidate): string[] => [documentId, direction]), [[refund.id, 'incoming']]);
-	assert.equal(refund.result.sections[0].amounts.find((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.id === match.candidates[0].amounts[0].documentFieldId)?.role, 'refund-payment');
+	assert.equal(refund.result.sections[0].amounts.find((field: AmountField): boolean => field.id === match.candidates[0].amounts[0].documentFieldId)?.role, 'refund-payment');
 });
 
 test('keeps separate sections, preserves competing referenced candidates and returns deterministic results', (): void => {
@@ -175,13 +185,13 @@ test.for(["'", '’'])('suggests a receipt when the bank name contains an intern
 
 	const historical: ReturnType<typeof matchFor> = matchFor(bank, 0, receipt);
 	assert.equal(historical.status, 'unmatched');
-	const [reviewed]: ReviewMatch[] = evaluateReviewMatches([historical], [bank], [documentRun(root, [receipt])]);
+	const [reviewed]: IReviewMatch[] = evaluateReviewMatches([historical], [bank], [documentRun(root, [receipt])]);
 	assert.equal(reviewed.status, 'uncertain');
-	assert.deepEqual(reviewed.candidates.map(({ documentId, signals }: ReviewMatchCandidate): (string | MatchNameEvidence)[] => [documentId, signals.amount, signals.filename]), [
+	assert.deepEqual(reviewed.candidates.map(({ documentId, signals }: IReviewMatchCandidate): (string | IMatchNameEvidence)[] => [documentId, signals.amount, signals.filename]), [
 		[receipt.id, 'close', { state: 'partial', bankText: description, documentText: 'Blooms.pdf' }],
 	]);
 
 	booking.description.value = 'Bloom S Bar & Grill Lca';
-	const [unrelated]: ReviewMatch[] = evaluateReviewMatches([historical], [bank], [documentRun(root, [receipt])]);
+	const [unrelated]: IReviewMatch[] = evaluateReviewMatches([historical], [bank], [documentRun(root, [receipt])]);
 	assert.equal(unrelated.status, 'unmatched');
 });

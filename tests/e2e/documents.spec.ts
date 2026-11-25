@@ -1,7 +1,7 @@
-import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
-import type { ImportIssue, ImportPage, PositionedSpan, SourceEvidence } from "../../src/shared/bank-import.js";
-import type { SupportingDocument } from "../../src/shared/supporting-document.js";
-import type { DocumentImportSummary } from "../../src/shared/protocol.js";
+import type { DocumentFileResult, StoredDocumentImport, StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
+import type { ImportPage, PositionedSpan } from "../../src/shared/bank-import.js";
+import type { DocumentSection } from "../../src/shared/supporting-document.js";
+import type { IDocumentImportSummary } from "../../src/shared/protocol.js";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -9,22 +9,28 @@ import path from "node:path";
 import { PDFDocument, StandardFonts, type PDFPage, type PDFFont } from "pdf-lib";
 import { expect, test as base, type ElectronApplication, type Locator, type Page, type PlaywrightWorkerOptions, type PlaywrightWorkerArgs, type PlaywrightTestOptions, type PlaywrightTestArgs, type TestType } from "@playwright/test";
 import type { BrowserWindow, OpenDialogOptions } from "electron";
-import type { WorkspaceCommand, WorkspaceState } from "../../src/shared/protocol.js";
-import type { StoredDocumentImport } from "../../src/shared/workspace-documents.js";
+import type { WorkspaceCommand, IWorkspaceState } from "../../src/shared/protocol.js";
+
+interface IDocumentDialogGlobals { documentTestDialogProperties?: OpenDialogOptions["properties"] }
+interface IApplicationWindow { application: ElectronApplication; page: Page }
+interface IDocumentDialogPlan { opens: (string | null)[]; saves: string[]; choices: number[] }
+interface IImageOptions { format: "png" | "jpeg"; long: boolean }
+type ImportedDocumentFile = Extract<DocumentFileResult, Record<'status', 'imported'>>;
+interface IDocumentImportFixtureArgs { documentImport: IDocumentImportFixture }
+type DocumentImportContext = IDocumentImportFixtureArgs & PlaywrightTestArgs & PlaywrightTestOptions & PlaywrightWorkerArgs & PlaywrightWorkerOptions;
+interface ICellViewport { right: number; viewport: number }
 
 declare global {
-	interface Window {
-		documentTestInjection?: number;
-		documentTestState?: WorkspaceState | null;
-		unsubscribeDocumentTest?: () => void;
-	}
+	var documentTestInjection: number | undefined;
+	var documentTestState: IWorkspaceState | null | undefined;
+	var unsubscribeDocumentTest: (() => void) | undefined;
 }
 
-type DocumentTestMainGlobals = typeof globalThis & { documentTestDialogProperties?: OpenDialogOptions["properties"] };
+type DocumentTestMainGlobals = typeof globalThis & IDocumentDialogGlobals;
 
-interface DocumentImportFixture {
+interface IDocumentImportFixture {
 	root: string;
-	launch: () => Promise<{ application: ElectronApplication; page: Page }>;
+	launch: () => Promise<IApplicationWindow>;
 }
 
 const rawNote: "<img src=x onerror=\"window.documentTestInjection=1\">" = '<img src=x onerror="window.documentTestInjection=1">';
@@ -51,17 +57,18 @@ async function pdfFixture(reference: string): Promise<Uint8Array<ArrayBufferLike
 
 async function mockDialogs(application: ElectronApplication, opens: (string | null)[] = [], saves: string[] = [], choices: number[] = []): Promise<void> {
 	await application.evaluate(
-		({ dialog }: typeof Electron.CrossProcessExports, plan: { opens: (string | null)[]; saves: string[]; choices: number[]; }): void => {
-			dialog.showOpenDialog = async (_window: BrowserWindow | OpenDialogOptions, options?: OpenDialogOptions): Promise<{ canceled: boolean; filePaths: string[]; }> => {
+		({ dialog }: typeof Electron.CrossProcessExports, plan: IDocumentDialogPlan): void => {
+			dialog.showOpenDialog = async (_window: BrowserWindow | OpenDialogOptions, options?: OpenDialogOptions): Promise<Electron.OpenDialogReturnValue> => {
 				(globalThis as DocumentTestMainGlobals).documentTestDialogProperties = options?.properties;
 				const selected: string | null | undefined = plan.opens.shift();
 				return Promise.resolve({ canceled: !selected, filePaths: selected ? [selected] : [] });
 			};
-			dialog.showSaveDialog = async (): Promise<{ canceled: boolean; filePath: string; }> => {
+			dialog.showSaveDialog = async (): Promise<Electron.SaveDialogReturnValue> => {
 				const selected: string | undefined = plan.saves.shift();
 				return Promise.resolve({ canceled: !selected, filePath: selected ?? "" });
 			};
-			dialog.showMessageBox = async (): Promise<{ response: number; checkboxChecked: false; }> => Promise.resolve(({ response: plan.choices.shift() ?? 2, checkboxChecked: false }));
+			dialog.showMessageBox = async (): Promise<Pick<Electron.MessageBoxReturnValue, 'response'> & Record<'checkboxChecked', false>> =>
+				Promise.resolve(({ response: plan.choices.shift() ?? 2, checkboxChecked: false }));
 		},
 		{ opens, saves, choices },
 	);
@@ -70,7 +77,7 @@ async function mockDialogs(application: ElectronApplication, opens: (string | nu
 async function imageFixture(page: Page, format: "png" | "jpeg", long: boolean = false): Promise<Buffer<ArrayBuffer>> {
 	return Buffer.from(
 		await page.evaluate(
-			({ format, long }: { format: "png" | "jpeg"; long: boolean; }): string => {
+			({ format, long }: IImageOptions): string => {
 				const canvas: HTMLCanvasElement = document.createElement("canvas");
 				canvas.width = 1200;
 				canvas.height = long ? 1800 : 450;
@@ -104,13 +111,13 @@ async function imageFixture(page: Page, format: "png" | "jpeg", long: boolean = 
 	);
 }
 
-const test: TestType<PlaywrightTestArgs & PlaywrightTestOptions & { documentImport: DocumentImportFixture; }, PlaywrightWorkerArgs & PlaywrightWorkerOptions> = base.extend<{ documentImport: DocumentImportFixture }>({
-	documentImport: async ({ playwright }: { documentImport: DocumentImportFixture; } & PlaywrightTestArgs & PlaywrightTestOptions & PlaywrightWorkerArgs & PlaywrightWorkerOptions, use: (r: DocumentImportFixture) => Promise<void>): Promise<void> => {
+const test: TestType<PlaywrightTestArgs & PlaywrightTestOptions & IDocumentImportFixtureArgs, PlaywrightWorkerArgs & PlaywrightWorkerOptions> = base.extend<IDocumentImportFixtureArgs>({
+	documentImport: async ({ playwright }: DocumentImportContext, use: (r: IDocumentImportFixture) => Promise<void>): Promise<void> => {
 		await mkdir("artifacts", { recursive: true });
 		const root: string = await mkdtemp(path.resolve("artifacts/document-import-"));
 		let activeApplication: ElectronApplication | undefined;
 
-		async function launch(): Promise<{ application: ElectronApplication; page: Page; }> {
+		async function launch(): Promise<IApplicationWindow> {
 			const application: ElectronApplication = await playwright._electron.launch({
 				executablePath: path.resolve(process.platform === "win32" ? "release/win-unpacked/ReceiptMatch.exe" : "release/linux-unpacked/receiptmatch"),
 				args: ["--hidden", "--disable-gpu", `--user-data-dir=${path.join(root, `profile-${randomUUID()}`)}`],
@@ -144,8 +151,8 @@ const test: TestType<PlaywrightTestArgs & PlaywrightTestOptions & { documentImpo
 
 test.describe.configure({ timeout: 240_000 });
 
-test("packaged supporting document import", async ({ documentImport: { root, launch } }: PlaywrightTestArgs & PlaywrightTestOptions & { documentImport: DocumentImportFixture; } & PlaywrightWorkerArgs & PlaywrightWorkerOptions): Promise<void> => {
-	let { application, page }: { application: ElectronApplication; page: Page; } = await launch();
+test("packaged supporting document import", async ({ documentImport: { root, launch } }: DocumentImportContext): Promise<void> => {
+	let { application, page }: IApplicationWindow = await launch();
 	let completedChecks: number = 0;
 	const sha: (bytes: Buffer) => string = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 
@@ -176,7 +183,7 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 	await writeFile(files[4], "Synthetic unreadable PDF");
 	await writeFile(files[5], "Unsupported synthetic note");
 	const originalHashes: string[] = await Promise.all(files.map(async (file: string): Promise<string> => sha(await readFile(file))));
-	const command: (value: WorkspaceCommand) => Promise<WorkspaceState> = (value: WorkspaceCommand): Promise<WorkspaceState> => page.evaluate((value: WorkspaceCommand): Promise<WorkspaceState> => window.receiptmatch.command(value), value);
+	const command: (value: WorkspaceCommand) => Promise<IWorkspaceState> = (value: WorkspaceCommand): Promise<IWorkspaceState> => page.evaluate((value: WorkspaceCommand): Promise<IWorkspaceState> => window.receiptmatch.command(value), value);
 
 	const records: () => Promise<StoredDocumentImport[]> = (): Promise<StoredDocumentImport[]> => page.evaluate((): Promise<StoredDocumentImport[]> => window.receiptmatch.documentImports());
 
@@ -234,21 +241,24 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		await documents().getByRole("button", { name: /^mixed ·/ }).waitFor();
 		await documents().getByRole("table", { name: "Files in mixed", exact: true }).waitFor();
 		assert.deepEqual(await application.evaluate((): ("openDirectory" | "openFile" | "multiSelections" | "showHiddenFiles" | "createDirectory" | "promptToCreate" | "noResolveAliases" | "treatPackageAsDirectory" | "dontAddToRecent")[] | undefined => (globalThis as DocumentTestMainGlobals).documentTestDialogProperties), ["openDirectory"]);
-		const state: WorkspaceState = await command({ type: "get-state" });
+		const state: IWorkspaceState = await command({ type: "get-state" });
 		assert.equal(state.documentOutcome?.status, "finished");
 		assert.equal(state.workspace?.dirty, true);
-		const summary: DocumentImportSummary = state.workspace?.documentImports[0];
+		const summary: IDocumentImportSummary = state.workspace?.documentImports[0];
 		assert.equal(summary?.imported, 3);
 		assert.equal(summary?.skipped, 1);
 		assert.equal(summary?.failed, 1);
 		assert.equal(summary?.unsupported, 1);
 		expected = await records();
 		assert.equal(expected[0].files.length, 6);
-		const imported: StoredSupportingDocument[] = expected[0].files.filter((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): file is { status: "imported"; record: StoredSupportingDocument; } => file.status === "imported").map((file: { status: "imported"; record: StoredSupportingDocument; }): StoredSupportingDocument => file.record);
+		const imported: StoredSupportingDocument[] = expected[0].files
+			.filter((file: DocumentFileResult): file is ImportedDocumentFile => file.status === "imported")
+			.map((file: ImportedDocumentFile): StoredSupportingDocument => file.record);
 		assert.deepEqual(new Set(imported.map((record: StoredSupportingDocument): "png" | "pdf" | "jpeg" => record.format)), new Set(["pdf", "png", "jpeg"]));
 		assert.ok(imported.every((record: StoredSupportingDocument): number | undefined => record.result.input?.pages.flatMap((page: ImportPage): PositionedSpan[] => page.spans).length));
 		const pdf: StoredSupportingDocument | undefined = imported.find((record: StoredSupportingDocument): boolean => record.format === "pdf");
-		const billedTotal: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; } | undefined = pdf?.result.sections[0]?.amounts.find((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.role === "billed-total");
+		const billedTotal: DocumentSection['amounts'][number] | undefined = pdf?.result.sections[0]?.amounts.find(
+			(field: DocumentSection['amounts'][number]): boolean => field.role === "billed-total");
 		assert.equal(billedTotal?.candidates[0]?.coefficient, "7325");
 		assert.deepEqual(await Promise.all(files.map(async (file: string): Promise<string> => sha(await readFile(file)))), originalHashes);
 	});
@@ -329,7 +339,8 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		await pdfButton.press("Enter");
 		const drawer: Locator = page.getByRole("dialog", { name: "a.PDF", exact: true });
 		await expect(drawer).toBeVisible();
-		const edge: { right: number; viewport: number; } = await drawer.evaluate((element: HTMLElement | SVGElement): { right: number; viewport: number; } => ({ right: element.getBoundingClientRect().right, viewport: document.documentElement.clientWidth }));
+		const edge: ICellViewport = await drawer.evaluate((element: HTMLElement | SVGElement): ICellViewport =>
+			({ right: element.getBoundingClientRect().right, viewport: document.documentElement.clientWidth }));
 		assert.ok(Math.abs(edge.right - edge.viewport) < 2, JSON.stringify(edge));
 		await page.keyboard.press("Escape");
 		await expect(drawer).toBeHidden();
@@ -349,7 +360,7 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 			.filter({ hasText: /Invoice reference.*SYNTHETIC-PDF/ })
 			.waitFor();
 		await closeFile(pdf);
-		const state: WorkspaceState = await command({ type: "get-state" });
+		const state: IWorkspaceState = await command({ type: "get-state" });
 		assert.equal(state.workspace?.dirty, false);
 		assert.deepEqual(await records(), expected);
 	});
@@ -367,18 +378,18 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		await originalReport.press("Enter");
 		await expect(originalReport).toHaveAttribute("aria-expanded", "false");
 		await dialogs([folder]);
-		const state: WorkspaceState = await command({ type: "import-documents" });
-		const summary: DocumentImportSummary | undefined = state.workspace?.documentImports.at(-1);
+		const state: IWorkspaceState = await command({ type: "import-documents" });
+		const summary: IDocumentImportSummary | undefined = state.workspace?.documentImports.at(-1);
 		assert.equal(summary?.imported, 0);
 		assert.equal(summary?.skipped, 4);
 		assert.equal(summary?.failed, 1);
 		await expect(documents().getByRole("button", { name: /^mixed · Finished · 0 imported/ })).toHaveAttribute("aria-expanded", "true");
 		await expect(originalReport).toHaveAttribute("aria-expanded", "false");
 		await command({ type: "save" });
-		const clean: WorkspaceState = await command({ type: "get-state" });
+		const clean: IWorkspaceState = await command({ type: "get-state" });
 		assert.equal(clean.workspace?.dirty, false);
 		await dialogs([files[0]]);
-		const bankSkip: WorkspaceState = await command({ type: "import-statement" });
+		const bankSkip: IWorkspaceState = await command({ type: "import-statement" });
 		assert.equal(bankSkip.importOutcome?.status, "skipped");
 		assert.equal(bankSkip.importOutcome?.importId, null);
 		assert.equal(bankSkip.workspace?.dirty, false);
@@ -393,7 +404,7 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 		await dialogs([cancellationFolder]);
 		await page.evaluate((): void => {
 			window.documentTestState = null;
-			window.unsubscribeDocumentTest = window.receiptmatch.subscribe((state: WorkspaceState): void => {
+			window.unsubscribeDocumentTest = window.receiptmatch.subscribe((state: IWorkspaceState): void => {
 				window.documentTestState = state;
 			});
 		});
@@ -404,7 +415,7 @@ test("packaged supporting document import", async ({ documentImport: { root, lau
 			.waitFor();
 		await documents().getByRole("button", { name: "Cancel analysis" }).press("Enter");
 		await page.waitForFunction((): boolean => window.documentTestState?.documentOutcome?.status === "cancelled", undefined, { polling: 50 });
-		const state: WorkspaceState = await command({ type: "get-state" });
+		const state: IWorkspaceState = await command({ type: "get-state" });
 		await page.evaluate((): void => {
 			if (!window.unsubscribeDocumentTest) {
 				throw new Error("Document test subscription is missing");

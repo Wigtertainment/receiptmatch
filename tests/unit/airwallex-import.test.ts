@@ -7,6 +7,7 @@ import { airwallexAdapter } from '../../electron/import/airwallex.js';
 import { revolutAdapter } from '../../electron/import/revolut.js';
 import { emptyPage, span, statement } from './bank-fixtures.js';
 import { airwallexHeader, airwallexRow, airwallexStatement } from './airwallex-fixtures.js';
+import type { Money } from '../../src/shared/money.js';
 
 function firstTableOnly(): BankImportInput {
     const input: BankImportInput = airwallexStatement();
@@ -30,7 +31,7 @@ test('Airwallex preserves source order, settlement direction, explicit originals
     assert.equal(result.transactions[1].reportedOriginalAmount, null);
     assert.deepEqual(result.transactions[2].reportedOriginalAmount?.value, { coefficient: '419', currency: 'EUR', scale: 2 });
     assert.equal(result.transactions[3].reportedOriginalAmount, null);
-    assert.equal(result.transactions[3].references.find((reference: { label: string; value: string; evidence: SourceEvidence[]; }): boolean => reference.label === 'Ref')?.value, 'SYNTHETIC-REF');
+    assert.equal(result.transactions[3].references.find((reference: TransactionCandidate['references'][number]): boolean => reference.label === 'Ref')?.value, 'SYNTHETIC-REF');
     assert.ok(result.transactions.every((row: TransactionCandidate): boolean => row.bookingDate.basisLabel === 'Date (Central European Time)' && row.valueDate === null));
     assert.ok(result.transactions[0].description.value.includes('Lantern Supplies'));
     assert.ok(result.transactions[1].description.value.includes('Workshop'));
@@ -62,8 +63,8 @@ test('reordered word spans, wrapped details and mixed OCR/text preserve the same
     });
     const result: BankImportResult = parseBankStatement(input);
     assert.equal(result.status, 'complete');
-    assert.deepEqual(result.transactions.map((row: TransactionCandidate): (string | { coefficient: string; currency: string; scale: number; } | undefined)[] => [row.bookingDate.value, row.accountAmount.value, row.reportedOriginalAmount?.value]),
-        expected.transactions.map((row: TransactionCandidate): (string | { coefficient: string; currency: string; scale: number; } | undefined)[] => [row.bookingDate.value, row.accountAmount.value, row.reportedOriginalAmount?.value]));
+    assert.deepEqual(result.transactions.map((row: TransactionCandidate): (string | Money | undefined)[] => [row.bookingDate.value, row.accountAmount.value, row.reportedOriginalAmount?.value]),
+        expected.transactions.map((row: TransactionCandidate): (string | Money | undefined)[] => [row.bookingDate.value, row.accountAmount.value, row.reportedOriginalAmount?.value]));
     assert.ok(result.transactions[2].evidence.some((value: SourceEvidence): boolean => value.method === 'local-ocr'));
     assert.ok(result.transactions[2].evidence.some((value: SourceEvidence): boolean => value.method === 'embedded-text'));
 });
@@ -141,7 +142,7 @@ test('empty reference labels do not consume later Global Account details or inve
     }));
     const result: BankImportResult = parseBankStatement(input);
     assert.equal(result.status, 'complete');
-    assert.equal(result.transactions[0].references.some((reference: { label: string; value: string; evidence: SourceEvidence[]; }): boolean => reference.label === 'Ref'), false);
+    assert.equal(result.transactions[0].references.some((reference: TransactionCandidate['references'][number]): boolean => reference.label === 'Ref'), false);
     assert.equal(result.accountSections[0].accountReference, null);
 });
 

@@ -2,15 +2,17 @@ import type { ImportIssue, SourceEvidence } from "../src/shared/bank-import.js";
 import type { DocumentIssue } from "../src/shared/supporting-document.js";
 import { formatAmountEntry } from '../src/shared/amount-entry.js';
 import type { TransactionCandidate, UnresolvedDraft } from '../src/shared/bank-import.js';
-import type { ReceiptAiChange } from '../src/shared/receipt-ai.js';
+import type { IReceiptAiChange } from '../src/shared/receipt-ai.js';
 import { bankTransactionIds, statementAccountKey } from '../src/shared/statement-overlaps.js';
 import type { DocumentSection } from '../src/shared/supporting-document.js';
 import type { StoredSupportingDocument } from '../src/shared/workspace-documents.js';
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
 
-type Change = ReceiptAiChange;
+type Change = IReceiptAiChange;
 type BankRow = TransactionCandidate | UnresolvedDraft;
-interface Amount { coefficient: string; scale: number; currency: string | null }
+type AccountSection = StoredBankImport['result']['accountSections'][number];
+type BankRowReference = BankRow['references'][number];
+interface IAmount { coefficient: string; scale: number; currency: string | null }
 type SectionField = DocumentSection['amounts'][number] | DocumentSection['dates'][number] | DocumentSection['merchants'][number] |
 	DocumentSection['references'][number] | DocumentSection['currencies'][number];
 
@@ -22,11 +24,11 @@ function shorten(value: string): string {
 	return value.length > 600 ? value.slice(0, 597) + '…' : value;
 }
 
-function moneyKey(value: Amount | undefined): (string | null)[] | null {
+function moneyKey(value: IAmount | undefined): (string | null)[] | null {
 	return value ? [value.currency, (BigInt(value.coefficient) * 10n ** BigInt(18 - value.scale)).toString()] : null;
 }
 
-function showMoney(value: Amount | undefined): string {
+function showMoney(value: IAmount | undefined): string {
 	return value ? [formatAmountEntry(value, '.'), value.currency ?? 'currency unknown'].join(' ') : 'Unknown amount';
 }
 
@@ -44,12 +46,12 @@ function byKey<T>(values: readonly T[], key: (item: T) => string | null): Map<st
 	return groups;
 }
 
-interface Differences {
+interface IDifferences {
 	add(label: string, before: string | null, after: string | null, details?: Pick<Change, 'kind' | 'section' | 'unrecognized'>): void;
 	result(): Change[];
 }
 
-function differences(): Differences {
+function differences(): IDifferences {
 	const changes: Change[] = [];
 	let omitted: number = 0;
 	return {
@@ -68,23 +70,24 @@ function differences(): Differences {
 	};
 }
 
-function bankRows(record: StoredBankImport): IndexedBankRow[] {
-	const accounts: Map<string, { identity: string | null; currency: string; }> = new Map(record.result.accountSections.map((section: { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; }): [string, { identity: string | null; currency: string; }] => [section.sectionId, {
+function bankRows(record: StoredBankImport): IIndexedBankRow[] {
+	const accounts: Map<string, IStatementAccount> = new Map(record.result.accountSections.map((section: AccountSection): [string, IStatementAccount] => [section.sectionId, {
 		identity: statementAccountKey(section.accountReference?.value), currency: section.currency.value,
 	}]));
 	const transactions: Map<string, TransactionCandidate> = new Map(record.result.transactions.map((row: TransactionCandidate): [string, TransactionCandidate] => [row.rowId, row]));
 	const drafts: Map<string, UnresolvedDraft> = new Map(record.result.unresolvedDrafts.map((row: UnresolvedDraft): [string, UnresolvedDraft] => [row.rowId, row]));
-	const makeRow: (id: string, row: BankRow, draft: boolean) => IndexedBankRow = (id: string, row: BankRow, draft: boolean): IndexedBankRow => {
-		const account: { identity: string | null; currency: string; } = accounts.get(row.accountSectionId)!;
+	const makeRow: (id: string, row: BankRow, draft: boolean) => IIndexedBankRow = (id: string, row: BankRow, draft: boolean): IIndexedBankRow => {
+		const account: IStatementAccount = accounts.get(row.accountSectionId)!;
 		const scope: (string | null | undefined)[] = [record.result.adapter?.bankId, account.identity, account.currency];
 		const ids: Set<string> = bankTransactionIds(row.references);
 		const [identifier]: Set<string> = ids;
 		const reference: string | null = ids.size === 1 && !draft && statementAccountKey(identifier) ? JSON.stringify([...scope, identifier]) : null;
 		const date: (field: BankRow["bookingDate"]) => string[] | null = (field: BankRow['bookingDate']): string[] | null => field && [field.value, compact(field.basisLabel)];
-		const references: string[] = row.references.map((field: { label: string; value: string; evidence: SourceEvidence[]; }): string => JSON.stringify([compact(field.label).toLowerCase(), compact(field.value)])).sort();
+		const references: string[] = row.references.map((field: BankRowReference): string => JSON.stringify([compact(field.label).toLowerCase(), compact(field.value)])).sort();
 		const description: string = compact(row.description?.value ?? '');
 		const draftEvidence: string[] = 'issues' in row ? row.evidence.map((evidence: SourceEvidence): string => compact(evidence.rawText)).sort() : [];
-		const identifiable: boolean | "" | { value: string; basisLabel: string; evidence: SourceEvidence[]; } | { value: { coefficient: string; currency: string; scale: number; }; evidence: SourceEvidence[]; } | null = ids.size <= 1 && (account.identity ?? reference) && (!draft || (description && (row.bookingDate ?? row.accountAmount)));
+		const identifiable: boolean | "" | NonNullable<BankRow['bookingDate']> | NonNullable<BankRow['accountAmount']> | null =
+			ids.size <= 1 && (account.identity ?? reference) && (!draft || (description && (row.bookingDate ?? row.accountAmount)));
 		const signature: string | null = identifiable ? JSON.stringify([
 			...scope, row.direction, draft, date(row.bookingDate), date(row.valueDate), moneyKey(row.accountAmount?.value), moneyKey(row.reportedOriginalAmount?.value),
 			description, compact(row.counterpartyCandidate?.value ?? ''), references, draftEvidence,
@@ -93,8 +96,8 @@ function bankRows(record: StoredBankImport): IndexedBankRow[] {
 		return { id, row, draft, account: account.identity, reference, signature };
 	};
 	return [
-		...record.transactions.map(({ transactionId, rowId }: { rowId: string; transactionId: string; }): IndexedBankRow => makeRow(transactionId, transactions.get(rowId)!, false)),
-		...record.drafts.map(({ draftId, rowId }: { rowId: string; draftId: string; }): IndexedBankRow => makeRow(draftId, drafts.get(rowId)!, true)),
+		...record.transactions.map(({ transactionId, rowId }: StoredBankImport['transactions'][number]): IIndexedBankRow => makeRow(transactionId, transactions.get(rowId)!, false)),
+		...record.drafts.map(({ draftId, rowId }: StoredBankImport['drafts'][number]): IIndexedBankRow => makeRow(draftId, drafts.get(rowId)!, true)),
 	];
 }
 
@@ -104,25 +107,26 @@ function bookingDescription(row: BankRow): string {
 		...(row.valueDate ? ['Value date: ' + row.valueDate.value] : []),
 		...(row.reportedOriginalAmount ? ['Original: ' + showMoney(row.reportedOriginalAmount.value)] : []),
 		...(row.counterpartyCandidate ? ['Counterparty: ' + compact(row.counterpartyCandidate.value)] : []),
-		...row.references.map((field: { label: string; value: string; evidence: SourceEvidence[]; }): string => compact(field.label) + ': ' + compact(field.value)),
+		...row.references.map((field: BankRowReference): string => compact(field.label) + ': ' + compact(field.value)),
 	].filter(Boolean).join(' · ');
 }
 
-interface StatementAccount { identity: string | null; currency: string }
-interface IndexedBankRow { id: string; row: BankRow; draft: boolean; account: string | null; reference: string | null; signature: string | null }
-interface StatementComparisonIndex {
-	oldKeys: Map<string, IndexedBankRow[]>;
-	newKeys: Map<string, IndexedBankRow[]>;
-	oldRefs: Map<string, IndexedBankRow[]>;
-	newRefs: Map<string, IndexedBankRow[]>;
+interface IStatementAccount { identity: string | null; currency: string }
+interface IIndexedBankRow { id: string; row: BankRow; draft: boolean; account: string | null; reference: string | null; signature: string | null }
+interface IStatementComparisonIndex {
+	oldKeys: Map<string, IIndexedBankRow[]>;
+	newKeys: Map<string, IIndexedBankRow[]>;
+	oldRefs: Map<string, IIndexedBankRow[]>;
+	newRefs: Map<string, IIndexedBankRow[]>;
 }
-type RowPairing = { kind: 'missing' | 'ambiguous' } | { kind: 'unchanged' | 'changed'; row: IndexedBankRow };
+interface IPairedBankRow { kind: 'unchanged' | 'changed'; row: IIndexedBankRow }
+type RowPairing = Record<'kind', 'missing' | 'ambiguous'> | IPairedBankRow;
 
-function pairBankRow(previous: IndexedBankRow, index: StatementComparisonIndex): RowPairing {
-	const { signature, reference }: IndexedBankRow = previous;
-	const previousRefs: IndexedBankRow[] = reference ? index.oldRefs.get(reference) ?? [] : [];
-	const nextRefs: IndexedBankRow[] = reference ? index.newRefs.get(reference) ?? [] : [];
-	const possible: IndexedBankRow[] = signature ? index.newKeys.get(signature) ?? [] : [];
+function pairBankRow(previous: IIndexedBankRow, index: IStatementComparisonIndex): RowPairing {
+	const { signature, reference }: IIndexedBankRow = previous;
+	const previousRefs: IIndexedBankRow[] = reference ? index.oldRefs.get(reference) ?? [] : [];
+	const nextRefs: IIndexedBankRow[] = reference ? index.newRefs.get(reference) ?? [] : [];
+	const possible: IIndexedBankRow[] = signature ? index.newKeys.get(signature) ?? [] : [];
 	if (previousRefs.length > 1 || nextRefs.length > 1 || possible.length > 1 || (possible.length > 0 && index.oldKeys.get(signature!)!.length > 1)) {
 		return { kind: 'ambiguous' };
 	}
@@ -135,17 +139,18 @@ function pairBankRow(previous: IndexedBankRow, index: StatementComparisonIndex):
 	return { kind: 'missing' };
 }
 
-function compareStatementAccounts(old: StoredBankImport, next: StoredBankImport, diff: Differences, conflicts: string[]): boolean {
-	const accounts: (record: StoredBankImport) => StatementAccount[] = (record: StoredBankImport): StatementAccount[] => record.result.accountSections.map((section: { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; }): StatementAccount => ({
-		identity: statementAccountKey(section.accountReference?.value), currency: section.currency.value,
-	}));
-	const oldAccounts: StatementAccount[] = accounts(old), newAccounts: StatementAccount[] = accounts(next);
+function compareStatementAccounts(old: StoredBankImport, next: StoredBankImport, diff: IDifferences, conflicts: string[]): boolean {
+	const accounts: (record: StoredBankImport) => IStatementAccount[] = (record: StoredBankImport): IStatementAccount[] =>
+		record.result.accountSections.map((section: AccountSection): IStatementAccount => ({
+			identity: statementAccountKey(section.accountReference?.value), currency: section.currency.value,
+		}));
+	const oldAccounts: IStatementAccount[] = accounts(old), newAccounts: IStatementAccount[] = accounts(next);
 	const oldBank: string | undefined = old.result.adapter?.bankId, newBank: string | undefined = next.result.adapter?.bankId;
 	const sameBank: boolean = Boolean(oldBank && oldBank === newBank);
-	const accountKeys: (values: StatementAccount[]) => string[] = (values: StatementAccount[]): string[] => values.map((value: StatementAccount): string => JSON.stringify([value.currency, value.identity])).sort();
-	const knownAccounts: boolean = oldAccounts.every((value: StatementAccount): string | null => value.identity) && newAccounts.every((value: StatementAccount): string | null => value.identity);
+	const accountKeys: (values: IStatementAccount[]) => string[] = (values: IStatementAccount[]): string[] => values.map((value: IStatementAccount): string => JSON.stringify([value.currency, value.identity])).sort();
+	const knownAccounts: boolean = oldAccounts.every((value: IStatementAccount): string | null => value.identity) && newAccounts.every((value: IStatementAccount): string | null => value.identity);
 	const sameAccounts: boolean = JSON.stringify(accountKeys(oldAccounts)) === JSON.stringify(accountKeys(newAccounts));
-	const sameCurrencies: boolean = oldAccounts.map((value: StatementAccount): string => value.currency).sort().join(',') === newAccounts.map((value: StatementAccount): string => value.currency).sort().join(',');
+	const sameCurrencies: boolean = oldAccounts.map((value: IStatementAccount): string => value.currency).sort().join(',') === newAccounts.map((value: IStatementAccount): string => value.currency).sort().join(',');
 	const compatible: boolean = sameBank && (knownAccounts || oldAccounts.length > 1 || newAccounts.length > 1 ? sameAccounts : sameCurrencies &&
 		(!oldAccounts[0]?.identity || !newAccounts[0]?.identity));
 	if (!oldBank || !newBank) {
@@ -157,7 +162,7 @@ function compareStatementAccounts(old: StoredBankImport, next: StoredBankImport,
 	} else if (!knownAccounts) {
 		conflicts.push('The account identity could not be confirmed for both statements. Verify that the replacement is for the same account.');
 	}
-	const describeAccounts: (values: StatementAccount[]) => string = (values: StatementAccount[]): string => values.map((value: StatementAccount): string =>
+	const describeAccounts: (values: IStatementAccount[]) => string = (values: IStatementAccount[]): string => values.map((value: IStatementAccount): string =>
 		(value.identity ?? 'Account not identified') + ' · ' + value.currency).sort().join(', ');
 	const beforeAccounts: string = describeAccounts(oldAccounts), afterAccounts: string = describeAccounts(newAccounts);
 	if (beforeAccounts !== afterAccounts) {
@@ -166,14 +171,14 @@ function compareStatementAccounts(old: StoredBankImport, next: StoredBankImport,
 	return compatible;
 }
 
-interface PairedBankRows {
+interface IPairedBankRows {
 	pairs: Map<string, string>;
 	draftPairs: Map<string, string>;
 	changedPairs: Map<string, string>;
 }
 
-function compareBankRows(oldRows: IndexedBankRow[], newRows: IndexedBankRow[], index: StatementComparisonIndex, compatible: boolean, diff: Differences, conflicts: string[]): PairedBankRows {
-	const result: PairedBankRows = { pairs: new Map(), changedPairs: new Map(), draftPairs: new Map() };
+function compareBankRows(oldRows: IIndexedBankRow[], newRows: IIndexedBankRow[], index: IStatementComparisonIndex, compatible: boolean, diff: IDifferences, conflicts: string[]): IPairedBankRows {
+	const result: IPairedBankRows = { pairs: new Map(), changedPairs: new Map(), draftPairs: new Map() };
 	const used: Set<string> = new Set<string>();
 	let ambiguous: number = 0;
 	for (const previous of oldRows) {
@@ -188,7 +193,7 @@ function compareBankRows(oldRows: IndexedBankRow[], newRows: IndexedBankRow[], i
 		}
 		diff.add(previous.draft ? 'Removed unresolved booking' : 'Removed booking', bookingDescription(previous.row), null);
 	}
-	newRows.forEach((row: IndexedBankRow): void => {
+	newRows.forEach((row: IIndexedBankRow): void => {
 		if (!used.has(row.id)) {
 			diff.add(row.draft ? 'Added unresolved booking' : 'Added booking', null, bookingDescription(row.row));
 		}
@@ -199,7 +204,7 @@ function compareBankRows(oldRows: IndexedBankRow[], newRows: IndexedBankRow[], i
 	return result;
 }
 
-function recordBankPair(previous: IndexedBankRow, kind: 'unchanged' | 'changed', replacement: IndexedBankRow, result: PairedBankRows, diff: Differences): void {
+function recordBankPair(previous: IIndexedBankRow, kind: 'unchanged' | 'changed', replacement: IIndexedBankRow, result: IPairedBankRows, diff: IDifferences): void {
 	if (kind === 'changed') {
 		result.changedPairs.set(previous.id, replacement.id);
 		diff.add('Changed booking', bookingDescription(previous.row), bookingDescription(replacement.row));
@@ -208,23 +213,25 @@ function recordBankPair(previous: IndexedBankRow, kind: 'unchanged' | 'changed',
 	}
 }
 
-export function compareStatements(old: StoredBankImport, next: StoredBankImport): PairedBankRows & { compatible: boolean; changes: Change[]; conflicts: string[] } {
-	const oldRows: IndexedBankRow[] = bankRows(old), newRows: IndexedBankRow[] = bankRows(next);
-	const signature: (row: IndexedBankRow) => string | null = (row: IndexedBankRow): string | null => row.signature;
+interface IStatementComparisonDetails { compatible: boolean; changes: Change[]; conflicts: string[] }
 
-	const reference: (row: IndexedBankRow) => string | null = (row: IndexedBankRow): string | null => row.reference;
-	const index: StatementComparisonIndex = {
+export function compareStatements(old: StoredBankImport, next: StoredBankImport): IPairedBankRows & IStatementComparisonDetails {
+	const oldRows: IIndexedBankRow[] = bankRows(old), newRows: IIndexedBankRow[] = bankRows(next);
+	const signature: (row: IIndexedBankRow) => string | null = (row: IIndexedBankRow): string | null => row.signature;
+
+	const reference: (row: IIndexedBankRow) => string | null = (row: IIndexedBankRow): string | null => row.reference;
+	const index: IStatementComparisonIndex = {
 		oldKeys: byKey(oldRows, signature), newKeys: byKey(newRows, signature),
 		oldRefs: byKey(oldRows, reference), newRefs: byKey(newRows, reference),
 	};
-	const conflicts: string[] = [], diff: Differences = differences();
+	const conflicts: string[] = [], diff: IDifferences = differences();
 	const compatible: boolean = compareStatementAccounts(old, next, diff, conflicts);
 	const bookIssues: (record: StoredBankImport) => string = (record: StoredBankImport): string => record.result.issues.map((issue: ImportIssue): string => issue.code).sort().join(', ');
 	const beforeIssues: string = bookIssues(old), afterIssues: string = bookIssues(next);
 	if (beforeIssues !== afterIssues) {
 		diff.add('Statement analysis warnings', beforeIssues || null, afterIssues || null);
 	}
-	const paired: PairedBankRows = compareBankRows(oldRows, newRows, index, compatible, diff, conflicts);
+	const paired: IPairedBankRows = compareBankRows(oldRows, newRows, index, compatible, diff, conflicts);
 	return { compatible, ...paired, changes: diff.result(), conflicts };
 }
 
@@ -233,7 +240,7 @@ function fields(section: DocumentSection): SectionField[] {
 }
 
 function fieldKey(field: SectionField): string {
-	return JSON.stringify([field.role, compact(field.label), field.candidates.map((value: string | { coefficient: string; scale: number; currency: string | null; }): string =>
+	return JSON.stringify([field.role, compact(field.label), field.candidates.map((value: string | IAmount): string =>
 		JSON.stringify(typeof value === 'string' ? compact(value) : moneyKey(value))).sort(),
 		field.candidates.length !== 1 ? field.evidence.map((evidence: SourceEvidence): string => compact(evidence.rawText)).sort() : []]);
 }
@@ -243,8 +250,8 @@ function sectionKey(section: DocumentSection): string {
 }
 const sectionReferenceRoles: Set<string> = new Set(['invoice', 'receipt', 'order']);
 function references(section: DocumentSection): string[] {
-	return [...new Set(section.references.filter((field: { role: "unknown" | "invoice" | "receipt" | "payment" | "order" | "customer" | "account" | "table" | "related-invoice"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => sectionReferenceRoles.has(field.role) && field.candidates.length === 1)
-		.map((field: { role: "unknown" | "invoice" | "receipt" | "payment" | "order" | "customer" | "account" | "table" | "related-invoice"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): string => compact(field.candidates[0])).filter(Boolean))].sort();
+	return [...new Set(section.references.filter((field: DocumentSection['references'][number]): boolean => sectionReferenceRoles.has(field.role) && field.candidates.length === 1)
+		.map((field: DocumentSection['references'][number]): string => compact(field.candidates[0])).filter(Boolean))].sort();
 }
 
 function sectionReferenceKey(section: DocumentSection): string | null {
@@ -253,10 +260,13 @@ function sectionReferenceKey(section: DocumentSection): string | null {
 }
 
 function merchants(section: DocumentSection): string[] {
-	return section.merchants.filter((field: { role: "merchant"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.candidates.length === 1).map((field: { role: "merchant"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): string => compact(field.candidates[0]).toLowerCase()).filter(Boolean);
+	return section.merchants.filter((field: DocumentSection['merchants'][number]): boolean => field.candidates.length === 1)
+		.map((field: DocumentSection['merchants'][number]): string => compact(field.candidates[0]).toLowerCase()).filter(Boolean);
 }
 
-function sharesMerchant(before: DocumentSection, after: DocumentSection): { beforeMerchants: string[]; afterMerchants: string[]; shared: boolean; } {
+interface IMerchantComparison { beforeMerchants: string[]; afterMerchants: string[]; shared: boolean }
+
+function sharesMerchant(before: DocumentSection, after: DocumentSection): IMerchantComparison {
 	const beforeMerchants: string[] = merchants(before), afterMerchants: string[] = merchants(after);
 	return { beforeMerchants, afterMerchants, shared: beforeMerchants.some((merchant: string): boolean => afterMerchants.includes(merchant)) };
 }
@@ -282,10 +292,11 @@ function displayRole(field: SectionField): string {
 }
 
 function displayField(field: SectionField): string {
-	return field.candidates.length ? field.candidates.map((value: string | { coefficient: string; scale: number; currency: string | null; }): string => typeof value === 'string' ? compact(value) : showMoney(value)).join(' / ') : 'No value recognized';
+	return field.candidates.length ? field.candidates.map((value: string | IAmount): string => typeof value === 'string' ? compact(value) : showMoney(value)).join(' / ')
+		: 'No value recognized';
 }
 
-function addOneSidedField(diff: Differences, field: SectionField, removed: boolean, section?: string): void {
+function addOneSidedField(diff: IDifferences, field: SectionField, removed: boolean, section?: string): void {
 	const value: string = displayField(field);
 	diff.add(displayRole(field), removed ? value : null, removed ? null : value, { section, unrecognized: field.candidates.length ? undefined : true });
 }
@@ -312,7 +323,7 @@ function pairDocumentSections(before: DocumentSection[], after: DocumentSection[
 		if (!key || oldRefs.get(key)?.length !== 1 || matches?.length !== 1 || used.has(matches[0].sectionId)) {
 			continue;
 		}
-		const { beforeMerchants, afterMerchants, shared }: { beforeMerchants: string[]; afterMerchants: string[]; shared: boolean; } = sharesMerchant(previous, matches[0]);
+		const { beforeMerchants, afterMerchants, shared }: IMerchantComparison = sharesMerchant(previous, matches[0]);
 		if (!beforeMerchants.length || !afterMerchants.length || shared) {
 			pair(previous, matches[0]);
 		}
@@ -322,7 +333,7 @@ function pairDocumentSections(before: DocumentSection[], after: DocumentSection[
 	}
 }
 
-function compareFieldRoles(removed: SectionField[], added: SectionField[], diff: Differences): void {
+function compareFieldRoles(removed: SectionField[], added: SectionField[], diff: IDifferences): void {
 	const oldRoles: Map<string, SectionField[]> = byKey(removed, (field: SectionField): SectionField['role'] => field.role), newRoles: Map<string, SectionField[]> = byKey(added, (field: SectionField): SectionField['role'] => field.role);
 	for (const [role, entries] of oldRoles) {
 		const replacements: SectionField[] | undefined = newRoles.get(role);
@@ -342,14 +353,14 @@ function compareFieldRoles(removed: SectionField[], added: SectionField[], diff:
 	}
 }
 
-function addFieldDifference(left: SectionField, right: SectionField, diff: Differences): void {
+function addFieldDifference(left: SectionField, right: SectionField, diff: IDifferences): void {
 	const leftValue: string = displayField(left), rightValue: string = displayField(right);
 	const sameValue: boolean = leftValue === rightValue;
 	diff.add(displayRole(left), sameValue ? compact(left.label) + ' · ' + leftValue : leftValue,
 		sameValue ? compact(right.label) + ' · ' + rightValue : rightValue);
 }
 
-function compareSectionFields(previous: DocumentSection, candidate: DocumentSection, matchedFields: Map<string, string>, diff: Differences): number {
+function compareSectionFields(previous: DocumentSection, candidate: DocumentSection, matchedFields: Map<string, string>, diff: IDifferences): number {
 	let ambiguousFields: number = 0;
 	const previousFields: ReturnType<typeof fields> = fields(previous), candidateFields: ReturnType<typeof fields> = fields(candidate);
 	const oldFields: Map<string, SectionField[]> = byKey(previousFields, fieldKey), newFields: Map<string, SectionField[]> = byKey(candidateFields, fieldKey);
@@ -371,13 +382,12 @@ function compareSectionFields(previous: DocumentSection, candidate: DocumentSect
 }
 
 type DocumentAnalysis = Pick<StoredSupportingDocument, 'result'>;
+interface IDocumentComparison { sections: Map<string, string>; fields: Map<string, string>; changes: Change[]; conflicts: string[] }
 
-export function compareDocuments(old: DocumentAnalysis | null, next: DocumentAnalysis): {
-	sections: Map<string, string>; fields: Map<string, string>; changes: Change[]; conflicts: string[];
-} {
+export function compareDocuments(old: DocumentAnalysis | null, next: DocumentAnalysis): IDocumentComparison {
 	const before: DocumentSection[] = old?.result.sections ?? [], after: DocumentSection[] = next.result.sections;
 	const sections: Map<string, string> = new Map<string, string>(), matchedFields: Map<string, string> = new Map<string, string>();
-	const used: Set<string> = new Set<string>(), conflicts: string[] = [], diff: Differences = differences();
+	const used: Set<string> = new Set<string>(), conflicts: string[] = [], diff: IDifferences = differences();
 	const documentIssues: (record: DocumentAnalysis | null) => string = (record: DocumentAnalysis | null): string =>
 		(record?.result.issues ?? []).map((issue: DocumentIssue): string => issue.code).sort().join(', ');
 	const beforeIssues: string = documentIssues(old), afterIssues: string = documentIssues(next);

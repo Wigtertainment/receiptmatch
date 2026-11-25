@@ -1,4 +1,4 @@
-import type { WorkspaceState } from "../../src/shared/protocol.js";
+import type { IWorkspaceState } from "../../src/shared/protocol.js";
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rename, writeFile } from 'node:fs/promises';
@@ -7,58 +7,68 @@ import { performance } from 'node:perf_hooks';
 import { expect, test as base, type ElectronApplication, type Page, type Locator, type TestInfo, type PlaywrightWorkerOptions, type PlaywrightWorkerArgs, type PlaywrightTestOptions, type PlaywrightTestArgs, type TestType } from '@playwright/test';
 import Database from 'better-sqlite3';
 import { createWorkspace, fingerprint, newMetadata } from '../../electron/store.js';
-import type { WorkspaceCommand, WorkspaceView } from '../../src/shared/protocol.js';
+import type { WorkspaceCommand, IWorkspaceView } from '../../src/shared/protocol.js';
 
-interface DialogPlan {
+interface ITestCheck { name: string; status: 'passed'; milliseconds: number }
+interface IScreenshotError { name: string; error: string }
+interface IApplicationWindow { application: ElectronApplication; page: Page }
+interface IPackagedSmokeFixtureArgs { smoke: IPackagedSmoke }
+type PackagedSmokeContext = IPackagedSmokeFixtureArgs & PlaywrightTestArgs & PlaywrightTestOptions & PlaywrightWorkerArgs & PlaywrightWorkerOptions;
+interface IWebContentsPreferences { getLastWebPreferences(): Electron.WebPreferences }
+interface IStyleProbe { nonceApplied: boolean; tokensLoaded: boolean }
+type ObservedWebPreferences = Record<'sandbox' | 'contextIsolation' | 'nodeIntegration', boolean | undefined>;
+
+interface IDialogPlan {
 	saves?: (string | null)[];
 	opens?: (string | null)[];
 	choices?: number[];
 }
 
-interface SmokeReport {
+interface ISmokeReport {
 	runId: string;
 	startedAt: string;
 	finishedAt?: string;
 	status: 'running' | 'passed' | 'failed';
 	platform: NodeJS.Platform;
 	root: string;
-	checks: { name: string; status: 'passed'; milliseconds: number }[];
+	checks: ITestCheck[];
 	screenshots: string[];
-	screenshotErrors?: { name: string; error: string }[];
+	screenshotErrors?: IScreenshotError[];
 	error?: string;
 	stack?: string;
 }
 
-async function mockDialogs(application: ElectronApplication, { saves = [], opens = [], choices = [] }: DialogPlan): Promise<void> {
+async function mockDialogs(application: ElectronApplication, { saves = [], opens = [], choices = [] }: IDialogPlan): Promise<void> {
 	await application.evaluate(
-		({ dialog }: typeof Electron.CrossProcessExports, plan: { saves: (string | null)[]; opens: (string | null)[]; choices: number[]; }): void => {
-			dialog.showSaveDialog = async (): Promise<{ canceled: boolean; filePath: string; }> => {
+		({ dialog }: typeof Electron.CrossProcessExports, plan: Required<IDialogPlan>): void => {
+			dialog.showSaveDialog = async (): Promise<Electron.SaveDialogReturnValue> => {
 				const filePath: string = plan.saves.shift() ?? '';
 				return Promise.resolve({ canceled: !filePath, filePath });
 			};
-			dialog.showOpenDialog = async (): Promise<{ canceled: boolean; filePaths: string[]; }> => {
+			dialog.showOpenDialog = async (): Promise<Electron.OpenDialogReturnValue> => {
 				const filePath: string | null | undefined = plan.opens.shift();
 				return Promise.resolve({ canceled: !filePath, filePaths: filePath ? [filePath] : [] });
 			};
-			dialog.showMessageBox = async (): Promise<{ response: number; checkboxChecked: false; }> => Promise.resolve(({ response: plan.choices.shift() ?? 2, checkboxChecked: false }));
+			dialog.showMessageBox = async (): Promise<Pick<Electron.MessageBoxReturnValue, 'response'> & Record<'checkboxChecked', false>> =>
+				Promise.resolve(({ response: plan.choices.shift() ?? 2, checkboxChecked: false }));
 		},
 		{ saves, opens, choices }
 	);
 }
 
-interface PackagedSmoke {
+interface IPackagedSmoke {
 	root: string;
-	report: SmokeReport;
+	report: ISmokeReport;
 	check: (name: string, action: () => Promise<void>) => Promise<void>;
-	launch: () => Promise<{ application: ElectronApplication; page: Page }>;
+	launch: () => Promise<IApplicationWindow>;
 }
 
-const test: TestType<PlaywrightTestArgs & PlaywrightTestOptions & { smoke: PackagedSmoke; }, PlaywrightWorkerArgs & PlaywrightWorkerOptions> = base.extend<{ smoke: PackagedSmoke }>({
-	smoke: async ({ playwright }: { smoke: PackagedSmoke; } & PlaywrightTestArgs & PlaywrightTestOptions & PlaywrightWorkerArgs & PlaywrightWorkerOptions, use: (r: PackagedSmoke) => Promise<void>, testInfo: TestInfo): Promise<void> => {
+const test: TestType<PlaywrightTestArgs & PlaywrightTestOptions & IPackagedSmokeFixtureArgs, PlaywrightWorkerArgs & PlaywrightWorkerOptions> = base.extend<IPackagedSmokeFixtureArgs>({
+	smoke: async ({ playwright }: PackagedSmokeContext, use: (r: IPackagedSmoke) => Promise<void>, testInfo: TestInfo): Promise<void> => {
 		await mkdir('artifacts', { recursive: true });
 		const root: string = await mkdtemp(path.resolve('artifacts/workspace-ui-'));
 		const reportPath: string = path.resolve(`artifacts/workspace-ui-${process.platform}.json`);
-		const report: SmokeReport = {
+		const report: ISmokeReport = {
 			runId: randomUUID(),
 			startedAt: new Date().toISOString(),
 			status: 'running',
@@ -76,7 +86,7 @@ const test: TestType<PlaywrightTestArgs & PlaywrightTestOptions & { smoke: Packa
 			report.checks.push({ name, status: 'passed', milliseconds: Math.round(performance.now() - started) });
 		}
 
-		async function launch(): Promise<{ application: ElectronApplication; page: Page; }> {
+		async function launch(): Promise<IApplicationWindow> {
 			const executablePath: string = path.resolve(process.platform === 'win32' ? 'release/win-unpacked/ReceiptMatch.exe' : 'release/linux-unpacked/receiptmatch');
 			const application: ElectronApplication = await playwright._electron.launch({
 				executablePath,
@@ -129,21 +139,21 @@ const test: TestType<PlaywrightTestArgs & PlaywrightTestOptions & { smoke: Packa
 
 test.describe.configure({ timeout: 180_000 });
 
-test('packaged Electron workspace smoke test', async ({ smoke: { root, report, check, launch } }: PlaywrightTestArgs & PlaywrightTestOptions & { smoke: PackagedSmoke; } & PlaywrightWorkerArgs & PlaywrightWorkerOptions): Promise<void> => {
-	let { application, page }: { application: ElectronApplication; page: Page; } = await launch();
+test('packaged Electron workspace smoke test', async ({ smoke: { root, report, check, launch } }: PackagedSmokeContext): Promise<void> => {
+	let { application, page }: IApplicationWindow = await launch();
 
-	async function dialogs(plan: DialogPlan): Promise<void> {
+	async function dialogs(plan: IDialogPlan): Promise<void> {
 		await mockDialogs(application, plan);
 	}
 
-	async function state(): Promise<WorkspaceState> {
-		return page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'get-state' }));
+	async function state(): Promise<IWorkspaceState> {
+		return page.evaluate((): Promise<IWorkspaceState> => window.receiptmatch.command({ type: 'get-state' }));
 	}
 
-	async function waitState(expected: Partial<WorkspaceView>): Promise<void> {
-		await page.waitForFunction(async (values: Partial<WorkspaceView>): Promise<boolean> => {
-			const value: WorkspaceState = await window.receiptmatch.command({ type: 'get-state' });
-			return !value.busy && Object.entries(values).every(([key, wanted]: [string, WorkspaceView[keyof WorkspaceView]]): boolean => value.workspace?.[key as keyof WorkspaceView] === wanted);
+	async function waitState(expected: Partial<IWorkspaceView>): Promise<void> {
+		await page.waitForFunction(async (values: Partial<IWorkspaceView>): Promise<boolean> => {
+			const value: IWorkspaceState = await window.receiptmatch.command({ type: 'get-state' });
+			return !value.busy && Object.entries(values).every(([key, wanted]: [string, IWorkspaceView[keyof IWorkspaceView]]): boolean => value.workspace?.[key as keyof IWorkspaceView] === wanted);
 		}, expected);
 	}
 
@@ -160,8 +170,8 @@ test('packaged Electron workspace smoke test', async ({ smoke: { root, report, c
 
 	await check('packaged-empty-application-security-and-offline-boundaries', async (): Promise<void> => {
 		await screenshot('welcome');
-		const preferences: { sandbox: boolean | undefined; contextIsolation: boolean | undefined; nodeIntegration: boolean | undefined; } = await application.evaluate(({ BrowserWindow }: typeof Electron.CrossProcessExports): { sandbox: boolean | undefined; contextIsolation: boolean | undefined; nodeIntegration: boolean | undefined; } => {
-			const contents: Electron.WebContents & { getLastWebPreferences(): Electron.WebPreferences; } = BrowserWindow.getAllWindows()[0].webContents as Electron.WebContents & { getLastWebPreferences(): Electron.WebPreferences };
+		const preferences: ObservedWebPreferences = await application.evaluate(({ BrowserWindow }: typeof Electron.CrossProcessExports): ObservedWebPreferences => {
+			const contents: Electron.WebContents & IWebContentsPreferences = BrowserWindow.getAllWindows()[0].webContents as Electron.WebContents & IWebContentsPreferences;
 			const value: Electron.WebPreferences = contents.getLastWebPreferences();
 			return { sandbox: value.sandbox, contextIsolation: value.contextIsolation, nodeIntegration: value.nodeIntegration };
 		});
@@ -186,7 +196,7 @@ test('packaged Electron workspace smoke test', async ({ smoke: { root, report, c
 			),
 			true
 		);
-		const invalid: WorkspaceState = await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'write-file', path: '/arbitrary' } as unknown as WorkspaceCommand));
+		const invalid: IWorkspaceState = await page.evaluate((): Promise<IWorkspaceState> => window.receiptmatch.command({ type: 'write-file', path: '/arbitrary' } as unknown as WorkspaceCommand));
 		assert.equal(invalid.workspace, null);
 		assert.match(invalid.error ?? '', /not supported/);
 		assert.equal(await application.evaluate(({ ipcMain }: typeof Electron.CrossProcessExports): number => ipcMain.listenerCount('write-file')), 0);
@@ -197,7 +207,7 @@ test('packaged Electron workspace smoke test', async ({ smoke: { root, report, c
 		const create: Locator = page.locator('wig-button').getByRole('button', { name: 'Create workspace', exact: true });
 		assert.equal(await create.evaluate((button: HTMLElement | SVGElement): string => getComputedStyle(button).alignItems), 'center');
 		assert.equal(await create.locator('svg').count(), 1);
-		const styles: { nonceApplied: boolean; tokensLoaded: boolean; } = await page.evaluate((): { nonceApplied: boolean; tokensLoaded: boolean; } => {
+		const styles: IStyleProbe = await page.evaluate((): IStyleProbe => {
 			const componentStyle: HTMLStyleElement | undefined = [...document.querySelectorAll('style')].find((style: HTMLStyleElement): boolean => style.textContent.includes('wig-button-min-height'));
 			return { nonceApplied: !!componentStyle?.nonce && !!componentStyle.sheet, tokensLoaded: !!getComputedStyle(document.documentElement).getPropertyValue('--wig-color-action').trim() };
 		});
@@ -230,7 +240,7 @@ test('packaged Electron workspace smoke test', async ({ smoke: { root, report, c
 		assert.equal(await location.getAttribute('title'), file);
 		assert.equal(await location.evaluate((element: HTMLElement | SVGElement): string => getComputedStyle(element).whiteSpace), 'nowrap');
 		assert.equal(await location.evaluate((element: HTMLElement | SVGElement): string => getComputedStyle(element).textOverflow), 'ellipsis');
-		const [input, displayedPath]: [{ x: number; y: number; width: number; height: number; } | null, { x: number; y: number; width: number; height: number; } | null] = await Promise.all([name.boundingBox(), location.boundingBox()]);
+		const [input, displayedPath]: [Electron.Rectangle | null, Electron.Rectangle | null] = await Promise.all([name.boundingBox(), location.boundingBox()]);
 		assert.ok(input && displayedPath && displayedPath.x >= input.x + input.width && displayedPath.y >= input.y && displayedPath.y < input.y + input.height);
 		await location.evaluate((element: HTMLElement | SVGElement): void => {
 			element.style.setProperty('min-width', element.scrollWidth + 'px');
@@ -254,7 +264,7 @@ test('packaged Electron workspace smoke test', async ({ smoke: { root, report, c
 		await waitState({ filePath: null, dirty: true });
 		const read: Database.Database = new Database(file, { readonly: true });
 		try {
-			assert.equal(read.prepare<[], { name: string }>('SELECT name FROM workspace').get()?.name, 'Edited workspace');
+			assert.equal(read.prepare<[], Record<'name', string>>('SELECT name FROM workspace').get()?.name, 'Edited workspace');
 		} finally {
 			read.close();
 		}
@@ -351,7 +361,7 @@ test('packaged Electron workspace smoke test', async ({ smoke: { root, report, c
 		await waitState({ dirty: false });
 		const read: Database.Database = new Database(file, { readonly: true });
 		try {
-			assert.equal(read.prepare<[], { coefficient: string }>('SELECT coefficient FROM transactions').get()?.coefficient, '9007199254740993');
+			assert.equal(read.prepare<[], Record<'coefficient', string>>('SELECT coefficient FROM transactions').get()?.coefficient, '9007199254740993');
 			assert.deepEqual(read.prepare('SELECT confidence,approved_revision FROM associations ORDER BY id').all(), [
 				{ confidence: 'uncertain', approved_revision: '1:1:1' },
 				{ confidence: 'reliable', approved_revision: null }
@@ -367,7 +377,7 @@ test('packaged Electron workspace smoke test', async ({ smoke: { root, report, c
 		await Promise.all([application.waitForEvent('close', { timeout: 30_000 }), application.evaluate(({ BrowserWindow }: typeof Electron.CrossProcessExports): void => BrowserWindow.getAllWindows()[0].close())]);
 		const read: Database.Database = new Database(file, { readonly: true });
 		try {
-			assert.equal(read.prepare<[], { name: string }>('SELECT name FROM workspace').get()?.name, 'Resume preserved');
+			assert.equal(read.prepare<[], Record<'name', string>>('SELECT name FROM workspace').get()?.name, 'Resume preserved');
 		} finally {
 			read.close();
 		}

@@ -3,33 +3,50 @@ import type { BankImportResult } from "../../shared/bank-import.js";
 import { NgTemplateOutlet } from '@angular/common';
 import { Component, DestroyRef, Injector, afterNextRender, afterRenderEffect, computed, effect, inject, input, output, signal, untracked, viewChild, type ElementRef, type WritableSignal,
     type OutputEmitterRef, type Signal, type InputSignal } from '@angular/core';
-import { type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDrawerComponent, WigDropdownComponent, WigIconButtonComponent, WigInputComponent,
-    WigTableComponent, WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
+import { type IAccordionItem, type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigDrawerComponent, WigDropdownComponent,
+    WigIconButtonComponent, WigInputComponent, WigTableComponent, WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
 import { InputLength } from '../shared/input-length.directive.js';
 import { OriginalPreviewButton } from '../shared/original-preview-button.component.js';
 import { StatementReanalysis } from './statement-reanalysis.component.js';
 import { amountEntryExample, formatAmountEntry, parseAmountEntry } from '../../shared/amount-entry.js';
 import { applyBankCorrections } from '../../shared/bank-corrections.js';
-import { calendarDateSchema, type ImportIssue, type SourceEvidence, type TransactionCandidate, type UnresolvedDraft } from '../../shared/bank-import.js';
+import { calendarDateSchema, type ImportIssue, type TransactionCandidate, type UnresolvedDraft } from '../../shared/bank-import.js';
 import { formatCalendarDate, formatMoney } from '../../shared/display.js';
 import { sameMoneyValue, type Money } from '../../shared/money.js';
-import type { WorkspaceCommand, WorkspaceState, WorkspaceView } from '../../shared/protocol.js';
-import { indexStatementOverlaps, type StatementOverlap, type StatementOverlaps } from '../../shared/statement-overlaps.js';
+import type { WorkspaceCommand, IWorkspaceState, IWorkspaceView } from '../../shared/protocol.js';
+import { indexStatementOverlaps, type IStatementOverlap, type IStatementOverlaps } from '../../shared/statement-overlaps.js';
 import { excludedDuplicateIds, type DuplicateDecision } from '../../shared/transaction-duplicates.js';
-import type { BankImportSummary, StoredBankImport } from '../../shared/workspace-import.js';
+import type { IBankImportSummary, StoredBankImport } from '../../shared/workspace-import.js';
 import type { ExtractionProgress } from '../../shared/pdf-extraction.js';
 import type { ZodSafeParseResult } from 'zod';
 import { RowSource } from './row-source.component.js';
 import { directionLabel, type ImportRow } from './statement-row.js';
 
 type BookingAction = 'correction' | 'source';
-interface StatementRemoval { importId: string; revision: number; fileName: string; predecessorName?: string; }
-type DuplicateAction = Extract<WorkspaceCommand, { type: 'set-duplicate-decision' }>['decision'];
+interface IStatementRemoval { importId: string; revision: number; fileName: string; predecessorName?: string; }
+type DuplicateAction = Extract<WorkspaceCommand, Record<'type', 'set-duplicate-decision'>>['decision'];
 type ExclusionAction = Extract<DuplicateAction, 'keep-first' | 'keep-second'>;
-type BookingLocation = Pick<StatementOverlap, 'statementId' | 'filePath' | 'transactionId' | 'transactionNumber'>;
-interface DuplicatePairView {
+type BookingLocation = Pick<IStatementOverlap, 'statementId' | 'filePath' | 'transactionId' | 'transactionNumber'>;
+type StatementInfo = Required<Pick<IAccordionItem<unknown>, 'id' | 'header' | 'template'>>;
+type StoredTransactionReference = StoredBankImport['transactions'][number];
+type StoredDraftReference = StoredBankImport['drafts'][number];
+type AccountSection = BankImportResult['accountSections'][number];
+type SourcePage = NonNullable<BankImportResult['sourceProvenance']>['pages'][number];
+
+interface IStatementAiView {
+    stage: NonNullable<IWorkspaceState['statementFallback']>['stage'] | undefined;
+    importing: boolean;
+    loadRevision: number | undefined;
+}
+interface IStatementOption { id: string; label: string }
+interface IStatementRecordsSnapshot { workspaceId: string; loadRevision: number; ids: string[] }
+interface IDuplicateExclusion { transactionId: string; otherTransactionId: string; revision: number; action: ExclusionAction }
+interface IBookingAction { mode: BookingAction; loadRevision: number; recordId: string; rowId: string; originalRevision: number }
+interface IBookingCorrection extends IBookingAction { row: ImportRow; original: ImportRow; id: string; currency: string }
+interface IBookingCorrectionValues { bookingDate: string | undefined; amount: Money | null; previousAmount: Money | undefined }
+interface IDuplicatePairView {
     other: BookingLocation;
-    evidence: StatementOverlap | null;
+    evidence: IStatementOverlap | null;
     decision: DuplicateDecision | null;
 }
 function filename(value: string): string {
@@ -41,7 +58,24 @@ function filename(value: string): string {
         WigIconButtonComponent, WigInputComponent, WigTableComponent, WigTemplateDirective, InputLength, NgTemplateOutlet],
     templateUrl: './statement-imports.component.html' })
 export class StatementImports {
-    readonly state: InputSignal<WorkspaceState> = input.required<WorkspaceState>();
+    constructor() {
+        afterRenderEffect({ write: (): void => this.focusAfterAiTransition() });
+        effect((): void => {
+            const value: IWorkspaceState = this.state();
+            const key: string = this.key(value);
+            untracked((): void => {
+                if (key !== this.recordsKey) {
+                    this.loadRecords(value, key);
+                }
+            });
+        });
+
+        inject(DestroyRef).onDestroy((): void => {
+            this.disposed = true; this.generation++;
+        });
+    }
+
+    readonly state: InputSignal<IWorkspaceState> = input.required<IWorkspaceState>();
     readonly active: InputSignal<boolean> = input(true);
     readonly settingsRequested: OutputEmitterRef<void> = output<void>();
     readonly workspaceCommand: OutputEmitterRef<WorkspaceCommand> = output<WorkspaceCommand>();
@@ -51,17 +85,17 @@ export class StatementImports {
     private readonly cancelImportAction: Signal<WigButtonComponent | undefined> = viewChild<WigButtonComponent>('cancelImportAction');
     private readonly aiOfferAction: Signal<WigButtonComponent | undefined> = viewChild<WigButtonComponent>('aiOfferAction');
     private readonly aiReviewHeading: Signal<ElementRef<HTMLHeadingElement> | undefined> = viewChild<ElementRef<HTMLHeadingElement>>('aiReviewHeading');
-    private previousAiView: { stage: 'offer' | 'review' | undefined; importing: boolean; loadRevision: number | undefined } | undefined;
+    private previousAiView: IStatementAiView | undefined;
     readonly records: WritableSignal<StoredBankImport[]> = signal<StoredBankImport[]>([]);
     readonly loading: WritableSignal<boolean> = signal(false);
     readonly detailsError: WritableSignal<string | null> = signal<string | null>(null);
     readonly selectedId: WritableSignal<string | null> = signal<string | null>(null);
-    readonly removal: WritableSignal<StatementRemoval | null> = signal<StatementRemoval | null>(null);
+    readonly removal: WritableSignal<IStatementRemoval | null> = signal<IStatementRemoval | null>(null);
     readonly selected: Signal<StoredBankImport | null> = computed((): StoredBankImport | null => this.records().find((record: StoredBankImport): boolean => record.id === this.selectedId()) ?? null);
-    readonly statementInfo: { id: string; header: string; template: string; }[] = [{ id: 'statement', header: 'Statement details', template: 'statement' }];
+    readonly statementInfo: StatementInfo[] = [{ id: 'statement', header: 'Statement details', template: 'statement' }];
     readonly corrections: Signal<Map<string, BankCorrection>> = computed((): Map<string, BankCorrection> => new Map((this.state().workspace?.bankCorrections ?? []).map((correction: BankCorrection): [string, BankCorrection] => [correction.rowId, correction])));
-    readonly statementCounts: Signal<Map<string, number>> = computed((): Map<string, number> => new Map((this.state().workspace?.imports ?? []).map((record: BankImportSummary): [string, number] => [record.id, record.transactions])));
-    readonly statementOptions: Signal<{ id: string; label: string; }[]> = computed((): { id: string; label: string; }[] => this.records().map((record: StoredBankImport): { id: string; label: string; } => {
+    readonly statementCounts: Signal<Map<string, number>> = computed((): Map<string, number> => new Map((this.state().workspace?.imports ?? []).map((record: IBankImportSummary): [string, number] => [record.id, record.transactions])));
+    readonly statementOptions: Signal<IStatementOption[]> = computed((): IStatementOption[] => this.records().map((record: StoredBankImport): IStatementOption => {
         const status: "Archived analysis" | "Partial import" | "Complete import" = this.state().workspace?.supersededStatements?.includes(record.id) ? 'Archived analysis' :
             record.result.status === 'partial' ? 'Partial import' : 'Complete import';
         return { id: record.id, label: `${filename(record.filePath)} · ${this.statementCounts().get(record.id) ?? record.result.transactions.length} transactions · ${status}` };
@@ -72,7 +106,9 @@ export class StatementImports {
         if (!allCorrections.size || !records.length) {
             return records;
         }
-        const ids: Set<string> = new Set(records.flatMap((record: StoredBankImport): string[] => [...record.transactions.map((row: { rowId: string; transactionId: string; }): string => row.transactionId), ...record.drafts.map((row: { rowId: string; draftId: string; }): string => row.draftId)]));
+        const ids: Set<string> = new Set(records.flatMap((record: StoredBankImport): string[] => [
+            ...record.transactions.map((row: StoredTransactionReference): string => row.transactionId), ...record.drafts.map((row: StoredDraftReference): string => row.draftId)
+        ]));
         const corrections: Map<string, BankCorrection> = new Map([...allCorrections].filter(([id]: [string, BankCorrection]): boolean => ids.has(id)));
         return applyBankCorrections(records, corrections);
     });
@@ -81,13 +117,13 @@ export class StatementImports {
         const record: StoredBankImport | null = this.displayed();
         return record ? [record] : [];
     });
-    private readonly overlapIndex: Signal<(statementId: string) => StatementOverlaps> = computed((): (statementId: string) => StatementOverlaps => {
+    private readonly overlapIndex: Signal<(statementId: string) => IStatementOverlaps> = computed((): (statementId: string) => IStatementOverlaps => {
         const archived: Set<string> = new Set(this.state().workspace?.supersededStatements);
-        const originalBankIds: Map<string, string> = new Map((this.state().workspace?.imports ?? []).flatMap((record: BankImportSummary): [string, string][] =>
+        const originalBankIds: Map<string, string> = new Map((this.state().workspace?.imports ?? []).flatMap((record: IBankImportSummary): [string, string][] =>
             record.bankId ? [[record.id, record.bankId]] : []));
         return indexStatementOverlaps(this.effectiveRecords().filter((record: StoredBankImport): boolean => !archived.has(record.id)), originalBankIds);
     });
-    readonly overlaps: Signal<StatementOverlaps> = computed((): StatementOverlaps => this.overlapIndex()(this.selectedId() ?? ''));
+    readonly overlaps: Signal<IStatementOverlaps> = computed((): IStatementOverlaps => this.overlapIndex()(this.selectedId() ?? ''));
     private readonly expandedOverlapRows: WritableSignal<ReadonlySet<string>> = signal<ReadonlySet<string>>(new Set());
     private readonly duplicateDecisions: Signal<DuplicateDecision[]> = computed((): DuplicateDecision[] => this.state().workspace?.duplicateDecisions ?? []);
     private readonly decisionsByBooking: Signal<Map<string, DuplicateDecision[]>> = computed((): Map<string, DuplicateDecision[]> => {
@@ -113,7 +149,7 @@ export class StatementImports {
     private readonly bookingLocations: Signal<Map<string, BookingLocation>> = computed((): Map<string, BookingLocation> => {
         const locations: Map<string, BookingLocation> = new Map<string, BookingLocation>();
         for (const record of this.effectiveRecords()) {
-            const ids: Map<string, string> = new Map(record.transactions.map((row: { rowId: string; transactionId: string; }): [string, string] => [row.rowId, row.transactionId]));
+            const ids: Map<string, string> = new Map(record.transactions.map((row: StoredTransactionReference): [string, string] => [row.rowId, row.transactionId]));
             for (const [index, row] of record.result.transactions.entries()) {
                 const transactionId: string | undefined = ids.get(row.rowId);
                 if (transactionId) {
@@ -123,22 +159,85 @@ export class StatementImports {
         }
         return locations;
     });
-    readonly expandedDuplicates: Signal<Map<string, DuplicatePairView[]>> = computed((): Map<string, DuplicatePairView[]> => {
-        const expanded: Map<string, DuplicatePairView[]> = new Map<string, DuplicatePairView[]>();
+    readonly expandedDuplicates: Signal<Map<string, IDuplicatePairView[]>> = computed((): Map<string, IDuplicatePairView[]> => {
+        const expanded: Map<string, IDuplicatePairView[]> = new Map<string, IDuplicatePairView[]>();
         for (const id of this.expandedOverlapRows()) {
             expanded.set(id, this.duplicatePairs(id));
         }
         return expanded;
     });
+    private readonly exclusion: WritableSignal<IDuplicateExclusion | null> = signal<IDuplicateExclusion | null>(null);
+    readonly pendingExclusion: Signal<IDuplicateExclusion | null> = computed((): IDuplicateExclusion | null => {
+        const pending: IDuplicateExclusion | null = this.exclusion();
+        return pending?.revision === this.state().workspace?.matchRevision ? pending : null;
+    });
+    readonly originalRows: Signal<Map<string, ImportRow>> = computed((): Map<string, ImportRow> => {
+        const result: BankImportResult | undefined = this.selected()?.result;
+        return new Map<ImportRow['rowId'], ImportRow>([...(result?.transactions ?? []), ...(result?.unresolvedDrafts ?? [])].map((row: TransactionCandidate | UnresolvedDraft): [string, TransactionCandidate | UnresolvedDraft] => [row.rowId, row]));
+    });
+    readonly rowIds: Signal<Map<string, string>> = computed((): Map<string, string> => {
+        const record: StoredBankImport | null = this.selected();
+        return new Map([...(record?.transactions ?? []).map((row: StoredTransactionReference): readonly [string, string] => [row.rowId, row.transactionId] as const),
+            ...(record?.drafts ?? []).map((row: StoredDraftReference): readonly [string, string] => [row.rowId, row.draftId] as const)]);
+    });
+    readonly hasOriginalTransactions: Signal<boolean> = computed((): boolean => this.displayed()?.result.transactions.some((row: TransactionCandidate): boolean => row.reportedOriginalAmount !== null) ?? false);
+    readonly hasOriginalDrafts: Signal<boolean> = computed((): boolean => this.displayed()?.result.unresolvedDrafts.some((row: UnresolvedDraft): boolean => row.reportedOriginalAmount !== null) ?? false);
+    readonly transactionColumns: Signal<TableConfig<ImportRow>> = computed((): TableConfig<ImportRow> => this.bookingColumns('Description', this.hasOriginalTransactions()));
+    readonly draftColumns: Signal<TableConfig<ImportRow>> = computed((): TableConfig<ImportRow> => this.bookingColumns('Description and issues', this.hasOriginalDrafts()));
+    private readonly bookingAction: WritableSignal<IBookingAction | null> = signal<IBookingAction | null>(null);
+    readonly activeBookingAction: Signal<IBookingAction | null> = computed((): IBookingAction | null => {
+        const action: IBookingAction | null = this.bookingAction();
+        return this.selectedId() === action?.recordId && this.state().workspace?.loadRevision === action.loadRevision ? action : null;
+    });
+    readonly sourceRow: Signal<ImportRow | undefined> = computed((): ImportRow | undefined => {
+        const action: IBookingAction | null = this.activeBookingAction();
+        return action?.mode === 'source' ? this.originalRows().get(action.rowId) : undefined;
+    });
+    readonly editing: Signal<IBookingCorrection | null> = computed((): IBookingCorrection | null => {
+        const edit: IBookingAction | null = this.activeBookingAction();
+        const record: StoredBankImport | null = this.displayed();
+        if (edit?.mode !== 'correction' || !record) {
+            return null;
+        }
+        const row: TransactionCandidate | UnresolvedDraft | undefined = record.result.transactions.find((row: TransactionCandidate): boolean => row.rowId === edit.rowId) ?? record.result.unresolvedDrafts.find((row: UnresolvedDraft): boolean => row.rowId === edit.rowId);
+        const original: ImportRow | undefined = this.originalRows().get(edit.rowId);
+        const id: string | undefined = this.rowIds().get(edit.rowId);
+        const currency: string | undefined = record.result.accountSections.find((section: AccountSection): boolean => section.sectionId === row?.accountSectionId)?.currency.value;
+        return row && original && id && currency ? { ...edit, row, original, id, currency } : null;
+    });
+    readonly correctionEditor: Signal<IBookingCorrection[]> = computed((): IBookingCorrection[] => {
+        const editing: IBookingCorrection | null = this.editing();
+        return editing ? [editing] : [];
+    });
+    readonly correctionApplied: Signal<boolean> = computed((): boolean => {
+        const editing: IBookingCorrection | null = this.editing();
+        return editing !== null && (this.corrections().get(editing.id)?.revision ?? 0) !== editing.originalRevision;
+    });
+    readonly correctionError: WritableSignal<string | null> = signal<string | null>(null);
+    readonly decimalExample: string = amountEntryExample;
+    readonly amountInput: (value: Pick<Money, "coefficient" | "scale"> | undefined, separator?: string) => string = formatAmountEntry;
+    readonly generalIssues: Signal<ImportIssue[]> = computed((): ImportIssue[] => {
+        const result: BankImportResult | undefined = this.selected()?.result;
+        const shownInDrafts: Set<string> = new Set(result?.unresolvedDrafts.flatMap((row: UnresolvedDraft): ImportIssue[] => row.issues).map((issue: ImportIssue): string => JSON.stringify(issue)) ?? []);
+        return result?.issues.filter((issue: ImportIssue): boolean => !shownInDrafts.has(JSON.stringify(issue))) ?? [];
+    });
+    readonly money: typeof formatMoney = formatMoney;
+    readonly date: (value: string | null, locale?: string | string[]) => string = formatCalendarDate;
+    readonly filename: (value: string) => string = filename;
+    readonly direction: (value: ImportRow["direction"]) => "Unknown" | "Incoming" | "Outgoing" = directionLabel;
+    private recordsKey: string = '';
+    private recordsSnapshot: IStatementRecordsSnapshot | null = null;
+    private generation: number = 0;
+    private disposed: boolean = false;
 
-    private duplicatePairs(id: string): DuplicatePairView[] {
-        const pairs: Map<string, DuplicatePairView> = new Map<string, DuplicatePairView>();
+    private duplicatePairs(id: string): IDuplicatePairView[] {
+        const pairs: Map<string, IDuplicatePairView> = new Map<string, IDuplicatePairView>();
         for (const evidence of this.overlaps().get(id)) {
             pairs.set(evidence.transactionId, { other: evidence, evidence, decision: null });
         }
         for (const decision of this.decisionsByBooking().get(id) ?? []) {
             const otherId: string = decision.firstId === id ? decision.secondId : decision.firstId;
-            const pair: DuplicatePairView | undefined = pairs.get(otherId);
+            const pair: IDuplicatePairView | undefined = pairs.get(otherId);
             if (pair) {
                 pair.decision = decision;
             } else {
@@ -151,24 +250,6 @@ export class StatementImports {
         return [...pairs.values()];
     }
 
-    private readonly exclusion: WritableSignal<{ transactionId: string; otherTransactionId: string; revision: number; action: ExclusionAction; } | null> = signal<{ transactionId: string; otherTransactionId: string; revision: number; action: ExclusionAction } | null>(null);
-    readonly pendingExclusion: Signal<{ transactionId: string; otherTransactionId: string; revision: number; action: ExclusionAction; } | null> = computed((): { transactionId: string; otherTransactionId: string; revision: number; action: ExclusionAction; } | null => {
-        const pending: { transactionId: string; otherTransactionId: string; revision: number; action: ExclusionAction; } | null = this.exclusion();
-        return pending?.revision === this.state().workspace?.matchRevision ? pending : null;
-    });
-    readonly originalRows: Signal<Map<string, ImportRow>> = computed((): Map<string, ImportRow> => {
-        const result: BankImportResult | undefined = this.selected()?.result;
-        return new Map<ImportRow['rowId'], ImportRow>([...(result?.transactions ?? []), ...(result?.unresolvedDrafts ?? [])].map((row: TransactionCandidate | UnresolvedDraft): [string, TransactionCandidate | UnresolvedDraft] => [row.rowId, row]));
-    });
-    readonly rowIds: Signal<Map<string, string>> = computed((): Map<string, string> => {
-        const record: StoredBankImport | null = this.selected();
-        return new Map([...(record?.transactions ?? []).map((row: { rowId: string; transactionId: string; }): readonly [string, string] => [row.rowId, row.transactionId] as const),
-            ...(record?.drafts ?? []).map((row: { rowId: string; draftId: string; }): readonly [string, string] => [row.rowId, row.draftId] as const)]);
-    });
-    readonly hasOriginalTransactions: Signal<boolean> = computed((): boolean => this.displayed()?.result.transactions.some((row: TransactionCandidate): boolean => row.reportedOriginalAmount !== null) ?? false);
-    readonly hasOriginalDrafts: Signal<boolean> = computed((): boolean => this.displayed()?.result.unresolvedDrafts.some((row: UnresolvedDraft): boolean => row.reportedOriginalAmount !== null) ?? false);
-    readonly transactionColumns: Signal<TableConfig<ImportRow>> = computed((): TableConfig<ImportRow> => this.bookingColumns('Description', this.hasOriginalTransactions()));
-    readonly draftColumns: Signal<TableConfig<ImportRow>> = computed((): TableConfig<ImportRow> => this.bookingColumns('Description and issues', this.hasOriginalDrafts()));
     private bookingColumns(description: string, originalAmount: boolean): TableConfig<ImportRow> {
         const columns: TableConfig<ImportRow>['columns'] = [
             { field: 'bookingDate', text: 'Booking date', type: 'custom', template: 'booking-date' },
@@ -182,71 +263,9 @@ export class StatementImports {
         columns.push({ field: 'rowId', text: 'Actions', type: 'custom', template: 'actions' });
         return { columns };
     }
-    private readonly bookingAction: WritableSignal<{ mode: BookingAction; loadRevision: number; recordId: string; rowId: string; originalRevision: number; } | null> = signal<{ mode: BookingAction; loadRevision: number; recordId: string; rowId: string; originalRevision: number } | null>(null);
-    readonly activeBookingAction: Signal<{ mode: BookingAction; loadRevision: number; recordId: string; rowId: string; originalRevision: number; } | null> = computed((): { mode: BookingAction; loadRevision: number; recordId: string; rowId: string; originalRevision: number; } | null => {
-        const action: { mode: BookingAction; loadRevision: number; recordId: string; rowId: string; originalRevision: number; } | null = this.bookingAction();
-        return this.selectedId() === action?.recordId && this.state().workspace?.loadRevision === action.loadRevision ? action : null;
-    });
-    readonly sourceRow: Signal<ImportRow | undefined> = computed((): ImportRow | undefined => {
-        const action: { mode: BookingAction; loadRevision: number; recordId: string; rowId: string; originalRevision: number; } | null = this.activeBookingAction();
-        return action?.mode === 'source' ? this.originalRows().get(action.rowId) : undefined;
-    });
-    readonly editing: Signal<{ row: TransactionCandidate | UnresolvedDraft; original: ImportRow; id: string; currency: string; mode: BookingAction; loadRevision: number; recordId: string; rowId: string; originalRevision: number; } | null> = computed((): { row: TransactionCandidate | UnresolvedDraft; original: ImportRow; id: string; currency: string; mode: BookingAction; loadRevision: number; recordId: string; rowId: string; originalRevision: number; } | null => {
-        const edit: { mode: BookingAction; loadRevision: number; recordId: string; rowId: string; originalRevision: number; } | null = this.activeBookingAction();
-        const record: StoredBankImport | null = this.displayed();
-        if (edit?.mode !== 'correction' || !record) {
-            return null;
-        }
-        const row: TransactionCandidate | UnresolvedDraft | undefined = record.result.transactions.find((row: TransactionCandidate): boolean => row.rowId === edit.rowId) ?? record.result.unresolvedDrafts.find((row: UnresolvedDraft): boolean => row.rowId === edit.rowId);
-        const original: ImportRow | undefined = this.originalRows().get(edit.rowId);
-        const id: string | undefined = this.rowIds().get(edit.rowId);
-        const currency: string | undefined = record.result.accountSections.find((section: { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; }): boolean => section.sectionId === row?.accountSectionId)?.currency.value;
-        return row && original && id && currency ? { ...edit, row, original, id, currency } : null;
-    });
-    readonly correctionEditor: Signal<{ row: TransactionCandidate | UnresolvedDraft; original: ImportRow; id: string; currency: string; mode: BookingAction; loadRevision: number; recordId: string; rowId: string; originalRevision: number; }[]> = computed((): { row: TransactionCandidate | UnresolvedDraft; original: ImportRow; id: string; currency: string; mode: BookingAction; loadRevision: number; recordId: string; rowId: string; originalRevision: number; }[] => {
-        const editing: { row: TransactionCandidate | UnresolvedDraft; original: ImportRow; id: string; currency: string; mode: BookingAction; loadRevision: number; recordId: string; rowId: string; originalRevision: number; } | null = this.editing();
-        return editing ? [editing] : [];
-    });
-    readonly correctionApplied: Signal<boolean> = computed((): boolean => {
-        const editing: { row: TransactionCandidate | UnresolvedDraft; original: ImportRow; id: string; currency: string; mode: BookingAction; loadRevision: number; recordId: string; rowId: string; originalRevision: number; } | null = this.editing();
-        return editing !== null && (this.corrections().get(editing.id)?.revision ?? 0) !== editing.originalRevision;
-    });
-    readonly correctionError: WritableSignal<string | null> = signal<string | null>(null);
-    readonly decimalExample: string = amountEntryExample;
-    readonly amountInput: (value: Pick<Money, "coefficient" | "scale"> | undefined, separator?: string) => string = formatAmountEntry;
-    readonly generalIssues: Signal<ImportIssue[]> = computed((): ImportIssue[] => {
-        const result: BankImportResult | undefined = this.selected()?.result;
-        const shownInDrafts: Set<string> = new Set(result?.unresolvedDrafts.flatMap((row: UnresolvedDraft): ImportIssue[] => row.issues).map((issue: ImportIssue): string => JSON.stringify(issue)) ?? []);
-        return result?.issues.filter((issue: ImportIssue): boolean => !shownInDrafts.has(JSON.stringify(issue))) ?? [];
-    });
-    readonly money: (value: (Omit<Money, "currency"> & { currency: string | null; }) | null, locale?: string | string[]) => string = formatMoney;
-    readonly date: (value: string | null, locale?: string | string[]) => string = formatCalendarDate;
-    readonly filename: (value: string) => string = filename;
-    readonly direction: (value: ImportRow["direction"]) => "Unknown" | "Incoming" | "Outgoing" = directionLabel;
-    private recordsKey: string = '';
-    private recordsSnapshot: { workspaceId: string; loadRevision: number; ids: string[] } | null = null;
-    private generation: number = 0;
-    private disposed: boolean = false;
-
-    constructor() {
-        afterRenderEffect({ write: (): void => this.focusAfterAiTransition() });
-        effect((): void => {
-            const value: WorkspaceState = this.state();
-            const key: string = this.key(value);
-            untracked((): void => {
-                if (key !== this.recordsKey) {
-                    this.loadRecords(value, key);
-                }
-            });
-        });
-
-        inject(DestroyRef).onDestroy((): void => {
-            this.disposed = true; this.generation++;
-        });
-    }
 
     private focusAfterAiTransition(): void {
-        const state: WorkspaceState = this.state();
+        const state: IWorkspaceState = this.state();
         const previous: typeof this.previousAiView = this.previousAiView;
         const stage: NonNullable<typeof this.previousAiView>['stage'] = state.statementFallback?.stage;
         const loadRevision: number | undefined = state.workspace?.loadRevision;
@@ -269,15 +288,15 @@ export class StatementImports {
         }
     }
 
-    private key(value: WorkspaceState): string {
-        return JSON.stringify([value.workspace?.id ?? null, value.workspace?.loadRevision ?? null, value.workspace?.imports.map((record: BankImportSummary): string => record.id) ?? []]);
+    private key(value: IWorkspaceState): string {
+        return JSON.stringify([value.workspace?.id ?? null, value.workspace?.loadRevision ?? null, value.workspace?.imports.map((record: IBankImportSummary): string => record.id) ?? []]);
     }
 
-    private loadRecords(value: WorkspaceState, key: string): void {
+    private loadRecords(value: IWorkspaceState, key: string): void {
         const generation: number = ++this.generation; const previousSelection: string | null = this.selectedId();
         this.recordsKey = key; this.records.set([]); this.detailsError.set(null); this.expandedOverlapRows.set(new Set()); this.exclusion.set(null);
-        const ids: string[] = value.workspace?.imports.map((record: BankImportSummary): string => record.id) ?? [];
-        const previous: { workspaceId: string; loadRevision: number; ids: string[]; } | null = this.recordsSnapshot; const workspace: WorkspaceView | null = value.workspace;
+        const ids: string[] = value.workspace?.imports.map((record: IBankImportSummary): string => record.id) ?? [];
+        const previous: IStatementRecordsSnapshot | null = this.recordsSnapshot; const workspace: IWorkspaceView | null = value.workspace;
         if (previous && previous.workspaceId === workspace?.id && previousSelection && previous.ids.includes(previousSelection) && !ids.includes(previousSelection)) {
             requestAnimationFrame((): void => {
                 if (!this.disposed && generation === this.generation && !this.state().busy) {
@@ -341,14 +360,14 @@ export class StatementImports {
     }
 
     requestStatementRemoval(id: string, dialog: HTMLDialogElement, cancel: WigButtonComponent): void {
-        const { workspace, busy }: WorkspaceState = this.state();
-        const statement: BankImportSummary | undefined = workspace?.imports.find((record: BankImportSummary): boolean => record.id === id);
+        const { workspace, busy }: IWorkspaceState = this.state();
+        const statement: IBankImportSummary | undefined = workspace?.imports.find((record: IBankImportSummary): boolean => record.id === id);
         if (!workspace || !statement || busy || dialog.open || this.selectedId() !== id) {
             return;
         }
-        const predecessor: BankImportSummary | undefined = workspace.supersededStatements.includes(id) ? undefined :
-            workspace.imports.find((record: BankImportSummary): boolean => record.id === statement.replacesStatementId);
-        const requested: StatementRemoval = { importId: id, revision: workspace.matchRevision, fileName: filename(statement.filePath),
+        const predecessor: IBankImportSummary | undefined = workspace.supersededStatements.includes(id) ? undefined :
+            workspace.imports.find((record: IBankImportSummary): boolean => record.id === statement.replacesStatementId);
+        const requested: IStatementRemoval = { importId: id, revision: workspace.matchRevision, fileName: filename(statement.filePath),
             ...(predecessor ? { predecessorName: filename(predecessor.filePath) } : {}) };
         this.removal.set(requested);
         afterNextRender({ write: (): void => {
@@ -360,7 +379,7 @@ export class StatementImports {
     }
 
     confirmStatementRemoval(dialog: HTMLDialogElement): void {
-        const removal: StatementRemoval | null = this.removal();
+        const removal: IStatementRemoval | null = this.removal();
         if (dialog.open && removal && !this.state().busy) {
             dialog.close();
             this.workspaceCommand.emit({ type: 'remove-statement', importId: removal.importId, revision: removal.revision });
@@ -402,7 +421,7 @@ export class StatementImports {
     }
 
     chooseDuplicate(transactionId: string, otherTransactionId: string, decision: DuplicateAction): void {
-        const { workspace, busy }: WorkspaceState = this.state();
+        const { workspace, busy }: IWorkspaceState = this.state();
         if (!workspace || busy) {
             return;
         }
@@ -416,7 +435,7 @@ export class StatementImports {
     }
 
     confirmExclusion(): void {
-        const pending: { transactionId: string; otherTransactionId: string; revision: number; action: ExclusionAction; } | null = this.pendingExclusion();
+        const pending: IDuplicateExclusion | null = this.pendingExclusion();
         if (!pending || this.state().busy) {
             return;
         }
@@ -426,7 +445,7 @@ export class StatementImports {
     }
 
     cancelExclusion(): void {
-        const pending: { transactionId: string; otherTransactionId: string; revision: number; action: ExclusionAction; } | null = this.pendingExclusion();
+        const pending: IDuplicateExclusion | null = this.pendingExclusion();
         this.exclusion.set(null);
         if (pending) {
             requestAnimationFrame((): void | undefined => document.getElementById('duplicate-' + pending.transactionId + '-' + pending.otherTransactionId + '-' + pending.action)?.querySelector('button')?.focus());
@@ -435,7 +454,7 @@ export class StatementImports {
 
     openBookingAction(mode: BookingAction, rowId: string): void {
         const record: StoredBankImport | null = this.selected();
-        const workspace: WorkspaceView | null = this.state().workspace;
+        const workspace: IWorkspaceView | null = this.state().workspace;
         const id: string | undefined = this.rowIds().get(rowId);
         if (!record || !workspace || !id || (mode === 'correction' && this.state().busy)) {
             return;
@@ -445,7 +464,7 @@ export class StatementImports {
     }
 
     closeBookingAction(): void {
-        const editing: { row: TransactionCandidate | UnresolvedDraft; original: ImportRow; id: string; currency: string; mode: BookingAction; loadRevision: number; recordId: string; rowId: string; originalRevision: number; } | null = this.editing();
+        const editing: IBookingCorrection | null = this.editing();
         this.bookingAction.set(null);
         if (editing && this.corrections().get(editing.id)?.revision !== editing.originalRevision) {
             requestAnimationFrame((): void => {
@@ -464,18 +483,18 @@ export class StatementImports {
 
     applyCorrection(form: HTMLFormElement, event?: Event): void {
         event?.preventDefault();
-        const editing: { row: TransactionCandidate | UnresolvedDraft; original: ImportRow; id: string; currency: string; mode: BookingAction; loadRevision: number; recordId: string; rowId: string; originalRevision: number; } | null = this.editing();
-        const workspace: WorkspaceView | null = this.state().workspace;
+        const editing: IBookingCorrection | null = this.editing();
+        const workspace: IWorkspaceView | null = this.state().workspace;
         if (!editing || !workspace || this.state().busy) {
             return;
         }
-        const values: { bookingDate: string | undefined; amount: Money | null; previousAmount: Money | undefined } | null =
+        const values: IBookingCorrectionValues | null =
             this.readCorrectionValues(form, editing.row, editing.original.direction, editing.currency);
         if (!values) {
             return;
         }
-        const { bookingDate, amount, previousAmount }: { bookingDate: string | undefined; amount: Money | null; previousAmount: Money | undefined } = values;
-        const changes: { bookingDate?: string; accountAmount?: Money } = {};
+        const { bookingDate, amount, previousAmount }: IBookingCorrectionValues = values;
+        const changes: Pick<BankCorrection, 'bookingDate' | 'accountAmount'> = {};
         if (bookingDate && bookingDate !== editing.row.bookingDate?.value) {
             changes.bookingDate = bookingDate;
         }
@@ -499,7 +518,7 @@ export class StatementImports {
     }
 
     private readCorrectionValues(form: HTMLFormElement, row: ImportRow, direction: ImportRow['direction'], currency: string):
-        { bookingDate: string | undefined; amount: Money | null; previousAmount: Money | undefined } | null {
+        IBookingCorrectionValues | null {
         const fields: FormData = new FormData(form);
         const dateValue: FormDataEntryValue | null = fields.get('booking-date');
         const dateText: string = typeof dateValue === 'string' ? dateValue : '';
@@ -509,13 +528,13 @@ export class StatementImports {
         if (date && !date.success) {
             this.correctionError.set('Enter a valid booking date.'); return null;
         }
-        const amount: { coefficient: string; currency: string; scale: number; } | null = amountText ? parseAmountEntry(amountText, currency) : null;
+        const amount: Money | null = amountText ? parseAmountEntry(amountText, currency) : null;
         if (amountText && !amount) {
             this.correctionError.set('Enter an amount without grouping separators, for example ' + this.decimalExample + '.');
             return null;
         }
         const bookingDate: string | undefined = date?.data;
-        const previousAmount: { coefficient: string; currency: string; scale: number; }   | undefined = row.accountAmount?.value;
+        const previousAmount: Money   | undefined = row.accountAmount?.value;
         if ((!bookingDate && row.bookingDate) || (!amount && previousAmount)) {
             this.correctionError.set('Keep the current value or enter a corrected value.');
             return null;
@@ -527,7 +546,7 @@ export class StatementImports {
     }
 
     pageNumber(record: Pick<StoredBankImport, 'result'>, pageId: string | null): number | null {
-        return record.result.sourceProvenance?.pages.find((page: { pageId: string; pageNumber: number; width: number; height: number; }): boolean => page.pageId === pageId)?.pageNumber ?? null;
+        return record.result.sourceProvenance?.pages.find((page: SourcePage): boolean => page.pageId === pageId)?.pageNumber ?? null;
     }
 
     issueContext(record: Pick<StoredBankImport, 'result'>, issue: ImportIssue): string {
@@ -558,7 +577,7 @@ export class StatementImports {
     }
 
     progressText(): string {
-        const current: WorkspaceState['statementImport'] = this.state().statementImport;
+        const current: IWorkspaceState['statementImport'] = this.state().statementImport;
         if (!current) {
             return '';
         }
@@ -569,7 +588,9 @@ export class StatementImports {
         if (!progress) {
             return current.localAi ? 'Preparing local AI recognition…' : 'Choose a PDF statement in the file dialog.';
         }
-        const phases: { loading: string; text: string; rendering: string; ocr: string; 'page-complete': string; } = { loading: 'Opening PDF', text: 'Reading PDF text', rendering: 'Preparing page image', ocr: 'Reading page with local English OCR', 'page-complete': 'Page read' };
+        const phases: Record<ExtractionProgress['phase'], string> = {
+            loading: 'Opening PDF', text: 'Reading PDF text', rendering: 'Preparing page image', ocr: 'Reading page with local English OCR', 'page-complete': 'Page read'
+        };
         const page: string = progress.pageNumber && progress.pageCount ? ` · Page ${progress.pageNumber} of ${progress.pageCount}` : '';
         return (current.localAi && progress.phase === 'ocr' ? 'Reading table with local AI' : phases[progress.phase]) + page;
     }

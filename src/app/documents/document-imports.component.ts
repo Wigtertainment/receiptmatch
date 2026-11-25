@@ -1,23 +1,21 @@
 import { NgTemplateOutlet } from '@angular/common';
 import { Component, DestroyRef, ElementRef, afterRenderEffect, computed, effect, inject, input, output, signal, untracked, viewChild,
     type EffectCleanupRegisterFn, type InputSignal, type OutputEmitterRef, type Signal, type WritableSignal } from '@angular/core';
-import { DrawerSize, type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigCheckboxComponent, WigDrawerComponent,
+import { DrawerSize, type IAccordionItem, type TableConfig, WigAccordionComponent, WigAlertComponent, WigButtonComponent, WigCheckboxComponent, WigDrawerComponent,
     WigIconButtonComponent, WigTableComponent, WigTemplateDirective } from '@wigtertainment-ltd/comp-lib';
-import { DocumentAnalysis, type FieldDispositionChange } from './document-analysis.component.js';
+import { DocumentAnalysis, type FieldConfirmationChange, type FieldCorrectionChange, type FieldDispositionChange } from './document-analysis.component.js';
 import { LocalAiIcon } from '../shared/local-ai-icon.component.js';
 import { OriginalPreviewButton } from '../shared/original-preview-button.component.js';
-import type { ImportIssue } from '../../shared/bank-import.js';
-import { documentCorrectionKey, type DocumentCorrection, type DocumentCorrectionTarget, type DocumentCorrectionValue } from '../../shared/document-corrections.js';
+import { documentCorrectionKey, type DocumentCorrection } from '../../shared/document-corrections.js';
 import { formatDocumentTotal } from '../../shared/document-display.js';
-import type { DocumentFieldReviewTarget } from '../../shared/document-field-reviews.js';
 import { documentNeedsReview } from '../../shared/document-review-presentation.js';
-import type { NuExtractSettingsStatus } from '../../shared/local-ocr-settings.js';
+import type { INuExtractSettingsStatus } from '../../shared/local-ocr-settings.js';
 import type { OriginalAdoptionResult } from '../../shared/original-preview.js';
 import type { ExtractionProgress } from '../../shared/pdf-extraction.js';
-import type { DocumentImportSummary, DocumentSnapshot, OriginalDocumentFields, WorkspaceCommand, WorkspaceState, WorkspaceView } from '../../shared/protocol.js';
-import type { ReceiptAiChange, ReceiptAiField, ReceiptAiPreviewResult, ReceiptAiProposal, ReceiptAiRequest } from '../../shared/receipt-ai.js';
+import type { IDocumentImportSummary, IDocumentSnapshot, OriginalDocumentFields, WorkspaceCommand, IWorkspaceState, IWorkspaceView } from '../../shared/protocol.js';
+import type { IReceiptAiChange, ReceiptAiField, ReceiptAiPreviewResult, IReceiptAiProposal, ReceiptAiRequest } from '../../shared/receipt-ai.js';
 import type { SupportingDocument } from '../../shared/supporting-document.js';
-import type { DocumentFileResult, DocumentFormat, DocumentImportProgress, StoredDocumentImport, StoredSupportingDocument } from '../../shared/workspace-documents.js';
+import type { DocumentFileResult, DocumentFormat, IDocumentImportProgress, StoredDocumentImport } from '../../shared/workspace-documents.js';
 
 function basename(path: string): string {
     return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
@@ -29,13 +27,22 @@ function pageProgress(extraction?: ExtractionProgress | null): string {
 
 const dateTimeFormat: Intl.DateTimeFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 
-interface DocumentFileRow { file: DocumentFileResult; total: string | null; original: OriginalDocumentFields | null; reviewBase: OriginalDocumentFields | null; }
-interface ReportCache { workspaceKey: string; requestKey: string; records: Map<string, StoredDocumentImport>; originals: Record<string, OriginalDocumentFields>; reviewBases: Record<string, OriginalDocumentFields>; }
-interface ReceiptAnalysisContext {
+interface IDocumentFileRow { file: DocumentFileResult; total: string | null; original: OriginalDocumentFields | null; reviewBase: OriginalDocumentFields | null; }
+interface IReportCache {
+    workspaceKey: string; requestKey: string; records: Map<string, StoredDocumentImport>;
+    originals: Record<string, OriginalDocumentFields>; reviewBases: Record<string, OriginalDocumentFields>;
+}
+interface IReceiptAnalysisContext {
     request: ReceiptAiRequest; workspaceKey: string; matchRevision: number; name: string; format: DocumentFormat; documentId: string; trigger: HTMLButtonElement;
 }
-interface ReceiptAnalysisReview { context: ReceiptAnalysisContext; result: Extract<ReceiptAiPreviewResult, { status: 'ready' }>; }
-interface ReceiptAnalysisFeedback { context: ReceiptAnalysisContext; message: string; error: boolean; }
+interface IReceiptAnalysisReview { context: IReceiptAnalysisContext; result: Extract<ReceiptAiPreviewResult, Record<'status', 'ready'>>; }
+interface IReceiptAnalysisFeedback { context: IReceiptAnalysisContext; message: string; error: boolean; }
+interface IFileSelection { workspaceKey: string; reportId: string; index: number; }
+interface IReportTableRows { workspaceKey: string; reports: Map<string, IndexedFile[]>; }
+interface ISnapshotContext { workspaceKey: string; summaries: IDocumentImportSummary[]; workspace: IWorkspaceView | null; }
+
+type IndexedFile = Record<'index', number>;
+type ReportItem = Required<Pick<IAccordionItem<IDocumentImportSummary>, 'id' | 'header' | 'template' | 'data'>>;
 
 @Component({
     selector: 'app-document-imports', standalone: true,
@@ -44,120 +51,6 @@ interface ReceiptAnalysisFeedback { context: ReceiptAnalysisContext; message: st
     templateUrl: './document-imports.component.html'
 })
 export class DocumentImports {
-    readonly state: InputSignal<WorkspaceState> = input.required<WorkspaceState>();
-    readonly active: InputSignal<boolean> = input(true);
-    readonly workspaceCommand: OutputEmitterRef<WorkspaceCommand> = output<WorkspaceCommand>();
-    private readonly destroyed: DestroyRef = inject(DestroyRef);
-    private readonly aiDialog: Signal<ElementRef<HTMLDialogElement> | undefined> = viewChild<ElementRef<HTMLDialogElement>>('aiDialog');
-    private readonly documentsHeading: Signal<ElementRef<HTMLHeadingElement> | undefined> = viewChild<ElementRef<HTMLHeadingElement>>('documentsHeading');
-    readonly aiPending: WritableSignal<ReceiptAnalysisContext | null> = signal<ReceiptAnalysisContext | null>(null);
-    readonly aiImport: Signal<WorkspaceState['documentImport']> = computed((): WorkspaceState['documentImport'] => {
-        const active: WorkspaceState['documentImport'] = this.state().documentImport;
-        return active?.localAi ? active : null;
-    });
-    readonly aiReview: WritableSignal<ReceiptAnalysisReview | null> = signal<ReceiptAnalysisReview | null>(null);
-    readonly aiWarnings: Signal<{ before: number; after: number } | undefined> = computed((): { before: number; after: number } | undefined => {
-        const warning: ReceiptAiChange | undefined = this.aiReview()?.result.changes.find((change: ReceiptAiChange): boolean => change.kind === 'warnings');
-        return warning ? { before: warning.before?.split(', ').length ?? 0, after: warning.after?.split(', ').length ?? 0 } : undefined;
-    });
-    readonly aiFeedback: WritableSignal<ReceiptAnalysisFeedback | null> = signal<ReceiptAnalysisFeedback | null>(null);
-    readonly aiApplying: WritableSignal<boolean> = signal(false);
-    readonly aiApplyError: WritableSignal<string | null> = signal<string | null>(null);
-    readonly aiEvidenceOpen: WritableSignal<boolean> = signal(false);
-    readonly acknowledgeAiConflicts: WritableSignal<boolean> = signal(false);
-    readonly aiSelectedFields: WritableSignal<ReceiptAiField[]> = signal<ReceiptAiField[]>([]);
-    readonly aiCurrency: WritableSignal<string> = signal('');
-    private readonly aiNeedsCurrency: Signal<boolean> = computed((): boolean =>
-        this.aiSelectedFields().includes('billed-total') && this.aiReview()?.result.proposals?.some((proposal: ReceiptAiProposal): boolean =>
-            proposal.field === 'billed-total' && proposal.needsCurrency === true) === true);
-    readonly aiCanApply: Signal<boolean> = computed((): boolean => {
-        const review: ReceiptAnalysisReview | null = this.aiReview();
-        return !!review && this.aiSelectedFields().length > 0 && !this.aiApplying() && !this.state().busy && !review.result.blockingConflict &&
-            (!review.result.conflicts.length || this.acknowledgeAiConflicts()) && (!this.aiNeedsCurrency() || /^[A-Z]{3}$/i.test(this.aiCurrency()));
-    });
-    readonly workspaceKey: Signal<string> = computed((): string => {
-        const workspace: WorkspaceView | null = this.state().workspace;
-        return workspace ? JSON.stringify([workspace.id, workspace.loadRevision]) : '';
-    });
-    readonly summaries: Signal<DocumentImportSummary[]> = computed((): DocumentImportSummary[] => this.state().workspace?.documentImports ?? []);
-    readonly reportItems: Signal<{ id: string; header: string; template: string; data: DocumentImportSummary; }[]> = computed((): { id: string; header: string; template: string; data: DocumentImportSummary; }[] => this.summaries().map((report: DocumentImportSummary): { id: string; header: string; template: string; data: DocumentImportSummary; } => ({
-        id: report.id, header: `${basename(report.folderPath)} · ${report.status === 'cancelled' ? 'Cancelled' : 'Finished'} · ${this.reportCounts(report)}`,
-        template: 'report', data: report
-    })));
-    private readonly retryVersion: WritableSignal<number> = signal(0);
-    private readonly cache: WritableSignal<ReportCache | null> = signal<ReportCache | null>(null);
-    private readonly failedRequest: WritableSignal<string | null> = signal<string | null>(null);
-    private readonly requestKey: Signal<string | null> = computed((): string | null => {
-        const summaries: DocumentImportSummary[] = this.summaries();
-        if (!summaries.length) {
-            return null;
-        }
-        return JSON.stringify([this.workspaceKey(), this.state().workspace?.matchRevision]);
-    });
-    readonly records: Signal<Map<string, StoredDocumentImport> | null> = computed((): Map<string, StoredDocumentImport> | null => {
-        const cache: ReportCache | null = this.cache();
-        return cache?.workspaceKey === this.workspaceKey() ? cache.records : null;
-    });
-    readonly detailsCurrent: Signal<boolean> = computed((): boolean => this.cache()?.requestKey === this.requestKey());
-    readonly detailsError: Signal<boolean> = computed((): boolean => this.requestKey() !== null && this.failedRequest() === this.requestKey());
-    private readonly selectedFile: WritableSignal<{ workspaceKey: string; reportId: string; index: number; } | null> = signal<{ workspaceKey: string; reportId: string; index: number } | null>(null);
-    readonly selectedFileRow: Signal<DocumentFileRow | undefined> = computed((): DocumentFileRow | undefined => {
-        const selection: { workspaceKey: string; reportId: string; index: number; } | null = this.selectedFile();
-        return selection?.workspaceKey === this.workspaceKey() ? this.fileRows().get(selection.reportId)?.[selection.index] : undefined;
-    });
-    readonly detailsDrawerSize: DrawerSize.md = DrawerSize.md;
-    readonly fileColumns: TableConfig<{ index: number }> = { columns: [
-        { field: 'index', text: 'Document', type: 'custom', template: 'name' },
-        { field: 'index', text: 'Billed total', type: 'custom', template: 'total' },
-        { field: 'index', text: 'Status', type: 'custom', template: 'status' },
-        { field: 'index', text: 'Actions', type: 'custom', template: 'actions' }
-    ] };
-    readonly correctionsByDocument: Signal<Map<string, Map<string, DocumentCorrection>>> = computed((): Map<string, Map<string, DocumentCorrection>> => {
-        const byDocument: Map<string, Map<string, DocumentCorrection>> = new Map<string, Map<string, DocumentCorrection>>();
-        for (const correction of this.state().workspace?.documentCorrections ?? []) {
-            const fields: Map<string, DocumentCorrection> = byDocument.get(correction.documentId) ?? new Map<string, DocumentCorrection>();
-            fields.set(documentCorrectionKey(correction, correction.change.kind, 'role' in correction.change ? correction.change.role : undefined), correction);
-            byDocument.set(correction.documentId, fields);
-        }
-        return byDocument;
-    });
-    readonly fileRows: Signal<Map<string, DocumentFileRow[]>> = computed((): Map<string, DocumentFileRow[]> => {
-        const records: Map<string, StoredDocumentImport> | null = this.records();
-        const rows: Map<string, DocumentFileRow[]> = new Map<string, DocumentFileRow[]>();
-        if (records) {
-            const originals: Record<string, OriginalDocumentFields> | undefined = this.cache()?.originals;
-            for (const { id } of this.summaries()) {
-                const record: StoredDocumentImport | undefined = records.get(id);
-                if (!record) {
-                    continue;
-                }
-                rows.set(id, record.files.map((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): DocumentFileRow => ({
-                    file, total: this.billedTotal(file), original: file.status === 'imported' ? originals?.[file.record.id] ?? null : null,
-                    reviewBase: file.status === 'imported' ? this.cache()?.reviewBases[file.record.id] ?? null : null,
-                })));
-            }
-        }
-        return rows;
-    });
-    // WigTable tracks rows by object identity. Keep the action components mounted when a report is refreshed.
-    readonly tableRows: Signal<{ workspaceKey: string; reports: Map<string, { index: number; }[]>; }> = computed((): { workspaceKey: string; reports: Map<string, { index: number; }[]>; } => ({
-        workspaceKey: this.workspaceKey(),
-        reports: new Map([...this.fileRows()].map(([id, rows]: [string, DocumentFileRow[]]): [string, { index: number; }[]] => [id, rows.map((_: DocumentFileRow, index: number): { index: number; } => ({ index }))]))
-    }), { equal: (previous: { workspaceKey: string; reports: Map<string, { index: number; }[]>; }, next: { workspaceKey: string; reports: Map<string, { index: number; }[]>; }): boolean => previous.workspaceKey === next.workspaceKey && previous.reports.size === next.reports.size &&
-        [...previous.reports].every(([id, rows]: [string, { index: number; }[]]): boolean => next.reports.get(id)?.length === rows.length) });
-    readonly basename: (path: string) => string = basename;
-    readonly timestamp: (value: string) => string = (value: string): string => dateTimeFormat.format(new Date(value));
-    readonly filePath: (file: DocumentFileResult) => string = (file: DocumentFileResult): string => file.status === 'imported' ? file.record.filePath : file.filePath;
-    readonly fileStatus: (file: DocumentFileResult, reviewNeeded: boolean) => "Imported · review needed" | "Imported" | "Skipped duplicate" | "Failed" | "Unsupported" = (file: DocumentFileResult, reviewNeeded: boolean): "Imported · review needed" | "Imported" | "Skipped duplicate" | "Failed" | "Unsupported" => {
-        switch (file.status) {
-            case 'imported': return reviewNeeded ? 'Imported · review needed' : 'Imported';
-            case 'skipped': return 'Skipped duplicate';
-            case 'failed': return 'Failed';
-            case 'unsupported': return 'Unsupported';
-        }
-    };
-    readonly documentNeedsReview: (analysis: SupportingDocument) => boolean = documentNeedsReview;
-
     constructor() {
         effect((): void => {
             const workspaceKey: string = this.workspaceKey();
@@ -173,7 +66,7 @@ export class DocumentImports {
         });
 
         effect((): void => {
-            const review: ReceiptAnalysisReview | null = this.aiReview();
+            const review: IReceiptAnalysisReview | null = this.aiReview();
             if (review && !this.aiApplying() && review.context.matchRevision !== this.state().workspace?.matchRevision) {
                 this.discardAiToken(review);
                 this.clearAiReview();
@@ -196,11 +89,12 @@ export class DocumentImports {
             if (!requestKey) {
                 return;
             }
-            const { workspaceKey, summaries, workspace }: { workspaceKey: string; summaries: DocumentImportSummary[]; workspace: WorkspaceView | null; } = untracked((): { workspaceKey: string; summaries: DocumentImportSummary[]; workspace: WorkspaceView | null; } => ({ workspaceKey: this.workspaceKey(), summaries: this.summaries(), workspace: this.state().workspace }));
+            const { workspaceKey, summaries, workspace }: ISnapshotContext = untracked((): ISnapshotContext =>
+                ({ workspaceKey: this.workspaceKey(), summaries: this.summaries(), workspace: this.state().workspace }));
             if (!workspace) {
                 return;
             }
-            const { loadRevision, matchRevision: revision }: WorkspaceView = workspace;
+            const { loadRevision, matchRevision: revision }: IWorkspaceView = workspace;
             if (untracked((): boolean => this.cache()?.requestKey === requestKey)) {
                 return;
             }
@@ -210,7 +104,7 @@ export class DocumentImports {
             });
             this.failedRequest.set(null);
             const isCurrent: () => boolean = (): boolean => current && requestKey === this.requestKey();
-            void window.receiptmatch.documentSnapshot({ loadRevision, revision }).then((snapshot: DocumentSnapshot | null): void => {
+            void window.receiptmatch.documentSnapshot({ loadRevision, revision }).then((snapshot: IDocumentSnapshot | null): void => {
                 if (!isCurrent()) {
                     return;
                 }
@@ -230,6 +124,122 @@ export class DocumentImports {
             });
         });
     }
+
+    readonly state: InputSignal<IWorkspaceState> = input.required<IWorkspaceState>();
+    readonly active: InputSignal<boolean> = input(true);
+    readonly workspaceCommand: OutputEmitterRef<WorkspaceCommand> = output<WorkspaceCommand>();
+    private readonly destroyed: DestroyRef = inject(DestroyRef);
+    private readonly aiDialog: Signal<ElementRef<HTMLDialogElement> | undefined> = viewChild<ElementRef<HTMLDialogElement>>('aiDialog');
+    private readonly documentsHeading: Signal<ElementRef<HTMLHeadingElement> | undefined> = viewChild<ElementRef<HTMLHeadingElement>>('documentsHeading');
+    readonly aiPending: WritableSignal<IReceiptAnalysisContext | null> = signal<IReceiptAnalysisContext | null>(null);
+    readonly aiImport: Signal<IWorkspaceState['documentImport']> = computed((): IWorkspaceState['documentImport'] => {
+        const active: IWorkspaceState['documentImport'] = this.state().documentImport;
+        return active?.localAi ? active : null;
+    });
+    readonly aiReview: WritableSignal<IReceiptAnalysisReview | null> = signal<IReceiptAnalysisReview | null>(null);
+    readonly aiWarnings: Signal<Record<'before' | 'after', number> | undefined> = computed((): Record<'before' | 'after', number> | undefined => {
+        const warning: IReceiptAiChange | undefined = this.aiReview()?.result.changes.find((change: IReceiptAiChange): boolean => change.kind === 'warnings');
+        return warning ? { before: warning.before?.split(', ').length ?? 0, after: warning.after?.split(', ').length ?? 0 } : undefined;
+    });
+    readonly aiFeedback: WritableSignal<IReceiptAnalysisFeedback | null> = signal<IReceiptAnalysisFeedback | null>(null);
+    readonly aiApplying: WritableSignal<boolean> = signal(false);
+    readonly aiApplyError: WritableSignal<string | null> = signal<string | null>(null);
+    readonly aiEvidenceOpen: WritableSignal<boolean> = signal(false);
+    readonly acknowledgeAiConflicts: WritableSignal<boolean> = signal(false);
+    readonly aiSelectedFields: WritableSignal<ReceiptAiField[]> = signal<ReceiptAiField[]>([]);
+    readonly aiCurrency: WritableSignal<string> = signal('');
+    private readonly aiNeedsCurrency: Signal<boolean> = computed((): boolean =>
+        this.aiSelectedFields().includes('billed-total') && this.aiReview()?.result.proposals?.some((proposal: IReceiptAiProposal): boolean =>
+            proposal.field === 'billed-total' && proposal.needsCurrency === true) === true);
+    readonly aiCanApply: Signal<boolean> = computed((): boolean => {
+        const review: IReceiptAnalysisReview | null = this.aiReview();
+        return !!review && this.aiSelectedFields().length > 0 && !this.aiApplying() && !this.state().busy && !review.result.blockingConflict &&
+            (!review.result.conflicts.length || this.acknowledgeAiConflicts()) && (!this.aiNeedsCurrency() || /^[A-Z]{3}$/i.test(this.aiCurrency()));
+    });
+    readonly workspaceKey: Signal<string> = computed((): string => {
+        const workspace: IWorkspaceView | null = this.state().workspace;
+        return workspace ? JSON.stringify([workspace.id, workspace.loadRevision]) : '';
+    });
+    readonly summaries: Signal<IDocumentImportSummary[]> = computed((): IDocumentImportSummary[] => this.state().workspace?.documentImports ?? []);
+    readonly reportItems: Signal<ReportItem[]> = computed((): ReportItem[] => this.summaries().map((report: IDocumentImportSummary): ReportItem => ({
+        id: report.id, header: `${basename(report.folderPath)} · ${report.status === 'cancelled' ? 'Cancelled' : 'Finished'} · ${this.reportCounts(report)}`,
+        template: 'report', data: report
+    })));
+    private readonly retryVersion: WritableSignal<number> = signal(0);
+    private readonly cache: WritableSignal<IReportCache | null> = signal<IReportCache | null>(null);
+    private readonly failedRequest: WritableSignal<string | null> = signal<string | null>(null);
+    private readonly requestKey: Signal<string | null> = computed((): string | null => {
+        const summaries: IDocumentImportSummary[] = this.summaries();
+        if (!summaries.length) {
+            return null;
+        }
+        return JSON.stringify([this.workspaceKey(), this.state().workspace?.matchRevision]);
+    });
+    readonly records: Signal<Map<string, StoredDocumentImport> | null> = computed((): Map<string, StoredDocumentImport> | null => {
+        const cache: IReportCache | null = this.cache();
+        return cache?.workspaceKey === this.workspaceKey() ? cache.records : null;
+    });
+    readonly detailsCurrent: Signal<boolean> = computed((): boolean => this.cache()?.requestKey === this.requestKey());
+    readonly detailsError: Signal<boolean> = computed((): boolean => this.requestKey() !== null && this.failedRequest() === this.requestKey());
+    private readonly selectedFile: WritableSignal<IFileSelection | null> = signal<IFileSelection | null>(null);
+    readonly selectedFileRow: Signal<IDocumentFileRow | undefined> = computed((): IDocumentFileRow | undefined => {
+        const selection: IFileSelection | null = this.selectedFile();
+        return selection?.workspaceKey === this.workspaceKey() ? this.fileRows().get(selection.reportId)?.[selection.index] : undefined;
+    });
+    readonly detailsDrawerSize: DrawerSize.md = DrawerSize.md;
+    readonly fileColumns: TableConfig<IndexedFile> = { columns: [
+        { field: 'index', text: 'Document', type: 'custom', template: 'name' },
+        { field: 'index', text: 'Billed total', type: 'custom', template: 'total' },
+        { field: 'index', text: 'Status', type: 'custom', template: 'status' },
+        { field: 'index', text: 'Actions', type: 'custom', template: 'actions' }
+    ] };
+    readonly correctionsByDocument: Signal<Map<string, Map<string, DocumentCorrection>>> = computed((): Map<string, Map<string, DocumentCorrection>> => {
+        const byDocument: Map<string, Map<string, DocumentCorrection>> = new Map<string, Map<string, DocumentCorrection>>();
+        for (const correction of this.state().workspace?.documentCorrections ?? []) {
+            const fields: Map<string, DocumentCorrection> = byDocument.get(correction.documentId) ?? new Map<string, DocumentCorrection>();
+            fields.set(documentCorrectionKey(correction, correction.change.kind, 'role' in correction.change ? correction.change.role : undefined), correction);
+            byDocument.set(correction.documentId, fields);
+        }
+        return byDocument;
+    });
+    readonly fileRows: Signal<Map<string, IDocumentFileRow[]>> = computed((): Map<string, IDocumentFileRow[]> => {
+        const records: Map<string, StoredDocumentImport> | null = this.records();
+        const rows: Map<string, IDocumentFileRow[]> = new Map<string, IDocumentFileRow[]>();
+        if (records) {
+            const originals: Record<string, OriginalDocumentFields> | undefined = this.cache()?.originals;
+            for (const { id } of this.summaries()) {
+                const record: StoredDocumentImport | undefined = records.get(id);
+                if (!record) {
+                    continue;
+                }
+                rows.set(id, record.files.map((file: DocumentFileResult): IDocumentFileRow => ({
+                    file, total: this.billedTotal(file), original: file.status === 'imported' ? originals?.[file.record.id] ?? null : null,
+                    reviewBase: file.status === 'imported' ? this.cache()?.reviewBases[file.record.id] ?? null : null,
+                })));
+            }
+        }
+        return rows;
+    });
+    // WigTable tracks rows by object identity. Keep the action components mounted when a report is refreshed.
+    readonly tableRows: Signal<IReportTableRows> = computed((): IReportTableRows => ({
+        workspaceKey: this.workspaceKey(),
+        reports: new Map([...this.fileRows()].map(([id, rows]: [string, IDocumentFileRow[]]): [string, IndexedFile[]] =>
+            [id, rows.map((_: IDocumentFileRow, index: number): IndexedFile => ({ index }))]))
+    }), { equal: (previous: IReportTableRows, next: IReportTableRows): boolean => previous.workspaceKey === next.workspaceKey && previous.reports.size === next.reports.size &&
+        [...previous.reports].every(([id, rows]: [string, IndexedFile[]]): boolean => next.reports.get(id)?.length === rows.length) });
+    readonly basename: (path: string) => string = basename;
+    readonly documentNeedsReview: (analysis: SupportingDocument) => boolean = documentNeedsReview;
+
+    readonly timestamp: (value: string) => string = (value: string): string => dateTimeFormat.format(new Date(value));
+    readonly filePath: (file: DocumentFileResult) => string = (file: DocumentFileResult): string => file.status === 'imported' ? file.record.filePath : file.filePath;
+    readonly fileStatus: (file: DocumentFileResult, reviewNeeded: boolean) => "Imported · review needed" | "Imported" | "Skipped duplicate" | "Failed" | "Unsupported" = (file: DocumentFileResult, reviewNeeded: boolean): "Imported · review needed" | "Imported" | "Skipped duplicate" | "Failed" | "Unsupported" => {
+        switch (file.status) {
+            case 'imported': return reviewNeeded ? 'Imported · review needed' : 'Imported';
+            case 'skipped': return 'Skipped duplicate';
+            case 'failed': return 'Failed';
+            case 'unsupported': return 'Unsupported';
+        }
+    };
 
     openFile(reportId: string, index: number): void {
         this.selectedFile.set({ workspaceKey: this.workspaceKey(), reportId, index });
@@ -252,7 +262,7 @@ export class DocumentImports {
     }
 
     aiProgressText(): string {
-        const active: WorkspaceState['documentImport'] = this.aiImport();
+        const active: IWorkspaceState['documentImport'] = this.aiImport();
         if (!active) {
             return 'Checking NuExtract3 availability…';
         }
@@ -263,7 +273,7 @@ export class DocumentImports {
 
     async activateAiRow(reportId: string, fileIndex: number, event: MouseEvent): Promise<void> {
         if (this.isAiPendingRow(reportId, fileIndex)) {
-            const active: WorkspaceState['documentImport'] = this.aiImport();
+            const active: IWorkspaceState['documentImport'] = this.aiImport();
             if (active && !active.cancelling) {
                 this.workspaceCommand.emit({ type: 'cancel-import' });
             }
@@ -276,13 +286,13 @@ export class DocumentImports {
     }
 
     private async reanalyze(reportId: string, fileIndex: number, trigger: HTMLButtonElement): Promise<void> {
-        const workspace: WorkspaceView | null = this.state().workspace;
+        const workspace: IWorkspaceView | null = this.state().workspace;
         const file: DocumentFileResult | undefined = this.fileRows().get(reportId)?.[fileIndex]?.file;
         const format: DocumentFormat | null = file ? this.reanalysisFormat(file) : null;
         if (!workspace || file?.status !== 'imported' || !format || this.state().busy || this.aiPending() || this.aiReview() || !this.detailsCurrent()) {
             return;
         }
-        const context: ReceiptAnalysisContext = {
+        const context: IReceiptAnalysisContext = {
             request: { reportId, fileIndex, loadRevision: workspace.loadRevision },
             workspaceKey: this.workspaceKey(), matchRevision: workspace.matchRevision, name: basename(this.filePath(file)), format, documentId: file.record.id, trigger,
         };
@@ -307,8 +317,8 @@ export class DocumentImports {
         }
     }
 
-    private async requestAiAnalysis(context: ReceiptAnalysisContext): Promise<ReceiptAiPreviewResult> {
-        const nuExtract: NuExtractSettingsStatus = await window.receiptmatch.localOcr({ type: 'status' });
+    private async requestAiAnalysis(context: IReceiptAnalysisContext): Promise<ReceiptAiPreviewResult> {
+        const nuExtract: INuExtractSettingsStatus = await window.receiptmatch.localOcr({ type: 'status' });
         if (!this.currentAiWorkspace(context) || this.aiPending() !== context) {
             return { status: 'cancelled' };
         }
@@ -327,7 +337,7 @@ export class DocumentImports {
         return window.receiptmatch.reanalyzeReceipt(context.request);
     }
 
-    selectAiField(proposal: ReceiptAiProposal, selected: boolean): void {
+    selectAiField(proposal: IReceiptAiProposal, selected: boolean): void {
         if (!proposal.unavailable && !this.aiApplying()) {
             const fields: ReceiptAiField[] = this.aiSelectedFields().filter((field: ReceiptAiField): boolean => field !== proposal.field);
             this.aiSelectedFields.set(selected ? [...fields, proposal.field] : fields);
@@ -341,7 +351,7 @@ export class DocumentImports {
     }
 
     async applyAiReview(): Promise<void> {
-        const review: ReceiptAnalysisReview | null = this.aiReview();
+        const review: IReceiptAnalysisReview | null = this.aiReview();
         if (!review || !this.aiCanApply()) {
             return;
         }
@@ -375,7 +385,7 @@ export class DocumentImports {
 
     discardAiReview(event?: Event): void {
         event?.preventDefault();
-        const review: ReceiptAnalysisReview | null = this.aiReview();
+        const review: IReceiptAnalysisReview | null = this.aiReview();
         if (review && !this.aiApplying()) {
             this.discardAiToken(review);
             this.clearAiReview();
@@ -383,7 +393,7 @@ export class DocumentImports {
         }
     }
 
-    private discardAiToken(review: ReceiptAnalysisReview): void {
+    private discardAiToken(review: IReceiptAnalysisReview): void {
         void window.receiptmatch.discardReceiptAnalysis({ token: review.result.token, loadRevision: review.context.request.loadRevision }).catch((): undefined => undefined);
     }
 
@@ -398,15 +408,15 @@ export class DocumentImports {
         this.aiCurrency.set('');
     }
 
-    private currentAiWorkspace(context: ReceiptAnalysisContext): boolean {
+    private currentAiWorkspace(context: IReceiptAnalysisContext): boolean {
         return !this.destroyed.destroyed && this.workspaceKey() === context.workspaceKey;
     }
 
-    private finishAiRequest(context: ReceiptAnalysisContext, message: string, error: boolean, restoreFocus: boolean = false): void {
+    private finishAiRequest(context: IReceiptAnalysisContext, message: string, error: boolean, restoreFocus: boolean = false): void {
         if (!this.currentAiWorkspace(context)) {
             return;
         }
-        const feedback: ReceiptAnalysisFeedback = { context, message, error };
+        const feedback: IReceiptAnalysisFeedback = { context, message, error };
         this.aiFeedback.set(feedback);
         requestAnimationFrame((): void => {
             if (this.currentAiWorkspace(context) && this.aiFeedback() === feedback && this.active() && (restoreFocus || document.activeElement === document.body)) {
@@ -423,22 +433,22 @@ export class DocumentImports {
         return file.status === 'imported' ? formatDocumentTotal(file.record.result) : null;
     }
 
-    correctField(value: DocumentCorrectionTarget & { change: DocumentCorrectionValue }): void {
-        const workspace: WorkspaceView | null = this.state().workspace;
+    correctField(value: FieldCorrectionChange): void {
+        const workspace: IWorkspaceView | null = this.state().workspace;
         if (workspace && !this.state().busy && this.detailsCurrent()) {
             this.workspaceCommand.emit({ ...value, type: 'correct-document-field', revision: workspace.matchRevision });
         }
     }
 
-    confirmField(value: DocumentFieldReviewTarget & { confirmed: boolean }): void {
-        const workspace: WorkspaceView | null = this.state().workspace;
+    confirmField(value: FieldConfirmationChange): void {
+        const workspace: IWorkspaceView | null = this.state().workspace;
         if (workspace && !this.state().busy && this.detailsCurrent()) {
             this.workspaceCommand.emit({ ...value, type: 'set-document-field-confirmed', revision: workspace.matchRevision });
         }
     }
 
     setFieldDisposition(value: FieldDispositionChange): void {
-        const workspace: WorkspaceView | null = this.state().workspace;
+        const workspace: IWorkspaceView | null = this.state().workspace;
         if (workspace && !this.state().busy && this.detailsCurrent()) {
             this.workspaceCommand.emit({ ...value, type: 'set-document-field-disposition', revision: workspace.matchRevision });
         }
@@ -448,7 +458,7 @@ export class DocumentImports {
         this.retryVersion.update((value: number): number => value + 1);
     }
 
-    reportCounts(report: DocumentImportSummary): string {
+    reportCounts(report: IDocumentImportSummary): string {
         const counts: string[] = [`${report.imported} imported`, `${report.skipped} skipped`, `${report.failed} failed`, `${report.unsupported} unsupported`];
         if (report.directoryIssues) {
             counts.push(`${report.directoryIssues} folder ${report.directoryIssues === 1 ? 'issue' : 'issues'}`);
@@ -457,21 +467,23 @@ export class DocumentImports {
     }
 
     progressText(): string {
-        const current: WorkspaceState['documentImport'] = this.state().documentImport;
+        const current: IWorkspaceState['documentImport'] = this.state().documentImport;
         if (!current || current.localAi) {
             return '';
         }
         if (current.cancelling) {
             return 'Cancelling analysis…';
         }
-        const progress: DocumentImportProgress | null = current.progress;
+        const progress: IDocumentImportProgress | null = current.progress;
         if (!progress) {
             return 'Choose a folder in the dialog.';
         }
         if (progress.phase === 'scanning') {
             return 'Scanning the folder…';
         }
-        const phases: { loading: string; text: string; rendering: string; ocr: string; 'page-complete': string; } = { loading: 'Opening document', text: 'Reading embedded text', rendering: 'Preparing page image', ocr: 'Reading with local OCR', 'page-complete': 'Page read' };
+        const phases: Record<ExtractionProgress['phase'], string> = {
+            loading: 'Opening document', text: 'Reading embedded text', rendering: 'Preparing page image', ocr: 'Reading with local OCR', 'page-complete': 'Page read'
+        };
         const extraction: ExtractionProgress | null = progress.extraction;
         const filename: string = progress.filePath ? ` · ${basename(progress.filePath)}` : '';
         return (extraction ? phases[extraction.phase] : 'Analyzing file') + filename + pageProgress(extraction);

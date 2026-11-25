@@ -4,8 +4,11 @@ import type { BrowserWindow } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import { offerStartupUpdate } from '../../electron/desktop-update.js';
 
-const { check, download, prompt, showError }: { check: Mock; download: Mock; prompt: Mock; showError: Mock } = vi.hoisted(
-  (): { check: Mock; download: Mock; prompt: Mock; showError: Mock } => ({ check: vi.fn(), download: vi.fn(), prompt: vi.fn(), showError: vi.fn() })
+type UpdateMocks = Record<'check' | 'download' | 'prompt' | 'showError', Mock>;
+type UpdateNetSession = Record<'webRequest', Record<'onBeforeRequest', Mock>>;
+
+const { check, download, prompt, showError }: UpdateMocks = vi.hoisted(
+  (): UpdateMocks => ({ check: vi.fn(), download: vi.fn(), prompt: vi.fn(), showError: vi.fn() })
 );
 
 vi.mock('electron', (): object => ({
@@ -20,7 +23,7 @@ vi.mock('node:fs', async (original: () => Promise<typeof import('node:fs')>): Pr
 vi.mock('electron-updater', (): object => {
   class BaseUpdater {
     readonly on: Mock = vi.fn();
-    readonly netSession: { webRequest: { onBeforeRequest: Mock } } = { webRequest: { onBeforeRequest: vi.fn() } };
+    readonly netSession: UpdateNetSession = { webRequest: { onBeforeRequest: vi.fn() } };
     readonly checkForUpdates: Mock = check;
     readonly downloadUpdate: Mock = download;
   }

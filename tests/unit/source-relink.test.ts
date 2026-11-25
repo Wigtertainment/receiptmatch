@@ -1,9 +1,9 @@
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
 import type { StoredDocumentImport, StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
-import type { ReconciliationExportReport } from "../../src/shared/document-export.js";
-import type { DocumentExportReport } from "../../src/shared/document-export.js";
+import type { IReconciliationExportReport } from "../../src/shared/document-export.js";
+import type { IDocumentExportReport } from "../../src/shared/document-export.js";
 import type { OriginalRelinkResult } from "../../src/shared/original-preview.js";
-import type { WorkspaceView } from "../../src/shared/protocol.js";
+import type { IWorkspaceView } from "../../src/shared/protocol.js";
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
@@ -11,14 +11,33 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { test, type TestContext } from 'vitest';
-import { createWorkspace, loadWorkspace, newMetadata, SCHEMA_VERSION, type SavedWorkspace } from '../../electron/store.js';
+import { createWorkspace, loadWorkspace, newMetadata, SCHEMA_VERSION, type ISavedWorkspace } from '../../electron/store.js';
 import { WorkspaceSession } from '../../electron/workspace-session.js';
 import { defaultExportFilenamePattern } from '../../src/shared/export-filename.js';
-import { approvalSelectionFor } from '../../src/shared/match-approvals.js';
+import { approvalSelectionFor, type MatchApproval, type ReviewApprovalState } from '../../src/shared/match-approvals.js';
 import type { OriginalPreviewRequest } from '../../src/shared/original-preview.js';
 import { documentRun, retainedBank, retainedDocument } from './document-fixtures.js';
 
-async function fixture(context: TestContext): Promise<{ root: string; file: string; bank: StoredBankImport; receipt: StoredSupportingDocument; docs: StoredDocumentImport[]; bankPath: string; receiptPath: string; docsExport: string; csvExport: string; session: WorkspaceSession; state: () => WorkspaceView; request: (kind: OriginalPreviewRequest["kind"]) => OriginalPreviewRequest; relink: (kind: OriginalPreviewRequest["kind"], target: string | null) => Promise<OriginalRelinkResult>; approvals: Map<string, { associationRevision: number; approval: { batchId: `${string}-${string}-${string}-${string}-${string}`; approvedAt: string; transactionId: string; documentId: string; transactionRevision: number; documentRevision: number; associationRevision: number; }; }>; calls: () => number; }> {
+type ApprovedReview = Omit<ReviewApprovalState, 'approval'> & Record<'approval', MatchApproval>;
+interface IRelinkFixture {
+	root: string;
+	file: string;
+	bank: StoredBankImport;
+	receipt: StoredSupportingDocument;
+	docs: StoredDocumentImport[];
+	bankPath: string;
+	receiptPath: string;
+	docsExport: string;
+	csvExport: string;
+	session: WorkspaceSession;
+	state: () => IWorkspaceView;
+	request: (kind: OriginalPreviewRequest['kind']) => OriginalPreviewRequest;
+	relink: (kind: OriginalPreviewRequest['kind'], target: string | null) => Promise<OriginalRelinkResult>;
+	approvals: Map<string, ApprovedReview>;
+	calls: () => number;
+}
+
+async function fixture(context: TestContext): Promise<IRelinkFixture> {
 	const root: string = await mkdtemp(path.join(await realpath(tmpdir()), 'receiptmatch-source-relink-'));
 	context.onTestFinished((): Promise<void> => rm(root, { recursive: true, force: true }));
 	const originals: string = path.join(root, 'originals'), moved: string = path.join(root, 'moved');
@@ -32,7 +51,7 @@ async function fixture(context: TestContext): Promise<{ root: string; file: stri
 	await Promise.all([writeFile(bank.filePath, bankBytes), writeFile(receipt.filePath, 'approved synthetic bytes')]);
 	await Promise.all([rename(bank.filePath, bankPath), rename(receipt.filePath, receiptPath)]);
 	const transactionId: string = bank.transactions[0].transactionId;
-	const approvals: Map<string, { associationRevision: number; approval: { batchId: `${string}-${string}-${string}-${string}-${string}`; approvedAt: string; transactionId: string; documentId: string; transactionRevision: number; documentRevision: number; associationRevision: number; }; }> = new Map([[transactionId, { associationRevision: 1, approval: {
+	const approvals: Map<string, ApprovedReview> = new Map([[transactionId, { associationRevision: 1, approval: {
 		...approvalSelectionFor(transactionId, receipt.id), batchId: randomUUID(), approvedAt: '2032-06-01T12:00:00Z',
 	} }]]);
 	const file: string = path.join(root, 'relink.receiptmatch');
@@ -45,7 +64,7 @@ async function fixture(context: TestContext): Promise<{ root: string; file: stri
 			calls++; return Promise.resolve(selected);
 		} });
 	await session.dispatch({ type: 'open' });
-	const state: () => WorkspaceView = (): WorkspaceView => session.state().workspace!;
+	const state: () => IWorkspaceView = (): IWorkspaceView => session.state().workspace!;
 
 	const request: (kind: OriginalPreviewRequest["kind"]) => OriginalPreviewRequest = (kind: OriginalPreviewRequest['kind']): OriginalPreviewRequest =>
 		({ kind, id: kind === 'statement' ? bank.id : receipt.id, loadRevision: state().loadRevision });
@@ -72,18 +91,18 @@ test('relinks both source types, preserves provenance and approval, and uses the
 	assert.deepEqual(session.bankImports(), [bank]);
 	assert.deepEqual(session.documentImports(), docs);
 	assert.deepEqual(await readFile(file), before);
-	const copy: DocumentExportReport = await session.exportApprovedDocuments(state().loadRevision, docsExport, defaultExportFilenamePattern);
+	const copy: IDocumentExportReport = await session.exportApprovedDocuments(state().loadRevision, docsExport, defaultExportFilenamePattern);
 	assert.equal(copy.outcomes[0].status, 'copied');
 	assert.equal(copy.outcomes[0].sourcePath, receiptPath);
 	assert.equal((await session.dispatch({ type: 'save' })).error, null);
 	assert.equal(state().dirty, false);
-	const saved: SavedWorkspace = await loadWorkspace(file);
+	const saved: ISavedWorkspace = await loadWorkspace(file);
 	assert.equal(saved.sourceRelocations.get(bank.result.sourceProvenance!.sourceId), bankPath);
 	assert.equal(saved.sourceRelocations.get(receipt.result.input!.source.sourceId), receiptPath);
 	assert.deepEqual(saved.reviewApprovals, approvals);
 	await session.dispatch({ type: 'open' });
 	assert.equal(session.originalSource(request('document'))?.filePath, receiptPath);
-	const exported: ReconciliationExportReport = await session.exportReconciliation(state().loadRevision, csvExport, defaultExportFilenamePattern);
+	const exported: IReconciliationExportReport = await session.exportReconciliation(state().loadRevision, csvExport, defaultExportFilenamePattern);
 	assert.equal(exported.csv.status, 'written');
 	assert.equal(exported.documentCopies.outcomes[0].status, 'copied');
 	const csv: string = await readFile(exported.csv.filePath, 'utf8');
@@ -127,7 +146,7 @@ test('opens a version 9 workspace and migrates its source links only on save', a
 	assert.deepEqual(await relink('document', receiptPath), { status: 'linked' });
 	assert.deepEqual(await readFile(file), before);
 	assert.equal((await session.dispatch({ type: 'save' })).error, null);
-	const saved: SavedWorkspace = await loadWorkspace(file);
+	const saved: ISavedWorkspace = await loadWorkspace(file);
 	assert.equal(saved.schemaVersion, SCHEMA_VERSION);
 	assert.deepEqual([...saved.sourceRelocations.values()], [receiptPath]);
 });

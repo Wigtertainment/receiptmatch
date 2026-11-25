@@ -7,6 +7,10 @@ import Database from 'better-sqlite3';
 import { createWorkspace, newMetadata } from '../../electron/store.js';
 import { documentRun, retainedBank, retainedDocument } from '../unit/document-fixtures.js';
 
+interface IExportSettingsView { app: ElectronApplication; page: Page; input: Locator; preview: Locator; save: Locator }
+interface ISelectedOpenDialog { canceled: false; filePaths: string[] }
+interface IExportPaths { workspacePath: string; destination: string; reportOnly: string; combined: string }
+
 const executablePath: string = path.resolve(process.platform === 'win32' ? 'release/win-unpacked/ReceiptMatch.exe' : 'release/linux-unpacked/receiptmatch');
 
 test('previews, validates and saves an export filename pattern across Electron restarts', async ({ playwright }: PlaywrightTestArgs & PlaywrightTestOptions & PlaywrightWorkerArgs & PlaywrightWorkerOptions, testInfo: TestInfo): Promise<void> => {
@@ -15,14 +19,14 @@ test('previews, validates and saves an export filename pattern across Electron r
 	const workspacePath: string = path.join(root, 'workspace.receiptmatch');
 	await createWorkspace(workspacePath, newMetadata());
 	const profile: string = path.join(root, 'profile');
-	const launch: () => Promise<{ app: ElectronApplication; page: Page; input: Locator; preview: Locator; save: Locator; }> = async (): Promise<{ app: ElectronApplication; page: Page; input: Locator; preview: Locator; save: Locator; }> => {
+	const launch: () => Promise<IExportSettingsView> = async (): Promise<IExportSettingsView> => {
 		const app: ElectronApplication = await playwright._electron.launch({ executablePath, args: ['--hidden', '--disable-gpu', '--user-data-dir=' + profile] });
 		try {
 			const page: Page = await app.firstWindow();
 			expect(await app.evaluate(({ app: electronApp }: typeof Electron.CrossProcessExports): string => electronApp.getPath('userData'))).toBe(profile);
 			await app.evaluate(({ BrowserWindow, dialog }: typeof Electron.CrossProcessExports, filePath: string): void => {
 				BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
-				dialog.showOpenDialog = async (): Promise<{ canceled: false; filePaths: string[]; }> => Promise.resolve(({ canceled: false, filePaths: [filePath] }));
+				dialog.showOpenDialog = async (): Promise<ISelectedOpenDialog> => Promise.resolve(({ canceled: false, filePaths: [filePath] }));
 			}, workspacePath);
 			await page.getByRole('button', { name: 'Open workspace' }).click();
 			const exportNav: Locator = page.getByRole('navigation', { name: 'Workspace views' }).getByRole('button', { name: 'Export', exact: true });
@@ -38,7 +42,7 @@ test('previews, validates and saves an export filename pattern across Electron r
 		}
 	};
 
-	const first: { app: ElectronApplication; page: Page; input: Locator; preview: Locator; save: Locator; } = await launch();
+	const first: IExportSettingsView = await launch();
 	try {
 		await expect(first.preview).toHaveText('2026-10-21_Example-Merchant_EUR_-176.77.pdf');
 		await first.input.fill('../{date}');
@@ -53,7 +57,7 @@ test('previews, validates and saves an export filename pattern across Electron r
 		await first.app.close();
 	}
 
-	const second: { app: ElectronApplication; page: Page; input: Locator; preview: Locator; save: Locator; } = await launch();
+	const second: IExportSettingsView = await launch();
 	try {
 		await expect(second.input).toHaveValue('{counterparty} - {date}');
 		await second.page.getByRole('button', { name: 'Use default' }).click();
@@ -80,7 +84,7 @@ test('exports copies and the saved reconciliation CSV and shows mixed outcomes a
 	const secondFolder: string = path.join(originals, 'second');
 	await Promise.all([firstFolder, secondFolder, destination, reportOnly, combined].map((folder: string): Promise<string | undefined> => mkdir(folder, { recursive: true })));
 	const bank: StoredBankImport = retainedBank(root);
-	const [first, second]: { rowId: string; transactionId: string; }[] = bank.transactions;
+	const [first, second]: StoredBankImport['transactions'][number][] = bank.transactions;
 	const approved: StoredSupportingDocument = retainedDocument(firstFolder, 'receipt.pdf', 'verified original');
 	const missing: StoredSupportingDocument = retainedDocument(secondFolder, 'receipt.pdf');
 	await writeFile(approved.filePath, 'verified original');
@@ -96,14 +100,15 @@ test('exports copies and the saved reconciliation CSV and shows mixed outcomes a
 	try {
 		const page: Page = await app.firstWindow();
 		expect(await app.evaluate(({ app: electronApp }: typeof Electron.CrossProcessExports): string => electronApp.getPath('userData'))).toBe(profile);
-		await app.evaluate(({ BrowserWindow, dialog }: typeof Electron.CrossProcessExports, { workspacePath, destination, reportOnly, combined }: { workspacePath: string; destination: string; reportOnly: string; combined: string; }): void => {
+		await app.evaluate(({ BrowserWindow, dialog }: typeof Electron.CrossProcessExports, { workspacePath, destination, reportOnly, combined }: IExportPaths): void => {
 			const paths: (string | null)[] = [workspacePath, null, destination, destination, reportOnly, combined, combined];
 			BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
-			dialog.showOpenDialog = async (): Promise<{ canceled: boolean; filePaths: string[]; }> => {
+			dialog.showOpenDialog = async (): Promise<Electron.OpenDialogReturnValue> => {
 				const file: string | null | undefined = paths.shift();
 				return Promise.resolve({ canceled: !file, filePaths: file ? [file] : [] });
 			};
-			dialog.showMessageBox = async (): Promise<{ response: number; checkboxChecked: false; }> => Promise.resolve(({ response: 1, checkboxChecked: false }));
+			dialog.showMessageBox = async (): Promise<Pick<Electron.MessageBoxReturnValue, 'response'> & Record<'checkboxChecked', false>> =>
+				Promise.resolve(({ response: 1, checkboxChecked: false }));
 		}, { workspacePath, destination, reportOnly, combined });
 		await page.getByRole('button', { name: 'Open workspace' }).click();
 		const nav: Locator = page.getByRole('navigation', { name: 'Workspace views' });

@@ -12,7 +12,7 @@ import { documentCorrectionKey, documentCorrectionValueSchema, missingDocumentCo
 import { activeDocumentFieldDisposition, documentFieldConfirmationIssue, isDocumentFieldConfirmed, type DocumentFieldDisposition, type DocumentFieldReview,
     type DocumentFieldReviewTarget } from '../../shared/document-field-reviews.js';
 import { documentIssueNeedsReview } from '../../shared/document-review-presentation.js';
-import { sameMoneyValue } from '../../shared/money.js';
+import { sameMoneyValue, type Money } from '../../shared/money.js';
 import type { OriginalDocumentFields } from '../../shared/protocol.js';
 import type { DocumentIssue, DocumentSection, SupportingDocument } from '../../shared/supporting-document.js';
 import type { DocumentFormat } from '../../shared/workspace-documents.js';
@@ -42,7 +42,7 @@ const referenceRoles: Record<DocumentSection['references'][number]['role'], stri
 const currencyRoles: Record<DocumentSection['currencies'][number]['role'], string> = {
     settlement: 'Settlement currency', 'informational-fx': 'Informational exchange currency', unknown: 'Currency'
 };
-interface FieldCorrectionView {
+interface IFieldCorrectionView {
     target: DocumentCorrectionTarget;
     kind: DocumentCorrectionValue['kind'];
     role: string;
@@ -52,13 +52,26 @@ interface FieldCorrectionView {
     key: string;
     corrected: DocumentCorrection | undefined;
 }
-interface FieldCorrectionEditor extends FieldCorrectionView { applied: boolean; }
-interface FieldView {
+interface IFieldCorrectionEditor extends IFieldCorrectionView { applied: boolean; }
+interface IFieldView {
     id: string; role: string; label: string; values: string[]; evidence: SourceEvidence[]; issues: DocumentIssue[];
-    reviewNeeded: boolean; originalValues?: string[]; correction?: FieldCorrectionView; confirmedByUser?: true;
+    reviewNeeded: boolean; originalValues?: string[]; correction?: IFieldCorrectionView; confirmedByUser?: true;
 }
-interface FieldConfirmationView { confirmed: boolean; issue: string | null; disposition: DocumentFieldDisposition | null; }
-export type FieldDispositionChange = DocumentFieldReviewTarget & { disposition: DocumentFieldDisposition | null; };
+interface IFieldConfirmationView { confirmed: boolean; issue: string | null; disposition: DocumentFieldDisposition | null; }
+interface IFieldEdit { field: IFieldCorrectionView; trigger: HTMLElement; originalRevision: number | undefined; }
+interface ISectionView {
+    id: string; kind: string; evidence: SourceEvidence[]; pages: (number | 'Unknown')[]; missingFields: IFieldCorrectionView[]; fields: IFieldView[];
+}
+
+type ContextualIssue<T extends DocumentIssue | ImportIssue> = T & Record<'context', string>;
+type AmountField = DocumentSection['amounts'][number];
+type AmountCandidate = AmountField['candidates'][number];
+type DateField = DocumentSection['dates'][number];
+type CurrencyField = DocumentSection['currencies'][number];
+type RequestedConfirmation = Pick<FieldConfirmationChange, 'documentId' | 'fieldId' | 'confirmed'>;
+export type FieldConfirmationChange = DocumentFieldReviewTarget & Record<'confirmed', boolean>;
+export type FieldCorrectionChange = DocumentCorrectionTarget & Record<'change', DocumentCorrectionValue>;
+export type FieldDispositionChange = DocumentFieldReviewTarget & Record<'disposition', DocumentFieldDisposition | null>;
 
 @Component({
     selector: 'app-document-analysis', standalone: true,
@@ -66,6 +79,32 @@ export type FieldDispositionChange = DocumentFieldReviewTarget & { disposition: 
     templateUrl: './document-analysis.component.html'
 })
 export class DocumentAnalysis {
+    constructor() {
+        afterRenderEffect((): void => {
+            const trigger: HTMLElement | null = this.confirmationTrigger();
+            if (!trigger || this.busy() || (!this.confirmationFeedback() && !this.workspaceError())) {
+                return;
+            }
+            this.confirmationTrigger.set(null);
+            if (trigger.isConnected && (document.activeElement === document.body || document.activeElement === trigger)) {
+                trigger.focus();
+            }
+        });
+
+        afterRenderEffect((): void => {
+            const trigger: HTMLElement | null = this.dispositionTrigger();
+            const requested: FieldDispositionChange | null = this.requestedDisposition();
+            if (!trigger || requested?.documentId !== this.documentId() || this.busy() || (!this.dispositionFeedback() && !this.workspaceError())) {
+                return;
+            }
+            this.dispositionTrigger.set(null);
+            if (document.activeElement === document.body || document.activeElement === trigger) {
+                const next: HTMLElement | null = trigger.isConnected ? trigger : document.getElementById(this.decisionActionsId(requested.fieldId))?.querySelector('button') ?? null;
+                next?.focus();
+            }
+        });
+    }
+
     readonly analysis: InputSignal<SupportingDocument> = input.required<SupportingDocument>();
     readonly fieldHeading: InputSignal<string> = input('Extracted fields');
     readonly format: InputSignal<"png" | "pdf" | "jpeg" | null> = input<DocumentFormat | null>(null);
@@ -90,7 +129,7 @@ export class DocumentAnalysis {
         }
         return values;
     });
-    readonly confirmation: OutputEmitterRef<DocumentFieldReviewTarget & { confirmed: boolean; }> = output<DocumentFieldReviewTarget & { confirmed: boolean }>();
+    readonly confirmation: OutputEmitterRef<FieldConfirmationChange> = output<FieldConfirmationChange>();
     readonly disposition: OutputEmitterRef<FieldDispositionChange> = output<FieldDispositionChange>();
     private readonly requestedDisposition: WritableSignal<FieldDispositionChange | null> = signal<FieldDispositionChange | null>(null);
     private readonly dispositionTrigger: WritableSignal<HTMLElement | null> = signal<HTMLElement | null>(null);
@@ -102,19 +141,19 @@ export class DocumentAnalysis {
         }
         return requested.disposition === null ? 'Field decision reset.' : requested.disposition === 'rejected' ? 'Recognition excluded from matching.' : 'Field marked as not determinable and excluded from matching.';
     });
-    private readonly requestedConfirmation: WritableSignal<{ documentId: string; fieldId: string; confirmed: boolean; } | null> = signal<{ documentId: string; fieldId: string; confirmed: boolean } | null>(null);
+    private readonly requestedConfirmation: WritableSignal<RequestedConfirmation | null> = signal<RequestedConfirmation | null>(null);
     private readonly confirmationTrigger: WritableSignal<HTMLElement | null> = signal<HTMLElement | null>(null);
     readonly confirmationFeedback: Signal<string> = computed((): string => {
-        const requested: { documentId: string; fieldId: string; confirmed: boolean; } | null = this.requestedConfirmation();
+        const requested: RequestedConfirmation | null = this.requestedConfirmation();
         if (requested?.documentId !== this.documentId() || this.busy() || this.confirmationStates().get(requested.fieldId)?.confirmed !== requested.confirmed) {
             return '';
         }
         return requested.confirmed ? 'Field value confirmed.' : 'Field confirmation withdrawn.';
     });
-    readonly confirmationStates: Signal<ReadonlyMap<string, FieldConfirmationView>> = computed((): ReadonlyMap<string, FieldConfirmationView> => {
+    readonly confirmationStates: Signal<ReadonlyMap<string, IFieldConfirmationView>> = computed((): ReadonlyMap<string, IFieldConfirmationView> => {
         const analysis: SupportingDocument = this.analysis();
         const documentId: string | null = this.documentId();
-        const states: Map<string, FieldConfirmationView> = new Map<string, FieldConfirmationView>();
+        const states: Map<string, IFieldConfirmationView> = new Map<string, IFieldConfirmationView>();
         if (documentId) {
             for (const section of analysis.sections) {
                 for (const field of [...section.amounts, ...section.dates, ...section.merchants, ...section.references, ...section.currencies]) {
@@ -133,12 +172,12 @@ export class DocumentAnalysis {
     readonly original: InputSignal<OriginalDocumentFields | null> = input<OriginalDocumentFields | null>(null);
     readonly corrections: InputSignal<ReadonlyMap<string, DocumentCorrection> | null> = input<ReadonlyMap<string, DocumentCorrection> | null>(null);
     readonly correctionsEnabled: InputSignal<boolean> = input(true);
-    readonly correction: OutputEmitterRef<DocumentCorrectionTarget & { change: DocumentCorrectionValue; }> = output<DocumentCorrectionTarget & { change: DocumentCorrectionValue }>();
+    readonly correction: OutputEmitterRef<FieldCorrectionChange> = output<FieldCorrectionChange>();
     readonly sourceOpen: WritableSignal<boolean> = signal(false);
     readonly openDetails: WritableSignal<ReadonlySet<string>> = signal<ReadonlySet<string>>(new Set());
-    private readonly edit: WritableSignal<{ field: FieldCorrectionView; trigger: HTMLElement; originalRevision: number | undefined; } | null> = signal<{ field: FieldCorrectionView; trigger: HTMLElement; originalRevision: number | undefined } | null>(null);
-    readonly editing: Signal<FieldCorrectionEditor | null> = computed((): FieldCorrectionEditor | null => {
-        const edit: { field: FieldCorrectionView; trigger: HTMLElement; originalRevision: number | undefined; } | null = this.edit();
+    private readonly edit: WritableSignal<IFieldEdit | null> = signal<IFieldEdit | null>(null);
+    readonly editing: Signal<IFieldCorrectionEditor | null> = computed((): IFieldCorrectionEditor | null => {
+        const edit: IFieldEdit | null = this.edit();
         if (edit?.field.target.documentId !== this.documentId()) {
             return null;
         }
@@ -157,9 +196,8 @@ export class DocumentAnalysis {
     readonly units: Signal<"PDF points" | "pixels"> = computed((): "PDF points" | "pixels" => this.format() === 'pdf' ? 'PDF points' : 'pixels');
     readonly pages: Signal<ImportPage[]> = computed((): ImportPage[] => this.analysis().input?.pages ?? []);
     private readonly pageNumbers: Signal<Map<string, number>> = computed((): Map<string, number> => new Map(this.pages().map((page: ImportPage): [string, number] => [page.pageId, page.pageNumber])));
-    readonly extractionLabel: (method: SourceEvidence["method"]) => string = (method: SourceEvidence['method']): string => extractionLabels[method];
     readonly regionText: ({ x, y, width, height }: PositionedSpan["region"]) => string = regionText;
-    readonly generalIssues: Signal<({ context: string; code: string; severity: "error" | "warning"; message: string; sectionId: string | null; fieldId: string | null; field: string | null; evidence: SourceEvidence[]; } | { context: string; code: string; severity: "error" | "warning"; message: string; pageId: string | null; rowId: string | null; field: string | null; evidence: SourceEvidence[]; })[]> = computed((): ({ context: string; code: string; severity: "error" | "warning"; message: string; sectionId: string | null; fieldId: string | null; field: string | null; evidence: SourceEvidence[]; } | { context: string; code: string; severity: "error" | "warning"; message: string; pageId: string | null; rowId: string | null; field: string | null; evidence: SourceEvidence[]; })[] => {
+    readonly generalIssues: Signal<ContextualIssue<DocumentIssue | ImportIssue>[]> = computed((): ContextualIssue<DocumentIssue | ImportIssue>[] => {
         const analysis: SupportingDocument = this.analysis();
         const extractionIssues: ImportIssue[] = analysis.input?.issues ?? [];
         const signature: ({ code, message, field, evidence }: Pick<ImportIssue, "code" | "message" | "field" | "evidence">) => string = ({ code, message, field, evidence }: Pick<ImportIssue, 'code' | 'message' | 'field' | 'evidence'>): string =>
@@ -167,14 +205,14 @@ export class DocumentAnalysis {
         const extractionSignatures: Set<string> = new Set(extractionIssues.map(signature));
         return [
             ...analysis.issues.filter((issue: DocumentIssue): boolean => issue.fieldId === null && (issue.sectionId !== null || !extractionSignatures.has(signature(issue))))
-                .map((issue: DocumentIssue): { context: string; code: string; severity: "error" | "warning"; message: string; sectionId: string | null; fieldId: string | null; field: string | null; evidence: SourceEvidence[]; } => ({ ...issue, context: this.issueContext(issue) })),
-            ...extractionIssues.map((issue: ImportIssue): { context: string; code: string; severity: "error" | "warning"; message: string; pageId: string | null; rowId: string | null; field: string | null; evidence: SourceEvidence[]; } => ({
+                .map((issue: DocumentIssue): ContextualIssue<DocumentIssue> => ({ ...issue, context: this.issueContext(issue) })),
+            ...extractionIssues.map((issue: ImportIssue): ContextualIssue<ImportIssue> => ({
                 ...issue, context: [issue.severity === 'error' ? 'Error' : 'Warning', issue.pageId && `Page ${this.pageNumber(issue.pageId)}`,
                     issue.field?.replaceAll('-', ' ')].filter(Boolean).join(' · ')
             }))
         ];
     });
-    readonly sections: Signal<{ id: string; kind: string; evidence: SourceEvidence[]; pages: (number | "Unknown")[]; missingFields: FieldCorrectionView[]; fields: FieldView[]; }[]> = computed((): { id: string; kind: string; evidence: SourceEvidence[]; pages: (number | "Unknown")[]; missingFields: FieldCorrectionView[]; fields: FieldView[]; }[] => {
+    readonly sections: Signal<ISectionView[]> = computed((): ISectionView[] => {
         const analysis: SupportingDocument = this.analysis();
         const fieldIssues: Map<string, DocumentIssue[]> = new Map<string, DocumentIssue[]>();
 
@@ -194,9 +232,9 @@ export class DocumentAnalysis {
                 missingBySection.set(issue.sectionId, missing);
             }
         }
-        type SourceField = Pick<FieldView, 'id' | 'label' | 'evidence' | 'confirmedByUser'>;
-        const field: (source: SourceField, role: string, values: string[], correction?: FieldCorrectionView, originalValues?: string[]) => FieldView =
-            (source: SourceField, role: string, values: string[], correction?: FieldCorrectionView, originalValues?: string[]): FieldView => {
+        type SourceField = Pick<IFieldView, 'id' | 'label' | 'evidence' | 'confirmedByUser'>;
+        const field: (source: SourceField, role: string, values: string[], correction?: IFieldCorrectionView, originalValues?: string[]) => IFieldView =
+            (source: SourceField, role: string, values: string[], correction?: IFieldCorrectionView, originalValues?: string[]): IFieldView => {
             const issues: DocumentIssue[] = fieldIssues.get(source.id) ?? [];
             return { ...source, role, values, issues, reviewNeeded: issues.some((issue: DocumentIssue): boolean => documentIssueNeedsReview(issue, analysis)), correction, originalValues };
         };
@@ -204,70 +242,79 @@ export class DocumentAnalysis {
         const corrections: ReadonlyMap<string, DocumentCorrection> | null = this.corrections();
         const canEdit: boolean = documentId !== null && this.correctionsEnabled();
         const originalSections: Map<string, DocumentSection> = new Map((this.original()?.sections ?? analysis.sections).map((section: DocumentSection): [string, DocumentSection] => [section.sectionId, section]));
-        return analysis.sections.map((section: DocumentSection): { id: string; kind: string; evidence: SourceEvidence[]; pages: (number | "Unknown")[]; missingFields: FieldCorrectionView[]; fields: FieldView[]; } => {
+        return analysis.sections.map((section: DocumentSection): ISectionView => {
             const original: DocumentSection = originalSections.get(section.sectionId)!;
-            const originalAmounts: Map<string, { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }> = new Map(original.amounts.map((value: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): [string, { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }] => [value.id, value]));
-            const originalDates: Map<string, { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }> = new Map(original.dates.map((value: { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): [string, { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }] => [value.id, value]));
-            const declared: string[] = [...new Set(section.currencies.filter((value: { role: "unknown" | "informational-fx" | "settlement"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => value.role === 'settlement').flatMap((value: { role: "unknown" | "informational-fx" | "settlement"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): string[] => value.candidates))];
-            const editable: (fieldId: string | null, kind: DocumentCorrectionValue['kind'], role: string, inputValue?: string, currency?: string, fieldRole?: string) => FieldCorrectionView | undefined =
-                (fieldId: string | null, kind: DocumentCorrectionValue['kind'], role: string, inputValue: string = '', currency: string = '', fieldRole?: string): FieldCorrectionView | undefined => {
+            const originalAmounts: Map<string, AmountField> = new Map(original.amounts.map((value: AmountField): [string, AmountField] => [value.id, value]));
+            const originalDates: Map<string, DateField> = new Map(original.dates.map((value: DateField): [string, DateField] => [value.id, value]));
+            const declared: string[] = [...new Set(section.currencies.filter((value: CurrencyField): boolean => value.role === 'settlement')
+                .flatMap((value: CurrencyField): string[] => value.candidates))];
+            const editable: (
+                fieldId: string | null, kind: DocumentCorrectionValue['kind'], role: string, inputValue?: string, currency?: string, fieldRole?: string
+            ) => IFieldCorrectionView | undefined = (
+                fieldId: string | null, kind: DocumentCorrectionValue['kind'], role: string, inputValue: string = '', currency: string = '', fieldRole?: string
+            ): IFieldCorrectionView | undefined => {
                 if (!documentId || !this.correctionsEnabled()) {
                     return undefined;
                 }
-                const target: { documentId: string; sectionId: string; fieldId: string | null; } = { documentId, sectionId: section.sectionId, fieldId };
+                const target: DocumentCorrectionTarget = { documentId, sectionId: section.sectionId, fieldId };
                 const key: string = documentCorrectionKey(target, kind, fieldRole);
                 return { target, kind, role, fieldRole, inputValue, currency, key, corrected: corrections?.get(key) };
             };
-            const missingFields: FieldCorrectionView[] = [];
+            const missingFields: IFieldCorrectionView[] = [];
             const missing: Set<string> | undefined = missingBySection.get(section.sectionId);
             if (documentId && this.correctionsEnabled() && missing && section.kind !== 'unknown') {
                 const totalRole: "billed-total" | "credit-note-component" = section.kind === 'credit-note' ? 'credit-note-component' : 'billed-total';
-                if (missing.has('billed-total') && !original.amounts.some((value: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => value.role === totalRole)) {
+                if (missing.has('billed-total') && !original.amounts.some((value: AmountField): boolean => value.role === totalRole)) {
                     missingFields.push(editable(null, 'amount', amountRoles[totalRole], '', declared.length === 1 ? declared[0] : '')!);
                 }
-                if (missing.has('issue') && !original.dates.some((value: { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => value.role === 'issue')) {
+                if (missing.has('issue') && !original.dates.some((value: DateField): boolean => value.role === 'issue')) {
                     missingFields.push(editable(null, 'date', 'Issue date')!);
                 }
             }
-            const additional: FieldCorrectionView[] = canEdit ? missingDocumentCorrectionFields(original).map(
-                (slot: ReturnType<typeof missingDocumentCorrectionFields>[number]): FieldCorrectionView => editable(null, slot.kind, slot.label, '', '', slot.role)!) : [];
+            const additional: IFieldCorrectionView[] = canEdit ? missingDocumentCorrectionFields(original).map(
+                (slot: ReturnType<typeof missingDocumentCorrectionFields>[number]): IFieldCorrectionView => editable(null, slot.kind, slot.label, '', '', slot.role)!) : [];
             missingFields.push(...additional);
             return {
                 id: section.sectionId, kind: kinds[section.kind], evidence: section.evidence, pages: section.pageIds.map((pageId: string): number | "Unknown" => this.pageNumber(pageId)), missingFields,
                 fields: [
-                    ...section.amounts.filter((value: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => !documentId || originalAmounts.has(value.id) || value.evidence.length > 0).map((value: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): FieldView => {
-                        const previous: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; } | undefined = originalAmounts.get(value.id);
-                        const currencies: string[] = [...new Set(value.candidates.flatMap((candidate: { coefficient: string; scale: number; currency: string | null; }): string[] => candidate.currency ? [candidate.currency] : []))];
-                        const currency: string = currencies.length === 1 ? currencies[0] : !currencies.length && declared.length === 1 ? declared[0] : '';
-                        const initial: string = value.candidates.length === 1 ? formatAmountEntry(value.candidates[0]) : '';
-                        return field(value, amountRoles[value.role], value.candidates.map((candidate: { coefficient: string; scale: number; currency: string | null; }): string => formatMoney(candidate)),
-                            previous ? editable(value.id, 'amount', amountRoles[value.role], initial, currency) : undefined,
-                            previous?.candidates.map((candidate: { coefficient: string; scale: number; currency: string | null; }): string => formatMoney(candidate)));
-                    }),
-                    ...section.dates.filter((value: { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => !documentId || originalDates.has(value.id) || value.evidence.length > 0).map((value: { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): FieldView => {
-                        const previous: { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; } | undefined = originalDates.get(value.id);
-                        return field(value, dateRoles[value.role], value.candidates.map((candidate: string): string => formatCalendarDate(candidate)),
-                            previous ? editable(value.id, 'date', dateRoles[value.role], value.candidates.length === 1 ? value.candidates[0] : '') : undefined,
-                            previous?.candidates.map((candidate: string): string => formatCalendarDate(candidate)));
-                    }),
+                    ...section.amounts.filter((value: AmountField): boolean => !documentId || originalAmounts.has(value.id) || value.evidence.length > 0)
+                        .map((value: AmountField): IFieldView => {
+                            const previous: AmountField | undefined = originalAmounts.get(value.id);
+                            const currencies: string[] = [...new Set(value.candidates.flatMap((candidate: AmountCandidate): string[] => candidate.currency ? [candidate.currency] : []))];
+                            const currency: string = currencies.length === 1 ? currencies[0] : !currencies.length && declared.length === 1 ? declared[0] : '';
+                            const initial: string = value.candidates.length === 1 ? formatAmountEntry(value.candidates[0]) : '';
+                            return field(value, amountRoles[value.role], value.candidates.map((candidate: AmountCandidate): string => formatMoney(candidate)),
+                                previous ? editable(value.id, 'amount', amountRoles[value.role], initial, currency) : undefined,
+                                previous?.candidates.map((candidate: AmountCandidate): string => formatMoney(candidate)));
+                        }),
+                    ...section.dates.filter((value: DateField): boolean => !documentId || originalDates.has(value.id) || value.evidence.length > 0)
+                        .map((value: DateField): IFieldView => {
+                            const previous: DateField | undefined = originalDates.get(value.id);
+                            return field(value, dateRoles[value.role], value.candidates.map((candidate: string): string => formatCalendarDate(candidate)),
+                                previous ? editable(value.id, 'date', dateRoles[value.role], value.candidates.length === 1 ? value.candidates[0] : '') : undefined,
+                                previous?.candidates.map((candidate: string): string => formatCalendarDate(candidate)));
+                        }),
                     ...section.merchants.filter((value: DocumentSection['merchants'][number]): boolean => !documentId || original.merchants.some((item: DocumentSection['merchants'][number]): boolean => item.id === value.id) || value.evidence.length > 0)
-                        .map((value: DocumentSection['merchants'][number]): FieldView => field(value, 'Merchant', value.candidates,
+                        .map((value: DocumentSection['merchants'][number]): IFieldView => field(value, 'Merchant', value.candidates,
                             editable(value.id, 'merchant', 'Merchant', value.candidates.length === 1 ? value.candidates[0] : ''),
                             original.merchants.find((item: DocumentSection['merchants'][number]): boolean => item.id === value.id)?.candidates)),
                     ...section.references.filter((value: DocumentSection['references'][number]): boolean => !documentId || original.references.some((item: DocumentSection['references'][number]): boolean => item.id === value.id) || value.evidence.length > 0)
-                        .map((value: DocumentSection['references'][number]): FieldView => field(value, referenceRoles[value.role], value.candidates,
+                        .map((value: DocumentSection['references'][number]): IFieldView => field(value, referenceRoles[value.role], value.candidates,
                             editable(value.id, 'reference', referenceRoles[value.role], value.candidates.length === 1 ? value.candidates[0] : '', '', value.role),
                             original.references.find((item: DocumentSection['references'][number]): boolean => item.id === value.id)?.candidates)),
                     ...section.currencies.filter((value: DocumentSection['currencies'][number]): boolean => !documentId || original.currencies.some((item: DocumentSection['currencies'][number]): boolean => item.id === value.id) || value.evidence.length > 0)
-                        .map((value: DocumentSection['currencies'][number]): FieldView => field(value, currencyRoles[value.role], value.candidates,
+                        .map((value: DocumentSection['currencies'][number]): IFieldView => field(value, currencyRoles[value.role], value.candidates,
                             editable(value.id, 'currency', currencyRoles[value.role], value.candidates.length === 1 ? value.candidates[0] : '', '', value.role),
                             original.currencies.find((item: DocumentSection['currencies'][number]): boolean => item.id === value.id)?.candidates))
                 ]
             };
         });
     });
-    readonly hasFields: Signal<boolean> = computed((): boolean => this.sections().some((section: { id: string; kind: string; evidence: SourceEvidence[]; pages: (number | "Unknown")[]; missingFields: FieldCorrectionView[]; fields: FieldView[]; }): boolean => section.fields.length > 0));
+    readonly hasFields: Signal<boolean> = computed((): boolean => this.sections().some((section: ISectionView): boolean => section.fields.length > 0));
     private readonly sectionNumbers: Signal<Map<string, number>> = computed((): Map<string, number> => new Map(this.analysis().sections.map((section: DocumentSection, index: number): [string, number] => [section.sectionId, index + 1])));
+
+    readonly extractionLabel: (method: SourceEvidence["method"]) => string = (method: SourceEvidence['method']): string => extractionLabels[method];
+
     pageNumber(pageId: string): number | "Unknown" {
         return this.pageNumbers().get(pageId) ?? 'Unknown';
     }
@@ -301,32 +348,6 @@ export class DocumentAnalysis {
         this.sourceOpen.set(expanded(event));
     }
 
-    constructor() {
-        afterRenderEffect((): void => {
-            const trigger: HTMLElement | null = this.confirmationTrigger();
-            if (!trigger || this.busy() || (!this.confirmationFeedback() && !this.workspaceError())) {
-                return;
-            }
-            this.confirmationTrigger.set(null);
-            if (trigger.isConnected && (document.activeElement === document.body || document.activeElement === trigger)) {
-                trigger.focus();
-            }
-        });
-
-        afterRenderEffect((): void => {
-            const trigger: HTMLElement | null = this.dispositionTrigger();
-            const requested: FieldDispositionChange | null = this.requestedDisposition();
-            if (!trigger || requested?.documentId !== this.documentId() || this.busy() || (!this.dispositionFeedback() && !this.workspaceError())) {
-                return;
-            }
-            this.dispositionTrigger.set(null);
-            if (document.activeElement === document.body || document.activeElement === trigger) {
-                const next: HTMLElement | null = trigger.isConnected ? trigger : document.getElementById(this.decisionActionsId(requested.fieldId))?.querySelector('button') ?? null;
-                next?.focus();
-            }
-        });
-    }
-
     decisionActionsId(fieldId: string): string {
         return `field-decision-${this.documentId()}-${fieldId}`;
     }
@@ -345,7 +366,7 @@ export class DocumentAnalysis {
 
     confirmField(sectionId: string, fieldId: string, confirmed: boolean, trigger: WigButtonComponent): void {
         const documentId: string | null = this.documentId();
-        const state: FieldConfirmationView | undefined = this.confirmationStates().get(fieldId);
+        const state: IFieldConfirmationView | undefined = this.confirmationStates().get(fieldId);
         if (documentId && !this.busy() && state && (!confirmed || !state.issue)) {
             this.requestedDisposition.set(null);
             this.requestedConfirmation.set({ documentId, fieldId, confirmed });
@@ -358,7 +379,7 @@ export class DocumentAnalysis {
         return change.kind === 'amount' ? formatMoney(change.value) : change.kind === 'date' ? formatCalendarDate(change.value) : change.value;
     }
 
-    startCorrection(field: FieldCorrectionView, trigger: WigButtonComponent): void {
+    startCorrection(field: IFieldCorrectionView, trigger: WigButtonComponent): void {
         if (this.busy()) {
             return;
         }
@@ -372,7 +393,7 @@ export class DocumentAnalysis {
     }
 
     closeCorrection(): void {
-        const edit: { field: FieldCorrectionView; trigger: HTMLElement; originalRevision: number | undefined; } | null = this.edit();
+        const edit: IFieldEdit | null = this.edit();
         this.edit.set(null);
         edit?.trigger.focus();
     }
@@ -383,7 +404,7 @@ export class DocumentAnalysis {
         }
     }
 
-    private parseCorrectionValue(editing: FieldCorrectionEditor, fields: FormData): DocumentCorrectionValue | null {
+    private parseCorrectionValue(editing: IFieldCorrectionEditor, fields: FormData): DocumentCorrectionValue | null {
         const enteredValue: FormDataEntryValue | null = fields.get('value');
         const entered: string = typeof enteredValue === 'string' ? enteredValue.trim() : '';
         if (editing.kind === 'date') {
@@ -412,7 +433,7 @@ export class DocumentAnalysis {
         if (!/^[A-Z]{3}$/.test(currency)) {
             this.correctionError.set('Enter a three-letter currency code, for example EUR.'); return null;
         }
-        const amount: { coefficient: string; currency: string; scale: number; } | null = parseAmountEntry(entered, currency);
+        const amount: Money | null = parseAmountEntry(entered, currency);
         if (!amount) {
             this.correctionError.set(`Enter an amount without grouping separators, for example ${this.amountExample}.`); return null;
         }
@@ -421,7 +442,7 @@ export class DocumentAnalysis {
 
     applyCorrection(form: HTMLFormElement, event?: Event): void {
         event?.preventDefault();
-        const editing: FieldCorrectionEditor | null = this.editing();
+        const editing: IFieldCorrectionEditor | null = this.editing();
         if (!editing || this.busy()) {
             return;
         }

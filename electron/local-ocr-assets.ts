@@ -1,4 +1,4 @@
-export interface ModelAsset {
+export interface IModelAsset {
     file: string;
     url: string;
     bytes: number;
@@ -8,7 +8,7 @@ export interface ModelAsset {
 const nuExtractRevision: string = '28a1aae6288c5d50bdf999ca2e572240966d669b';
 const nuExtractSource: string = 'https://huggingface.co/numind/NuExtract3-GGUF/resolve/' + nuExtractRevision;
 
-export const NUEXTRACT_ASSETS: readonly [ModelAsset, ModelAsset] = [
+export const NUEXTRACT_ASSETS: readonly [IModelAsset, IModelAsset] = [
     {
         file: 'NuExtract3-Q4_K_M.gguf',
         url: nuExtractSource + '/NuExtract3-Q4_K_M.gguf',

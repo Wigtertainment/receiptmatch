@@ -1,7 +1,7 @@
-import type { BankImportInput, ImportIssue, PositionedSpan } from "../../src/shared/bank-import.js";
+import type { BankImportInput, PositionedSpan } from "../../src/shared/bank-import.js";
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
-import type { WorkspaceView } from "../../src/shared/protocol.js";
-import type { WorkspaceState } from "../../src/shared/protocol.js";
+import type { IWorkspaceView } from "../../src/shared/protocol.js";
+import type { IWorkspaceState } from "../../src/shared/protocol.js";
 import { test, vi, type Mock } from 'vitest';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
@@ -14,17 +14,19 @@ import Database from 'better-sqlite3';
 import { importIssue } from '../../src/shared/bank-import.js';
 import { PDF_EXTRACTION_LIMITS, PDF_EXTRACTION_VERSION, type ExtractionProgress, type ExtractionResult } from '../../src/shared/pdf-extraction.js';
 import { storedBankImportSchema, type BankImportRunResult } from '../../src/shared/workspace-import.js';
-import { StatementImportService, type BankImportOptions, type BankImportService } from '../../electron/import/service.js';
-import { WorkspaceSession, type WorkspaceDialogs } from '../../electron/workspace-session.js';
+import { StatementImportService, type IBankImportOptions, type IBankImportService } from '../../electron/import/service.js';
+import { WorkspaceSession, type IWorkspaceDialogs } from '../../electron/workspace-session.js';
 import { createWorkspace, fingerprint, loadWorkspace, newMetadata } from '../../electron/store.js';
 import { row, statement } from './bank-fixtures.js';
-import type { ReadOptionsWithBuffer } from 'node:fs';
-import type { ReadOptions } from 'node:fs';
-import type { ReadPosition } from 'node:fs';
 import type { Mode } from 'node:fs';
 import type { PathLike } from 'node:fs';
+import type { IExtractionOptions } from '../../electron/extraction/host.js';
 
-async function fixtures(): Promise<{ directory: string; source: string; }> {
+interface IImportFixture { directory: string; source: string }
+interface IDialogPlan { saves: (string | null)[]; opens: (string | null)[]; choices: ('save' | 'discard' | 'cancel')[] }
+interface IDialogScript { plan: IDialogPlan; handlers: IWorkspaceDialogs }
+
+async function fixtures(): Promise<IImportFixture> {
     await mkdir('artifacts', { recursive: true });
     const directory: string = await mkdtemp(path.resolve('artifacts/import-unit-'));
     const source: string = path.join(directory, 'synthetic.pdf');
@@ -42,9 +44,9 @@ function extracted(bytes: Uint8Array, sourceId: string, partial: boolean = false
     return { status: 'complete', input };
 }
 
-function dialogs(): { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: WorkspaceDialogs; } {
-    const plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ('save' | 'discard' | 'cancel')[] } = { saves: [], opens: [], choices: [] };
-    const handlers: WorkspaceDialogs = {
+function dialogs(): IDialogScript {
+    const plan: IDialogPlan = { saves: [], opens: [], choices: [] };
+    const handlers: IWorkspaceDialogs = {
         save: async (): Promise<string | null> => Promise.resolve(plan.saves.shift() ?? null),
         open: async (): Promise<string | null> => Promise.resolve(plan.opens.shift() ?? null),
         unsaved: async (): Promise<"discard" | "save" | "cancel"> => Promise.resolve(plan.choices.shift() ?? 'cancel')
@@ -63,17 +65,17 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 test('service retains exact valid rows and unresolved drafts with stable host-owned maps; identical bytes skip before extraction', async (): Promise<void> => {
-    const { directory, source }: { directory: string; source: string; } = await fixtures();
+    const { directory, source }: IImportFixture = await fixtures();
     const original: string = await fingerprint(source);
     let calls: number = 0;
-    const service: StatementImportService = new StatementImportService({
+    const statementImportService: StatementImportService = new StatementImportService({
         choose: async (): Promise<string> => Promise.resolve(source),
-        extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string): Promise<{ status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }> => {
+        extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string): Promise<ExtractionResult> => {
             calls++;
             return Promise.resolve(extracted(bytes, id, true));
         }
     });
-    const imported: BankImportRunResult = await service.run({ existing: [] });
+    const imported: BankImportRunResult = await statementImportService.run({ existing: [] });
     assert.equal(imported.status, 'imported');
     if (imported.status !== 'imported') {
         return;
@@ -89,27 +91,27 @@ test('service retains exact valid rows and unresolved drafts with stable host-ow
     assert.equal(z.uuid().safeParse(record.result.sourceProvenance?.sourceId).success, true);
     assert.equal(record.result.unresolvedDrafts[0].bookingDate, null);
     assert.ok(record.result.unresolvedDrafts[0].issues.length);
-    const again: BankImportRunResult = await service.run({ existing: [record] });
+    const again: BankImportRunResult = await statementImportService.run({ existing: [record] });
     assert.deepEqual(again, { status: 'skipped', importId: record.id });
     assert.equal(calls, 1);
     const alias: string = path.join(directory, 'same-content.pdf');
     await writeFile(alias, await readFile(source));
-    const otherPath: StatementImportService = new StatementImportService({
+    const otherPathService: StatementImportService = new StatementImportService({
         choose: async (): Promise<string> => Promise.resolve(alias),
         extract: async (): Promise<never> => {
             return Promise.resolve().then((): never => assert.fail('Duplicate bytes reached extraction.'));
         }
     });
-    assert.deepEqual(await otherPath.run({ existing: [record] }), { status: 'skipped', importId: record.id });
+    assert.deepEqual(await otherPathService.run({ existing: [record] }), { status: 'skipped', importId: record.id });
     assert.equal(await fingerprint(source), original);
 });
 
 test('service rejects invalid extraction provenance, unsupported layouts and read limits without inventing financial records', async (): Promise<void> => {
-    const { directory, source }: { directory: string; source: string; } = await fixtures();
+    const { directory, source }: IImportFixture = await fixtures();
     for (const fault of ['source', 'hash', 'run', 'version', 'bank']) {
-        const service: StatementImportService = new StatementImportService({
+        const statementImportService: StatementImportService = new StatementImportService({
             choose: async (): Promise<string> => Promise.resolve(source),
-            extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string): Promise<{ status: "complete"; input: BankImportInput; }> => {
+            extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string): Promise<Extract<ExtractionResult, Record<'status', 'complete'>>> => {
                 const result: ReturnType<typeof extracted> = extracted(bytes, id);
                 assert.equal(result.status, 'complete');
                 if (result.status !== 'complete') {
@@ -133,7 +135,7 @@ test('service rejects invalid extraction provenance, unsupported layouts and rea
                 return Promise.resolve(result);
             }
         });
-        const outcome: BankImportRunResult = await service.run({ existing: [] });
+        const outcome: BankImportRunResult = await statementImportService.run({ existing: [] });
         assert.equal(outcome.status, fault === 'bank' ? 'unsupported' : 'failed', fault);
     }
     const oversized: string = path.join(directory, 'oversized.pdf');
@@ -148,26 +150,26 @@ test('service rejects invalid extraction provenance, unsupported layouts and rea
     const folder: string = path.join(directory, 'folder.pdf');
     await mkdir(folder);
     for (const selected of [oversized, empty, folder, 'relative.pdf', path.join(directory, 'absent.pdf')]) {
-        const service: StatementImportService = new StatementImportService({
+        const statementImportService: StatementImportService = new StatementImportService({
             choose: async (): Promise<string> => Promise.resolve(selected),
             extract: async (): Promise<never> => {
                 return Promise.resolve().then((): never => assert.fail('Invalid source reached extraction.'));
             }
         });
-        assert.equal((await service.run({ existing: [] })).status, 'failed');
+        assert.equal((await statementImportService.run({ existing: [] })).status, 'failed');
     }
 });
 
 test('service detects file growth during bounded reads and never passes an unstable snapshot to extraction', async (): Promise<void> => {
-    const { source }: { directory: string; source: string; } = await fixtures();
+    const { source }: IImportFixture = await fixtures();
     const originalOpen: (path: PathLike, flags?: string | number, mode?: Mode) => Promise<fsPromises.FileHandle> = fsPromises.open;
     let changed: boolean = false;
     let restoreRead: (() => void) | undefined;
     const probe: Mock<(path: PathLike, flags?: string | number, mode?: Mode) => Promise<fsPromises.FileHandle>> = vi.spyOn(fsPromises, 'open').mockImplementation((async (...args: Parameters<typeof fsPromises.open>): Promise<fsPromises.FileHandle> => {
         const file: fsPromises.FileHandle = await originalOpen(...args);
         if (args[0] === source) {
-            const read: { <T extends NodeJS.ArrayBufferView>(buffer: T, offset?: number | null, length?: number | null, position?: ReadPosition | null): Promise<fsPromises.FileReadResult<T>>; <T extends NodeJS.ArrayBufferView>(buffer: T, options?: ReadOptions): Promise<fsPromises.FileReadResult<T>>; <T extends NodeJS.ArrayBufferView = NonSharedBuffer>(options?: ReadOptionsWithBuffer<T>): Promise<fsPromises.FileReadResult<T>>; } = file.read.bind(file);
-            const readProbe: Mock<{ <T extends NodeJS.ArrayBufferView>(buffer: T, offset?: number | null, length?: number | null, position?: ReadPosition | null): Promise<fsPromises.FileReadResult<T>>; <T extends NodeJS.ArrayBufferView>(buffer: T, options?: ReadOptions): Promise<fsPromises.FileReadResult<T>>; <T extends NodeJS.ArrayBufferView = NonSharedBuffer>(options?: ReadOptionsWithBuffer<T>): Promise<fsPromises.FileReadResult<T>>; }> = vi.spyOn(file, 'read').mockImplementation((async (...readArgs: Parameters<typeof file.read>): Promise<fsPromises.FileReadResult<NodeJS.ArrayBufferView>> => {
+            const read: fsPromises.FileHandle['read'] = file.read.bind(file);
+            const readProbe: Mock<fsPromises.FileHandle['read']> = vi.spyOn(file, 'read').mockImplementation((async (...readArgs: Parameters<typeof file.read>): Promise<fsPromises.FileReadResult<NodeJS.ArrayBufferView>> => {
                 const result: fsPromises.FileReadResult<NodeJS.ArrayBufferView> = await read(...readArgs);
                 if (!changed) {
                     changed = true;
@@ -181,13 +183,13 @@ test('service detects file growth during bounded reads and never passes an unsta
     }));
     syncBuiltinESMExports();
     try {
-        const service: StatementImportService = new StatementImportService({
+        const statementImportService: StatementImportService = new StatementImportService({
             choose: async (): Promise<string> => Promise.resolve(source),
             extract: async (): Promise<never> => {
                 return Promise.resolve().then((): never => assert.fail('An unstable snapshot reached extraction.'));
             }
         });
-        const result: BankImportRunResult = await service.run({ existing: [] });
+        const result: BankImportRunResult = await statementImportService.run({ existing: [] });
         assert.equal(changed, true);
         assert.equal(result.status, 'failed');
         if (result.status === 'failed') {
@@ -201,17 +203,17 @@ test('service detects file growth during bounded reads and never passes an unsta
 });
 
 test('import/save/reopen preserves full records and stable IDs; loaded-byte duplicates stay clean and distinct sources are not amount-merged', async (): Promise<void> => {
-    const { directory, source }: { directory: string; source: string; } = await fixtures();
-    const { plan, handlers }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: WorkspaceDialogs; } = dialogs();
+    const { directory, source }: IImportFixture = await fixtures();
+    const { plan, handlers }: IDialogScript = dialogs();
     let calls: number = 0;
-    const service: StatementImportService = new StatementImportService({
+    const statementImportService: StatementImportService = new StatementImportService({
         choose: async (): Promise<string> => Promise.resolve(source),
-        extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string): Promise<{ status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }> => {
+        extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string): Promise<ExtractionResult> => {
             calls++;
             return Promise.resolve(extracted(bytes, id, true));
         }
     });
-    const session: WorkspaceSession = new WorkspaceSession(handlers, undefined, service);
+    const session: WorkspaceSession = new WorkspaceSession(handlers, undefined, statementImportService);
     await session.dispatch({ type: 'new' });
     await session.dispatch({ type: 'rename', name: 'Synthetic import workspace' });
     const file: string = path.join(directory, 'local.receiptmatch');
@@ -226,14 +228,14 @@ test('import/save/reopen preserves full records and stable IDs; loaded-byte dupl
     const report: StoredBankImport[] = session.bankImports();
     report[0].result.transactions[0].accountAmount.value.coefficient = '999';
     assert.equal(session.bankImports()[0].result.transactions[0].accountAmount.value.coefficient, '-123456');
-    const stateCopy: WorkspaceState = session.state();
+    const stateCopy: IWorkspaceState = session.state();
     stateCopy.workspace!.imports[0].transactions = 999;
     assert.equal(session.state().workspace!.imports[0].transactions, 2);
     const expected: StoredBankImport[] = session.bankImports();
     await session.dispatch({ type: 'save' });
     assert.equal(session.state().workspace?.dirty, false);
     assert.deepEqual((await loadWorkspace(file)).imports, expected);
-    const reopened: WorkspaceSession = new WorkspaceSession(handlers, undefined, service);
+    const reopened: WorkspaceSession = new WorkspaceSession(handlers, undefined, statementImportService);
     plan.opens.push(file);
     await reopened.dispatch({ type: 'open' });
     assert.deepEqual(reopened.bankImports(), expected);
@@ -244,16 +246,19 @@ test('import/save/reopen preserves full records and stable IDs; loaded-byte dupl
     await fsPromises.appendFile(source, 'A distinct synthetic source revision');
     await reopened.dispatch({ type: 'import-statement' });
     assert.equal(reopened.bankImports().length, 2);
-    assert.equal(reopened.bankImports().flatMap((value: StoredBankImport): { rowId: string; transactionId: string; }[] => value.transactions).length, 4);
+    assert.equal(reopened.bankImports().flatMap((value: StoredBankImport): StoredBankImport['transactions'][number][] => value.transactions).length, 4);
     assert.equal(reopened.state().workspace?.dirty, true);
     assert.equal(calls, 2);
 });
 
 test('failed/cancelled saves and failed Open retain unsaved imports; explicit discard clears only current in-memory work', async (): Promise<void> => {
-    const { directory, source }: { directory: string; source: string; } = await fixtures();
-    const { plan, handlers }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: WorkspaceDialogs; } = dialogs();
-    const service: StatementImportService = new StatementImportService({ choose: async (): Promise<string> => Promise.resolve(source), extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string): Promise<{ status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }> => Promise.resolve(extracted(bytes, id)) });
-    const session: WorkspaceSession = new WorkspaceSession(handlers, undefined, service);
+    const { directory, source }: IImportFixture = await fixtures();
+    const { plan, handlers }: IDialogScript = dialogs();
+    const statementImportService: StatementImportService = new StatementImportService({
+        choose: async (): Promise<string> => Promise.resolve(source),
+        extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string): Promise<ExtractionResult> => Promise.resolve(extracted(bytes, id)),
+    });
+    const session: WorkspaceSession = new WorkspaceSession(handlers, undefined, statementImportService);
     await session.dispatch({ type: 'new' });
     await session.dispatch({ type: 'import-statement' });
     const expected: StoredBankImport[] = session.bankImports();
@@ -290,15 +295,18 @@ test('failed/cancelled saves and failed Open retain unsaved imports; explicit di
 });
 
 test('cancellation wins over a late successful import and all competing workspace actions remain blocked', async (): Promise<void> => {
-    const { directory, source }: { directory: string; source: string; } = await fixtures();
-    const { plan, handlers }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: WorkspaceDialogs; } = dialogs();
-    const preparer: StatementImportService = new StatementImportService({ choose: async (): Promise<string> => Promise.resolve(source), extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string): Promise<{ status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }> => Promise.resolve(extracted(bytes, id)) });
-    const prepared: BankImportRunResult = await preparer.run({ existing: [] });
+    const { directory, source }: IImportFixture = await fixtures();
+    const { plan, handlers }: IDialogScript = dialogs();
+    const preparerService: StatementImportService = new StatementImportService({
+        choose: async (): Promise<string> => Promise.resolve(source),
+        extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string): Promise<ExtractionResult> => Promise.resolve(extracted(bytes, id)),
+    });
+    const prepared: BankImportRunResult = await preparerService.run({ existing: [] });
     assert.equal(prepared.status, 'imported');
     let release: ((result: BankImportRunResult) => void) | undefined;
     let progress: ((value: ExtractionProgress) => void) | undefined;
-    const service: BankImportService = {
-        run: (options: BankImportOptions): Promise<BankImportRunResult> => {
+    const statementImportService: IBankImportService = {
+        run: (options: IBankImportOptions): Promise<BankImportRunResult> => {
             progress = options.onProgress;
             return new Promise((resolve: (value: BankImportRunResult | PromiseLike<BankImportRunResult>) => void): void => {
                 release = resolve;
@@ -311,13 +319,13 @@ test('cancellation wins over a late successful import and all competing workspac
         (): void => {
             changes++;
         },
-        service
+        statementImportService
     );
     await session.dispatch({ type: 'new' });
     plan.saves.push(path.join(directory, 'empty.receiptmatch'));
     await session.dispatch({ type: 'save' });
     const id: string = session.state().workspace!.id;
-    const pending: Promise<WorkspaceState> = session.dispatch({ type: 'import-statement' });
+    const pending: Promise<IWorkspaceState> = session.dispatch({ type: 'import-statement' });
     await waitFor((): boolean => !!release);
     const tick: ExtractionProgress = { phase: 'text', pageNumber: 1, pageCount: 1, completedPages: 0 };
     progress!(tick);
@@ -346,25 +354,25 @@ test('cancellation wins over a late successful import and all competing workspac
 });
 
 test('service cancellation and failure outcomes do not create records or dirty a saved session; late engine progress is ignored', async (): Promise<void> => {
-    const { directory, source }: { directory: string; source: string; } = await fixtures();
+    const { directory, source }: IImportFixture = await fixtures();
     let chosen: number = 0;
     let onProgress: ((progress: ExtractionProgress) => void) | undefined;
     let progressCalls: number = 0;
-    const service: StatementImportService = new StatementImportService({
+    const statementImportService: StatementImportService = new StatementImportService({
         choose: async (): Promise<string> => {
             chosen++;
             return Promise.resolve(source);
         },
-        extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, options: { signal?: AbortSignal; onProgress?: (progress: ExtractionProgress) => void; }): Promise<{ status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }> => {
+        extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, options: IExtractionOptions): Promise<ExtractionResult> => {
             onProgress = options.onProgress;
             return Promise.resolve(extracted(bytes, id));
         }
     });
     const aborted: AbortController = new AbortController();
     aborted.abort();
-    assert.equal((await service.run({ existing: [], signal: aborted.signal })).status, 'cancelled');
+    assert.equal((await statementImportService.run({ existing: [], signal: aborted.signal })).status, 'cancelled');
     assert.equal(chosen, 0);
-    await service.run({
+    await statementImportService.run({
         existing: [],
         onProgress: (): void => {
             progressCalls++;
@@ -377,9 +385,9 @@ test('service cancellation and failure outcomes do not create records or dirty a
         { status: 'failed', issues: [importIssue('synthetic-failure', 'Synthetic failure.')] },
         { status: 'unsupported', issues: [importIssue('synthetic-unsupported', 'Synthetic unsupported statement.')] }
     ] as const) {
-        const { plan, handlers }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: WorkspaceDialogs; } = dialogs();
-        const fixed: BankImportService = { run: async (): Promise<BankImportRunResult> => Promise.resolve(structuredClone(result) as BankImportRunResult) };
-        const session: WorkspaceSession = new WorkspaceSession(handlers, undefined, fixed);
+        const { plan, handlers }: IDialogScript = dialogs();
+        const fixedService: IBankImportService = { run: async (): Promise<BankImportRunResult> => Promise.resolve(structuredClone(result) as BankImportRunResult) };
+        const session: WorkspaceSession = new WorkspaceSession(handlers, undefined, fixedService);
         await session.dispatch({ type: 'new' });
         plan.saves.push(path.join(directory, `${result.status}.receiptmatch`));
         await session.dispatch({ type: 'save' });
@@ -388,26 +396,26 @@ test('service cancellation and failure outcomes do not create records or dirty a
         assert.equal(session.state().workspace?.dirty, false);
         assert.deepEqual(session.bankImports(), []);
     }
-    const noWorkspace: WorkspaceSession = new WorkspaceSession(dialogs().handlers, undefined, service);
+    const noWorkspace: WorkspaceSession = new WorkspaceSession(dialogs().handlers, undefined, statementImportService);
     assert.ok((await noWorkspace.dispatch({ type: 'import-statement' })).error);
 });
 
 test('service checks cancellation again after native selection and extraction, ignoring late engine progress/results', async (): Promise<void> => {
-    const { source }: { directory: string; source: string; } = await fixtures();
+    const { source }: IImportFixture = await fixtures();
     let choose: ((value: string) => void) | undefined;
     let extractedCalls: number = 0;
-    const chooser: StatementImportService = new StatementImportService({
+    const chooserService: StatementImportService = new StatementImportService({
         choose: (): Promise<string | null> =>
             new Promise((resolve: (value: string | PromiseLike<string | null> | null) => void): void => {
                 choose = resolve;
             }),
-        extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string): Promise<{ status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }> => {
+        extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string): Promise<ExtractionResult> => {
             extractedCalls++;
             return Promise.resolve(extracted(bytes, id));
         }
     });
     const first: AbortController = new AbortController();
-    const choosing: Promise<BankImportRunResult> = chooser.run({ existing: [], signal: first.signal });
+    const choosing: Promise<BankImportRunResult> = chooserService.run({ existing: [], signal: first.signal });
     await waitFor((): boolean => !!choose);
     first.abort();
     choose!(source);
@@ -416,9 +424,9 @@ test('service checks cancellation again after native selection and extraction, i
     let finish: (() => void) | undefined;
     let lateProgress: ((value: ExtractionProgress) => void) | undefined;
     let forwarded: number = 0;
-    const engine: StatementImportService = new StatementImportService({
+    const engineService: StatementImportService = new StatementImportService({
         choose: async (): Promise<string> => Promise.resolve(source),
-        extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, options: { signal?: AbortSignal; onProgress?: (progress: ExtractionProgress) => void; }): Promise<{ status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }> => {
+        extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string, options: IExtractionOptions): Promise<ExtractionResult> => {
             lateProgress = options.onProgress;
             await new Promise<void>((resolve: (value: void | PromiseLike<void>) => void): void => {
                 finish = resolve;
@@ -427,7 +435,7 @@ test('service checks cancellation again after native selection and extraction, i
         }
     });
     const second: AbortController = new AbortController();
-    const processing: Promise<BankImportRunResult> = engine.run({
+    const processing: Promise<BankImportRunResult> = engineService.run({
         existing: [],
         signal: second.signal,
         onProgress: (): void => {
@@ -443,9 +451,12 @@ test('service checks cancellation again after native selection and extraction, i
 });
 
 test('invalid saved import mappings report workspace data errors and preserve current unsaved work rather than suggesting a name change', async (): Promise<void> => {
-    const { directory, source }: { directory: string; source: string; } = await fixtures();
-    const service: StatementImportService = new StatementImportService({ choose: async (): Promise<string> => Promise.resolve(source), extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string): Promise<{ status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }> => Promise.resolve(extracted(bytes, id)) });
-    const prepared: BankImportRunResult = await service.run({ existing: [] });
+    const { directory, source }: IImportFixture = await fixtures();
+    const statementImportService: StatementImportService = new StatementImportService({
+        choose: async (): Promise<string> => Promise.resolve(source),
+        extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string): Promise<ExtractionResult> => Promise.resolve(extracted(bytes, id)),
+    });
+    const prepared: BankImportRunResult = await statementImportService.run({ existing: [] });
     assert.equal(prepared.status, 'imported');
     if (prepared.status !== 'imported') {
         return;
@@ -461,12 +472,12 @@ test('invalid saved import mappings report workspace data errors and preserve cu
         db.close();
     }
     const damagedHash: string = await fingerprint(damagedFile);
-    const { plan, handlers }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: WorkspaceDialogs; } = dialogs();
-    const session: WorkspaceSession = new WorkspaceSession(handlers, undefined, service);
+    const { plan, handlers }: IDialogScript = dialogs();
+    const session: WorkspaceSession = new WorkspaceSession(handlers, undefined, statementImportService);
     await session.dispatch({ type: 'new' });
     await session.dispatch({ type: 'rename', name: 'Current unsaved work' });
     await session.dispatch({ type: 'import-statement' });
-    const before: WorkspaceView | null = session.state().workspace;
+    const before: IWorkspaceView | null = session.state().workspace;
     const records: StoredBankImport[] = session.bankImports();
     plan.choices.push('discard');
     plan.opens.push(damagedFile);

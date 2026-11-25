@@ -1,31 +1,44 @@
-import type { ImportIssue } from "./bank-import.js";
 import { z } from 'zod';
 import { calendarDateSchema } from './bank-import.js';
 import { moneySchema } from './money.js';
 import { documentScalarConflicts, type DocumentIssue, type DocumentSection, type SupportingDocument } from './supporting-document.js';
-import type { StoredDocumentImport, StoredSupportingDocument } from './workspace-documents.js';
+import type { StoredDocumentImport } from './workspace-documents.js';
+
+interface IDocumentValueChangeShape<K extends string, V> { kind: z.ZodLiteral<K>; value: V }
+interface IReferenceChangeShape extends IDocumentValueChangeShape<'reference', z.ZodString> { role: typeof referenceRole }
+interface ICurrencyChangeShape extends IDocumentValueChangeShape<'currency', z.ZodString> { role: typeof currencyRole }
+
+interface IDocumentCorrectionTargetShape { documentId: z.ZodUUID; sectionId: z.ZodString; fieldId: z.ZodNullable<z.ZodString> }
+interface IDocumentCorrectionShape extends IDocumentCorrectionTargetShape { revision: z.ZodNumber; change: typeof documentCorrectionValueSchema }
 
 const fieldId: z.ZodString = z.string().min(1).max(128);
 const text: z.ZodString = z.string().trim().min(1).max(16384);
-const referenceRole: z.ZodEnum<{ invoice: 'invoice'; receipt: 'receipt'; payment: 'payment'; order: 'order'; customer: 'customer'; account: 'account'; table: 'table'; 'related-invoice': 'related-invoice'; unknown: 'unknown' }> = z.enum(['invoice', 'receipt', 'payment', 'order', 'customer', 'account', 'table', 'related-invoice', 'unknown']);
-const currencyRole: z.ZodEnum<{ settlement: 'settlement'; 'informational-fx': 'informational-fx'; unknown: 'unknown' }> = z.enum(['settlement', 'informational-fx', 'unknown']);
-const amountChange: z.ZodObject<{ kind: z.ZodLiteral<'amount'>; value: typeof moneySchema }, z.core.$strict> = z.strictObject({ kind: z.literal('amount'), value: moneySchema });
-const dateChange: z.ZodObject<{ kind: z.ZodLiteral<'date'>; value: typeof calendarDateSchema }, z.core.$strict> = z.strictObject({ kind: z.literal('date'), value: calendarDateSchema });
-const merchantChange: z.ZodObject<{ kind: z.ZodLiteral<'merchant'>; value: z.ZodString }, z.core.$strict> = z.strictObject({ kind: z.literal('merchant'), value: text });
-const referenceChange: z.ZodObject<{ kind: z.ZodLiteral<'reference'>; role: typeof referenceRole; value: z.ZodString }, z.core.$strict> = z.strictObject({ kind: z.literal('reference'), role: referenceRole, value: text });
-const currencyChange: z.ZodObject<{ kind: z.ZodLiteral<'currency'>; role: typeof currencyRole; value: z.ZodString }, z.core.$strict> = z.strictObject({ kind: z.literal('currency'), role: currencyRole, value: moneySchema.shape.currency });
-export const documentCorrectionTarget: { documentId: z.ZodUUID; sectionId: z.ZodString; fieldId: z.ZodNullable<z.ZodString> } = { documentId: z.uuid(), sectionId: fieldId, fieldId: fieldId.nullable() };
+const referenceRole: z.ZodEnum<z.core.util.ToEnum<'invoice' | 'receipt' | 'payment' | 'order' | 'customer' | 'account' | 'table' | 'related-invoice' | 'unknown'>> =
+    z.enum(['invoice', 'receipt', 'payment', 'order', 'customer', 'account', 'table', 'related-invoice', 'unknown']);
+const currencyRole: z.ZodEnum<z.core.util.ToEnum<'settlement' | 'informational-fx' | 'unknown'>> = z.enum(['settlement', 'informational-fx', 'unknown']);
+const amountChange: z.ZodObject<z.core.util.Flatten<IDocumentValueChangeShape<'amount', typeof moneySchema>>, z.core.$strict> =
+    z.strictObject({ kind: z.literal('amount'), value: moneySchema });
+const dateChange: z.ZodObject<z.core.util.Flatten<IDocumentValueChangeShape<'date', typeof calendarDateSchema>>, z.core.$strict> =
+    z.strictObject({ kind: z.literal('date'), value: calendarDateSchema });
+const merchantChange: z.ZodObject<z.core.util.Flatten<IDocumentValueChangeShape<'merchant', z.ZodString>>, z.core.$strict> =
+    z.strictObject({ kind: z.literal('merchant'), value: text });
+const referenceChange: z.ZodObject<z.core.util.Flatten<IReferenceChangeShape>, z.core.$strict> = z.strictObject({ kind: z.literal('reference'), role: referenceRole, value: text });
+const currencyChange: z.ZodObject<z.core.util.Flatten<ICurrencyChangeShape>, z.core.$strict> =
+    z.strictObject({ kind: z.literal('currency'), role: currencyRole, value: moneySchema.shape.currency });
+export const documentCorrectionTarget: IDocumentCorrectionTargetShape = { documentId: z.uuid(), sectionId: fieldId, fieldId: fieldId.nullable() };
 export const documentCorrectionValueSchema: z.ZodDiscriminatedUnion<[typeof amountChange, typeof dateChange, typeof merchantChange, typeof referenceChange, typeof currencyChange], 'kind'> = z.discriminatedUnion('kind', [amountChange, dateChange, merchantChange, referenceChange, currencyChange]);
-export const documentCorrectionSchema: z.ZodObject<{ revision: z.ZodNumber; change: typeof documentCorrectionValueSchema; documentId: z.ZodUUID; sectionId: z.ZodString; fieldId: z.ZodNullable<z.ZodString> }, z.core.$strict> = z.strictObject({
+export const documentCorrectionSchema: z.ZodObject<z.core.util.Flatten<IDocumentCorrectionShape>, z.core.$strict> = z.strictObject({
     ...documentCorrectionTarget, revision: z.number().int().min(2).max(Number.MAX_SAFE_INTEGER), change: documentCorrectionValueSchema
 });
 export type DocumentCorrection = z.infer<typeof documentCorrectionSchema>;
 export type DocumentCorrectionValue = z.infer<typeof documentCorrectionValueSchema>;
 export type DocumentCorrectionTarget = Pick<DocumentCorrection, 'documentId' | 'sectionId' | 'fieldId'>;
-export type MissingDocumentCorrectionField = { kind: 'merchant'; role: 'merchant'; label: string } |
-    { kind: 'reference'; role: DocumentSection['references'][number]['role']; label: string } |
-    { kind: 'currency'; role: DocumentSection['currencies'][number]['role']; label: string };
+interface IMissingCorrectionField<K, R> { kind: K; role: R; label: string }
+export type MissingDocumentCorrectionField = IMissingCorrectionField<'merchant', 'merchant'> |
+    IMissingCorrectionField<'reference', DocumentSection['references'][number]['role']> |
+    IMissingCorrectionField<'currency', DocumentSection['currencies'][number]['role']>;
 type DocumentField = DocumentSection['amounts' | 'dates' | 'merchants' | 'references' | 'currencies'][number];
+type StoredDocumentFile = StoredDocumentImport['files'][number];
 const collections: Record<DocumentCorrectionValue['kind'], 'amounts' | 'dates' | 'merchants' | 'references' | 'currencies'> = { amount: 'amounts', date: 'dates', merchant: 'merchants', reference: 'references', currency: 'currencies' };
 
 export function documentCorrectionKey(target: DocumentCorrectionTarget, kind: DocumentCorrectionValue['kind'], role?: string): string {
@@ -216,7 +229,7 @@ export function applyDocumentCorrections(imports: StoredDocumentImport[], correc
         pending.set(correction.documentId, fields);
     }
     const records: StoredDocumentImport[] = imports.map((record: StoredDocumentImport): StoredDocumentImport => {
-        const files: ({ status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; })[] = record.files.map((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; } => {
+        const files: StoredDocumentFile[] = record.files.map((file: StoredDocumentFile): StoredDocumentFile => {
             if (file.status !== 'imported') {
                 return file;
             }
@@ -227,7 +240,7 @@ export function applyDocumentCorrections(imports: StoredDocumentImport[], correc
             pending.delete(file.record.id);
             return { ...file, record: { ...file.record, result: applyDocumentFieldCorrections(file.record.result, fields) } };
         });
-        return files.some((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }, index: number): boolean => file !== record.files[index]) ? { ...record, files } : record;
+        return files.some((file: StoredDocumentFile, index: number): boolean => file !== record.files[index]) ? { ...record, files } : record;
     });
     if (pending.size) {
         throw new Error('A correction refers to a document outside the workspace imports.');

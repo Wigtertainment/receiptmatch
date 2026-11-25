@@ -11,34 +11,39 @@ import {
     type ExtractionResult
 } from '../../src/shared/pdf-extraction.js';
 import { storedBankImportSchema, type BankImportRunResult, type StoredBankImport } from '../../src/shared/workspace-import.js';
-import type { WorkspaceSource } from '../../src/shared/workspace-documents.js';
+import type { IWorkspaceSource } from '../../src/shared/workspace-documents.js';
 import type { StatementProposalExtraction } from './nuextract-statement.js';
 import { parseBankStatement } from './registry.js';
 import { readSourceSnapshot, SourceReadError as ImportFailure } from './source.js';
 
-export interface BankImportOptions {
+export interface IBankImportOptions {
     existing: readonly StoredBankImport[];
-    existingSources?: readonly WorkspaceSource[];
+    existingSources?: readonly IWorkspaceSource[];
     signal?: AbortSignal;
     onProgress?: (progress: ExtractionProgress) => void;
 }
-export interface BankImportService {
-    run(options: BankImportOptions): Promise<BankImportAttempt>;
+export interface IBankImportService {
+    run(options: IBankImportOptions): Promise<BankImportAttempt>;
 }
 
-type ProgressOptions = Pick<BankImportOptions, 'signal' | 'onProgress'>;
-export type StatementFallbackResult = { status: 'proposed'; record: StoredBankImport } |
-    { status: 'failed' | 'unavailable'; issues: ImportIssue[] } | { status: 'cancelled' };
-export interface StatementFallback {
+type ProgressOptions = Pick<IBankImportOptions, 'signal' | 'onProgress'>;
+interface IStatementFallbackProposal { status: 'proposed'; record: StoredBankImport }
+interface IStatementFallbackFailure { status: 'failed' | 'unavailable'; issues: ImportIssue[] }
+export type StatementFallbackResult = IStatementFallbackProposal | IStatementFallbackFailure | Record<'status', 'cancelled'>;
+export interface IStatementFallback {
     filePath: string;
     run(options: ProgressOptions): Promise<StatementFallbackResult>;
 }
-export type BankImportAttempt = BankImportRunResult | { status: 'unsupported'; issues: ImportIssue[]; fallback: StatementFallback };
-interface ImportDependencies {
+interface IBankImportWithFallback { status: 'unsupported'; issues: ImportIssue[]; fallback: IStatementFallback }
+export type BankImportAttempt = BankImportRunResult | IBankImportWithFallback;
+interface IImportDependencies {
+    propose?: (bytes: Uint8Array, input: BankImportInput, options: ProgressOptions) => Promise<StatementProposalExtraction>;
     choose(): Promise<string | null>;
     extract(bytes: Uint8Array, sourceId: string, options: ProgressOptions): Promise<ExtractionResult>;
-    propose?: (bytes: Uint8Array, input: BankImportInput, options: ProgressOptions) => Promise<StatementProposalExtraction>;
 }
+
+interface IProgressCapture { onProgress: (progress: ExtractionProgress) => void; finish: () => boolean }
+
 function cancelled(signal?: AbortSignal): void {
     if (signal?.aborted) {
         throw new ImportFailure('cancelled', 'Statement import was cancelled.');
@@ -67,7 +72,7 @@ function statementRecord(filePath: string, result: BankImportResult): StoredBank
     });
 }
 
-function progressCapture(options: ProgressOptions): { onProgress: (progress: ExtractionProgress) => void; finish: () => boolean } {
+function progressCapture(options: ProgressOptions): IProgressCapture {
     let active: boolean = true, invalid: boolean = false;
     return {
         onProgress: (progress: ExtractionProgress): void => {
@@ -88,7 +93,7 @@ function progressCapture(options: ProgressOptions): { onProgress: (progress: Ext
     };
 }
 
-async function runFallback(propose: NonNullable<ImportDependencies['propose']>, bytes: Uint8Array, input: BankImportInput, filePath: string,
+async function runFallback(propose: NonNullable<IImportDependencies['propose']>, bytes: Uint8Array, input: BankImportInput, filePath: string,
     options: ProgressOptions): Promise<StatementFallbackResult> {
     const progress: ReturnType<typeof progressCapture> = progressCapture(options);
     try {
@@ -121,7 +126,7 @@ async function runFallback(propose: NonNullable<ImportDependencies['propose']>, 
     }
 }
 
-function finishImport(input: BankImportInput, bytes: Uint8Array, filePath: string, signal: AbortSignal | undefined, propose: ImportDependencies['propose']): BankImportAttempt {
+function finishImport(input: BankImportInput, bytes: Uint8Array, filePath: string, signal: AbortSignal | undefined, propose: IImportDependencies['propose']): BankImportAttempt {
     const parsed: BankImportResult = bankImportResultSchema.parse(parseBankStatement(input));
     cancelled(signal);
     if (parsed.status === 'unsupported' && parsed.issues[0]?.code === 'unsupported-bank' && propose) {
@@ -138,10 +143,10 @@ function finishImport(input: BankImportInput, bytes: Uint8Array, filePath: strin
     return { status: 'imported', record };
 }
 
-export class StatementImportService implements BankImportService {
-    constructor(private readonly dependencies: ImportDependencies) {}
+export class StatementImportService implements IBankImportService {
+    constructor(private readonly dependencies: IImportDependencies) {}
 
-    async run(options: BankImportOptions): Promise<BankImportAttempt> {
+    async run(options: IBankImportOptions): Promise<BankImportAttempt> {
         const progress: ReturnType<typeof progressCapture> = progressCapture(options);
         try {
             cancelled(options.signal);
@@ -157,7 +162,7 @@ export class StatementImportService implements BankImportService {
             if (duplicate) {
                 return { status: 'skipped', importId: duplicate.id };
             }
-            const existingSource: WorkspaceSource | undefined = options.existingSources?.find((source: WorkspaceSource): boolean => source.sha256 === sha256);
+            const existingSource: IWorkspaceSource | undefined = options.existingSources?.find((source: IWorkspaceSource): boolean => source.sha256 === sha256);
             if (existingSource) {
                 return { status: 'skipped', importId: null, existingSourceId: existingSource.id };
             }

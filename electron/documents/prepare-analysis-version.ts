@@ -1,5 +1,5 @@
 import { applyDocumentFieldCorrections, type DocumentCorrection } from '../../src/shared/document-corrections.js';
-import type { ReceiptAiChange } from '../../src/shared/receipt-ai.js';
+import type { IReceiptAiChange } from '../../src/shared/receipt-ai.js';
 import type { DocumentIssue, DocumentSection, SupportingDocument } from '../../src/shared/supporting-document.js';
 import type { StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
 import { documentReferenceFields, moneyKey, normalizeReference, outgoingAmounts } from '../matching.js';
@@ -7,9 +7,9 @@ import { compareDocuments } from '../source-comparison.js';
 import { SupportingDocumentState } from './document-state.js';
 import { hasFullDocumentReference, mergedLegacySections, recordedDocumentPayments } from './interpret.js';
 
-export interface ReceiptVersionPlan {
+export interface IReceiptVersionPlan {
     analysis: SupportingDocument;
-    changes: ReceiptAiChange[];
+    changes: IReceiptAiChange[];
     conflicts: string[];
     blockingConflict?: string;
     invalidatesApproval: boolean;
@@ -19,13 +19,13 @@ type AmountField = DocumentSection['amounts'][number];
 type DateField = DocumentSection['dates'][number];
 type ReadField = DocumentSection['amounts' | 'dates' | 'merchants' | 'references' | 'currencies'][number];
 type DocumentPairing = ReturnType<typeof compareDocuments>;
-interface IdentifiedField { id: string; role: string }
+interface IIdentifiedField { id: string; role: string }
 
 function fields(section: DocumentSection): ReadField[] {
     return [...section.amounts, ...section.dates, ...section.merchants, ...section.references, ...section.currencies];
 }
 
-function pairedCorrectionField<T extends IdentifiedField>(before: T[], after: T[], id: string, pairedId: string | undefined): T | undefined {
+function pairedCorrectionField<T extends IIdentifiedField>(before: T[], after: T[], id: string, pairedId: string | undefined): T | undefined {
     const exact: T | undefined = after.find((field: T): boolean => field.id === pairedId);
     if (exact) {
         return exact;
@@ -161,7 +161,7 @@ function effectiveWithCorrections(analysis: SupportingDocument, corrections: rea
 }
 
 export function prepareReceiptAnalysisVersion(previous: StoredSupportingDocument, proposed: SupportingDocument, corrections: readonly DocumentCorrection[],
-    sameAnalysis: boolean = false): ReceiptVersionPlan {
+    sameAnalysis: boolean = false): IReceiptVersionPlan {
     const applicable: DocumentCorrection[] = corrections.filter((correction: DocumentCorrection): boolean => correction.documentId === previous.id);
     let analysis: SupportingDocument = proposed;
     let mapped: boolean = true;
@@ -176,7 +176,7 @@ export function prepareReceiptAnalysisVersion(previous: StoredSupportingDocument
     const after: SupportingDocument = afterWithCorrections ?? new SupportingDocumentState(analysis).effective;
     const { changes, conflicts }: DocumentPairing = compareDocuments({ result: before }, { result: after });
     const invalidatesApproval: boolean = matchingFacts(before) !== matchingFacts(after);
-    if (invalidatesApproval && !changes.some((change: ReceiptAiChange): boolean => change.kind !== 'warnings')) {
+    if (invalidatesApproval && !changes.some((change: IReceiptAiChange): boolean => change.kind !== 'warnings')) {
         changes.push({ label: 'Matching evidence', before: null, after: 'Evidence used for matching changed.', kind: 'matching' });
     }
     const blockingConflict: string | undefined = afterWithCorrections ? undefined : 'A manual correction cannot be matched unambiguously in the new analysis.';

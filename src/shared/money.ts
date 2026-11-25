@@ -1,6 +1,12 @@
 import { z } from 'zod';
 
-export const moneySchema: z.ZodObject<{ coefficient: z.ZodString; currency: z.ZodString; scale: z.ZodNumber; }, z.core.$strict> = z.strictObject({
+interface IMoneyShape {
+    coefficient: z.ZodString;
+    currency: z.ZodString;
+    scale: z.ZodNumber;
+}
+
+export const moneySchema: z.ZodObject<z.core.util.Flatten<IMoneyShape>, z.core.$strict> = z.strictObject({
     coefficient: z
         .string()
         .regex(/^(0|-?[1-9]\d*)$/)

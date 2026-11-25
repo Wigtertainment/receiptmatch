@@ -1,8 +1,6 @@
-import type { BankImportInput, BankImportResult, PositionedSpan, SourceEvidence, TransactionCandidate, UnresolvedDraft } from "../../src/shared/bank-import.js";
+import type { BankImportInput, BankImportResult, ImportPage, PositionedSpan, SourceEvidence, TransactionCandidate, UnresolvedDraft } from "../../src/shared/bank-import.js";
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
-import type { BankImportSummary } from "../../src/shared/workspace-import.js";
-import type { DocumentImportProgress } from "../../src/shared/workspace-documents.js";
-import type { ExtractionProgress } from "../../src/shared/pdf-extraction.js";
+import type { IBankImportSummary } from "../../src/shared/workspace-import.js";
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, mkdir, mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
@@ -15,24 +13,79 @@ import Database from 'better-sqlite3';
 import { statement, row } from '../unit/bank-fixtures.js';
 import { airwallexStatement } from '../unit/airwallex-fixtures.js';
 import { parseBankStatement } from '../../electron/import/registry.js';
-import { createWorkspace, newMetadata } from '../../electron/store.js';
+import { createWorkspace, newMetadata, type WorkspaceMetadata } from '../../electron/store.js';
 import { storedBankImportSchema } from '../../src/shared/workspace-import.js';
 import type { ImportIssue } from '../../src/shared/bank-import.js';
-import type { ImportOutcome, WorkspaceCommand, WorkspaceState, WorkspaceView } from '../../src/shared/protocol.js';
+import type { IImportOutcome, WorkspaceCommand, IWorkspaceState, IWorkspaceView } from '../../src/shared/protocol.js';
 import type { ChildProcess } from 'node:child_process';
+import type { Money } from '../../src/shared/money.js';
 
-interface DialogPlan {
+interface IImportAttemptEvent { busy: boolean; active: boolean; outcome: IImportOutcome['status'] | null }
+interface ITestCheck { name: string; status: 'passed'; milliseconds: number; detail?: unknown }
+interface IBusyImportReport { stage?: string; state: IWorkspaceState; commands: ICommandTraceEntry[] }
+interface ICaptureReport {
+	file: string;
+	width: number;
+	height: number;
+	bytes: number;
+	sampledColors: number;
+	visible: boolean;
+	contentBounds: Rectangle;
+}
+interface IUiImportFixtureArgs { uiImport: IUiImportTest }
+type UiImportContext = IUiImportFixtureArgs & PlaywrightTestArgs & PlaywrightTestOptions & PlaywrightWorkerArgs & PlaywrightWorkerOptions;
+interface IImportStateSummary {
+	busy: boolean;
+	outcome: "failed" | "unsupported" | "imported" | "skipped" | "cancelled" | null;
+	importId: string | null;
+	dirty: boolean | null;
+	workspaceId: string | null;
+	loadRevision: number | null;
+	error: string | null;
+}
+interface ICommandPosition { type: WorkspaceCommand['type']; after: number }
+interface IExpectedImportOutcome {
+	status: "failed" | "unsupported" | "imported" | "skipped" | "cancelled";
+	issueCode: string | undefined;
+}
+interface ICaptureDetails {
+	bytes: number;
+	sampledColors: number;
+	visible: boolean;
+	contentBounds: Electron.Rectangle;
+	height: number;
+	width: number;
+}
+interface IImportHookOptions { channel: string; mode: "count" | "fail-one" | "delay-one" | "delay-rename" }
+interface IGeneratedAccountIdentity {
+	sectionId: string;
+	accountId: `${string}-${string}-${string}-${string}-${string}`;
+	statementId: `${string}-${string}-${string}-${string}-${string}`;
+}
+interface IGeneratedTransactionIdentity { rowId: string; transactionId: `${string}-${string}-${string}-${string}-${string}` }
+interface ISourceCapture { source: string; screenshot: string }
+interface IContentWidth { width: number; content: number; client: number }
+interface ILayoutCapture { bounds: IContentWidth; screenshot: string }
+interface ICellViewport { right: number; viewport: number }
+interface IRetainedImportsCapture { screenshot: string; retainedBanks: (string | undefined)[] }
+interface IBankReopenSummary { transactions: number; unresolvedDrafts: number; sourceHash: string }
+interface IVisibleAmountWithOriginal { amount: string; direction: string; original: Money }
+interface IVisibleAmountWithoutOriginal { amount: string; direction: string; original: null }
+type ActiveWorkspaceState = Omit<IWorkspaceState, 'workspace'> & Record<'workspace', IWorkspaceView>;
+type CompletedImportState = ActiveWorkspaceState & Record<'importOutcome', IImportOutcome>;
+
+interface IDialogPlan {
 	opens?: (string | null)[];
 	saves?: (string | null)[];
 	choices?: number[];
 }
-interface CommandTraceEntry {
+interface ICommandTraceEntry {
 	id: number;
 	type: WorkspaceCommand['type'] | undefined;
 	phase: 'start' | 'end' | 'throw';
 	at: string;
 	busy?: boolean;
-	outcome?: ImportOutcome['status'] | null;
+	outcome?: IImportOutcome['status'] | null;
 	importId?: string | null;
 	dirty?: boolean | null;
 	workspaceId?: string | null;
@@ -40,65 +93,63 @@ interface CommandTraceEntry {
 	error?: string | null;
 }
 type InvokeHandler = (event: IpcMainInvokeEvent, command?: WorkspaceCommand) => unknown;
-interface TracedIpcMain extends IpcMain {
+interface ITracedIpcMain extends IpcMain {
 	_invokeHandlers?: Map<string, InvokeHandler>;
 }
-interface ImportHook {
+interface IImportHook {
 	channel: string;
 	original: InvokeHandler;
 	calls: number;
 	held: boolean;
 	release: (() => void) | null;
 }
-interface ImportAttempt {
+interface IImportAttempt {
 	started: boolean;
 	finished: boolean;
-	result: WorkspaceState | null;
-	events: { busy: boolean; active: boolean; outcome: ImportOutcome['status'] | null }[];
+	result: IWorkspaceState | null;
+	events: IImportAttemptEvent[];
 	unsubscribe: (() => void) | null;
 }
 declare global {
-	var uiCommandTrace: CommandTraceEntry[];
+	var uiCommandTrace: ICommandTraceEntry[];
 	var uiCommandSequence: number;
-	var uiImportHook: ImportHook | undefined;
-	interface Window {
-		uiImportAttempts?: Record<string, ImportAttempt>;
-		__receiptmatchXss?: number;
-	}
+	var uiImportHook: IImportHook | undefined;
+	var uiImportAttempts: Record<string, IImportAttempt> | undefined;
+	var __receiptmatchXss: number | undefined;
 }
-interface UiImportReport {
+interface IUiImportReport {
 	runId: string;
 	startedAt: string;
 	finishedAt?: string;
 	status: 'running' | 'passed' | 'failed';
 	platform: NodeJS.Platform;
 	syntheticOnly: boolean;
-	checks: { name: string; status: 'passed'; milliseconds: number; detail?: unknown }[];
+	checks: ITestCheck[];
 	screenshots: string[];
 	activeCheck?: string;
 	stage?: string;
 	rendererLocale?: string;
-	commandTrace?: CommandTraceEntry[];
-	unexpectedBusy?: { stage?: string; state: WorkspaceState; commands: CommandTraceEntry[] }[];
-	captureDetails?: { file: string; width: number; height: number; bytes: number; sampledColors: number; visible: boolean; contentBounds: Rectangle }[];
+	commandTrace?: ICommandTraceEntry[];
+	unexpectedBusy?: IBusyImportReport[];
+	captureDetails?: ICaptureReport[];
 	limits?: string[];
 	error?: string;
 	stack?: string;
 	cleanupError?: string;
 }
-interface UiImportTest {
+interface IUiImportTest {
 	playwright: PlaywrightWorkerArgs['playwright'];
 	root: string;
-	report: UiImportReport;
+	report: IUiImportReport;
 	saveReport: () => Promise<void>;
 	onTeardown: (cleanup: (failed: boolean) => Promise<void>) => void;
 }
-const test: TestType<PlaywrightTestArgs & PlaywrightTestOptions & { uiImport: UiImportTest; }, PlaywrightWorkerArgs & PlaywrightWorkerOptions> = base.extend<{ uiImport: UiImportTest }>({
-	uiImport: async ({ playwright }: { uiImport: UiImportTest; } & PlaywrightTestArgs & PlaywrightTestOptions & PlaywrightWorkerArgs & PlaywrightWorkerOptions, use: (r: UiImportTest) => Promise<void>, testInfo: TestInfo): Promise<void> => {
+const test: TestType<PlaywrightTestArgs & PlaywrightTestOptions & IUiImportFixtureArgs, PlaywrightWorkerArgs & PlaywrightWorkerOptions> = base.extend<IUiImportFixtureArgs>({
+	uiImport: async ({ playwright }: UiImportContext, use: (r: IUiImportTest) => Promise<void>, testInfo: TestInfo): Promise<void> => {
 		await mkdir('artifacts', { recursive: true });
 		const root: string = await mkdtemp(path.resolve('artifacts/ui-import-'));
 		const reportPath: string = path.resolve(`artifacts/ui-import-${process.platform}.json`);
-		const report: UiImportReport = {
+		const report: IUiImportReport = {
 			runId: randomUUID(),
 			startedAt: new Date().toISOString(),
 			status: 'running',
@@ -140,7 +191,7 @@ const test: TestType<PlaywrightTestArgs & PlaywrightTestOptions & { uiImport: Ui
 
 test.describe.configure({ timeout: 18 * 60_000 });
 
-test('packaged Electron bank import interface', async ({ uiImport: { playwright, root, report, saveReport, onTeardown } }: PlaywrightTestArgs & PlaywrightTestOptions & { uiImport: UiImportTest; } & PlaywrightWorkerArgs & PlaywrightWorkerOptions): Promise<void> => {
+test('packaged Electron bank import interface', async ({ uiImport: { playwright, root, report, saveReport, onTeardown } }: UiImportContext): Promise<void> => {
 	const workspaceFile: string = path.join(root, 'ui-records.receiptmatch');
 	const precisionFile: string = path.join(root, 'presentation-only.receiptmatch');
 	const original: string = path.join(root, 'synthetic-statement.pdf');
@@ -210,13 +261,13 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		page.setDefaultNavigationTimeout(20000);
 		await page.getByRole('heading', { name: 'ReceiptMatch', exact: true }).waitFor();
 		await currentApplication().evaluate(({ ipcMain }: typeof Electron.CrossProcessExports): void => {
-			const original: InvokeHandler | undefined = (ipcMain as TracedIpcMain)._invokeHandlers?.get('workspace:command');
+			const original: InvokeHandler | undefined = (ipcMain as ITracedIpcMain)._invokeHandlers?.get('workspace:command');
 			if (typeof original !== 'function') {
 				throw new Error('The pinned Electron workspace command handler is unavailable for tracing.');
 			}
 			globalThis.uiCommandTrace = [];
 			globalThis.uiCommandSequence = 0;
-			const snapshot: (value: WorkspaceState) => { busy: boolean; outcome: "failed" | "unsupported" | "imported" | "skipped" | "cancelled" | null; importId: string | null; dirty: boolean | null; workspaceId: string | null; loadRevision: number | null; error: string | null; } = (value: WorkspaceState): { busy: boolean; outcome: "failed" | "unsupported" | "imported" | "skipped" | "cancelled" | null; importId: string | null; dirty: boolean | null; workspaceId: string | null; loadRevision: number | null; error: string | null; } => ({
+			const snapshot: (value: IWorkspaceState) => IImportStateSummary = (value: IWorkspaceState): IImportStateSummary => ({
 				busy: value.busy,
 				outcome: value.importOutcome?.status ?? null,
 				importId: value.importOutcome?.importId ?? null,
@@ -232,12 +283,12 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 				}
 				const id: number = ++globalThis.uiCommandSequence;
 				const type: WorkspaceCommand['type'] = command.type;
-				const entry: CommandTraceEntry = { id, type, phase: 'start', at: new Date().toISOString() };
+				const entry: ICommandTraceEntry = { id, type, phase: 'start', at: new Date().toISOString() };
 				globalThis.uiCommandTrace.push(entry);
-				Object.assign(entry, snapshot((await original(event, { type: 'get-state' })) as WorkspaceState));
+				Object.assign(entry, snapshot((await original(event, { type: 'get-state' })) as IWorkspaceState));
 				try {
 					const result: unknown = await original(event, command);
-					globalThis.uiCommandTrace.push({ id, type, phase: 'end', at: new Date().toISOString(), ...snapshot(result as WorkspaceState) });
+					globalThis.uiCommandTrace.push({ id, type, phase: 'end', at: new Date().toISOString(), ...snapshot(result as IWorkspaceState) });
 					return result;
 				} catch (error: unknown) {
 					globalThis.uiCommandTrace.push({ id, type, phase: 'throw', at: new Date().toISOString(), error: String(error) });
@@ -256,42 +307,44 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		report.rendererLocale = locale;
 	}
 
-	async function dialogs({ opens = [], saves = [], choices = [] }: DialogPlan = {}): Promise<void> {
+	async function dialogs({ opens = [], saves = [], choices = [] }: IDialogPlan = {}): Promise<void> {
 		await currentApplication().evaluate(
-			({ dialog }: typeof Electron.CrossProcessExports, plan: { opens: (string | null)[]; saves: (string | null)[]; choices: number[]; }): void => {
-				dialog.showOpenDialog = async (): Promise<{ canceled: boolean; filePaths: string[]; }> => {
+			({ dialog }: typeof Electron.CrossProcessExports, plan: Required<IDialogPlan>): void => {
+				dialog.showOpenDialog = async (): Promise<Electron.OpenDialogReturnValue> => {
 					const file: string | null | undefined = plan.opens.shift();
 					return Promise.resolve({ canceled: !file, filePaths: file ? [file] : [] });
 				};
-				dialog.showSaveDialog = async (): Promise<{ canceled: boolean; filePath: string; }> => {
+				dialog.showSaveDialog = async (): Promise<Electron.SaveDialogReturnValue> => {
 					const file: string | null | undefined = plan.saves.shift();
 					return Promise.resolve({ canceled: !file, filePath: file ?? '' });
 				};
-				dialog.showMessageBox = async (): Promise<{ response: number; checkboxChecked: false; }> => Promise.resolve(({ response: plan.choices.shift() ?? 2, checkboxChecked: false }));
+				dialog.showMessageBox = async (): Promise<Pick<Electron.MessageBoxReturnValue, 'response'> & Record<'checkboxChecked', false>> =>
+					Promise.resolve(({ response: plan.choices.shift() ?? 2, checkboxChecked: false }));
 			},
 			{ opens, saves, choices }
 		);
 	}
 
-	async function state(): Promise<{ workspace: WorkspaceView; busy: boolean; error: string | null; approvalIssue?: { transactionId: string; reason: "selection-changed" | "not-assigned" | "document-unavailable"; }; statementImport: { cancelling: boolean; progress: ExtractionProgress | null; } | null; importOutcome: ImportOutcome | null; documentImport: { cancelling: boolean; progress: DocumentImportProgress | null; } | null; documentOutcome: { status: "finished" | "cancelled" | "failed"; importId: string | null; issues: ImportIssue[]; } | null; }> {
-		const result: WorkspaceState = await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'get-state' }));
+	async function state(): Promise<ActiveWorkspaceState> {
+		const result: IWorkspaceState = await page.evaluate((): Promise<IWorkspaceState> => window.receiptmatch.command({ type: 'get-state' }));
 		assert.ok(result.workspace);
 		return { ...result, workspace: result.workspace };
 	}
 
-	async function commandTrace(): Promise<CommandTraceEntry[]> {
-		return currentApplication().evaluate((): CommandTraceEntry[] => globalThis.uiCommandTrace ?? []);
+	async function commandTrace(): Promise<ICommandTraceEntry[]> {
+		return currentApplication().evaluate((): ICommandTraceEntry[] => globalThis.uiCommandTrace ?? []);
 	}
 
 	async function commandSequence(): Promise<number> {
 		return currentApplication().evaluate((): number => globalThis.uiCommandSequence);
 	}
 
-	async function commandEnd(type: WorkspaceCommand['type'], after: number): Promise<CommandTraceEntry> {
+	async function commandEnd(type: WorkspaceCommand['type'], after: number): Promise<ICommandTraceEntry> {
 		const deadline: number = performance.now() + 20000;
 		while (performance.now() < deadline) {
-			const entry: CommandTraceEntry | undefined = await currentApplication().evaluate(
-				(_electron: typeof Electron.CrossProcessExports, { type, after }: { type: WorkspaceCommand['type']; after: number; }): CommandTraceEntry | undefined => globalThis.uiCommandTrace.find((entry: CommandTraceEntry): boolean => entry.phase === 'end' && entry.type === type && entry.id > after),
+			const entry: ICommandTraceEntry | undefined = await currentApplication().evaluate(
+				(_electron: typeof Electron.CrossProcessExports, { type, after }: ICommandPosition): ICommandTraceEntry | undefined =>
+					globalThis.uiCommandTrace.find((entry: ICommandTraceEntry): boolean => entry.phase === 'end' && entry.type === type && entry.id > after),
 				{ type, after }
 			);
 			if (entry) {
@@ -303,23 +356,23 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		throw new Error(`The real ${type} command did not finish after sequence ${after}.`);
 	}
 
-	async function clickCommand(locator: Locator, type: WorkspaceCommand['type']): Promise<CommandTraceEntry> {
+	async function clickCommand(locator: Locator, type: WorkspaceCommand['type']): Promise<ICommandTraceEntry> {
 		const sequence: number = await commandSequence();
 		await locator.click();
 		return commandEnd(type, sequence);
 	}
 
-	async function waitState(expected: Partial<WorkspaceView>): Promise<void> {
-		await page.waitForFunction(async (expected: Partial<WorkspaceView>): Promise<boolean> => {
-			const value: WorkspaceState = await window.receiptmatch.command({ type: 'get-state' });
-			return !value.busy && Object.entries(expected).every(([key, wanted]: [string, WorkspaceView[keyof WorkspaceView]]): boolean => value.workspace?.[key as keyof WorkspaceView] === wanted);
+	async function waitState(expected: Partial<IWorkspaceView>): Promise<void> {
+		await page.waitForFunction(async (expected: Partial<IWorkspaceView>): Promise<boolean> => {
+			const value: IWorkspaceState = await window.receiptmatch.command({ type: 'get-state' });
+			return !value.busy && Object.entries(expected).every(([key, wanted]: [string, IWorkspaceView[keyof IWorkspaceView]]): boolean => value.workspace?.[key as keyof IWorkspaceView] === wanted);
 		}, expected);
 	}
 
-	async function outcome(status: ImportOutcome['status'], issueCode?: ImportIssue['code']): Promise<{ workspace: WorkspaceView; busy: boolean; error: string | null; approvalIssue?: { transactionId: string; reason: "selection-changed" | "not-assigned" | "document-unavailable"; }; statementImport: { cancelling: boolean; progress: ExtractionProgress | null; } | null; importOutcome: ImportOutcome | null; documentImport: { cancelling: boolean; progress: DocumentImportProgress | null; } | null; documentOutcome: { status: "finished" | "cancelled" | "failed"; importId: string | null; issues: ImportIssue[]; } | null; }> {
+	async function outcome(status: IImportOutcome['status'], issueCode?: ImportIssue['code']): Promise<ActiveWorkspaceState> {
 		await page.waitForFunction(
-			async ({ status, issueCode }: { status: "failed" | "unsupported" | "imported" | "skipped" | "cancelled"; issueCode: string | undefined; }): Promise<boolean> => {
-				const value: WorkspaceState = await window.receiptmatch.command({ type: 'get-state' });
+			async ({ status, issueCode }: IExpectedImportOutcome): Promise<boolean> => {
+				const value: IWorkspaceState = await window.receiptmatch.command({ type: 'get-state' });
 				return !value.busy && value.importOutcome?.status === status && (!issueCode || value.importOutcome.issues.some((issue: ImportIssue): boolean => issue.code === issueCode));
 			},
 			{ status, issueCode }
@@ -328,7 +381,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		return state();
 	}
 
-	async function importFile(file: string | null, status: ImportOutcome['status'] = 'imported', issueCode?: ImportIssue['code']): Promise<{ workspace: WorkspaceView; importOutcome: ImportOutcome; busy: boolean; error: string | null; approvalIssue?: { transactionId: string; reason: "selection-changed" | "not-assigned" | "document-unavailable"; }; statementImport: { cancelling: boolean; progress: ExtractionProgress | null; } | null; documentImport: { cancelling: boolean; progress: DocumentImportProgress | null; } | null; documentOutcome: { status: "finished" | "cancelled" | "failed"; importId: string | null; issues: ImportIssue[]; } | null; }> {
+	async function importFile(file: string | null, status: IImportOutcome['status'] = 'imported', issueCode?: ImportIssue['code']): Promise<CompletedImportState> {
 		const before: Awaited<ReturnType<typeof state>> = await state();
 		if (before.busy || before.statementImport) {
 			report.unexpectedBusy ??= [];
@@ -339,9 +392,9 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		}
 		const attempt: `${string}-${string}-${string}-${string}-${string}` = randomUUID();
 		await page.evaluate((attempt: `${string}-${string}-${string}-${string}-${string}`): void => {
-			const probe: ImportAttempt = { started: false, finished: false, result: null, events: [], unsubscribe: null };
+			const probe: IImportAttempt = { started: false, finished: false, result: null, events: [], unsubscribe: null };
 			(window.uiImportAttempts ??= {})[attempt] = probe;
-			probe.unsubscribe = window.receiptmatch.subscribe((value: WorkspaceState): void => {
+			probe.unsubscribe = window.receiptmatch.subscribe((value: IWorkspaceState): void => {
 				probe.events.push({ busy: value.busy, active: value.statementImport !== null, outcome: value.importOutcome?.status ?? null });
 				if (value.busy && value.statementImport !== null) {
 					probe.started = true;
@@ -357,9 +410,9 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 			await dialogs({ opens: [file] });
 			await page.getByRole('button', { name: 'Import statement', exact: true }).click();
 			await page.waitForFunction((attempt: `${string}-${string}-${string}-${string}-${string}`): boolean => window.uiImportAttempts?.[attempt]?.started === true, attempt);
-			const completion: CommandTraceEntry = await commandEnd('import-statement', sequence);
+			const completion: ICommandTraceEntry = await commandEnd('import-statement', sequence);
 			await page.waitForFunction((attempt: `${string}-${string}-${string}-${string}-${string}`): boolean => window.uiImportAttempts?.[attempt]?.finished === true, attempt);
-			const result: WorkspaceState | null | undefined = await page.evaluate((attempt: `${string}-${string}-${string}-${string}-${string}`): WorkspaceState | null | undefined => window.uiImportAttempts?.[attempt]?.result, attempt);
+			const result: IWorkspaceState | null | undefined = await page.evaluate((attempt: `${string}-${string}-${string}-${string}-${string}`): IWorkspaceState | null | undefined => window.uiImportAttempts?.[attempt]?.result, attempt);
 			assert.ok(result?.workspace && result.importOutcome);
 			assert.equal(result.importOutcome.status, status);
 			assert.equal(result.busy, false);
@@ -371,7 +424,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 			}
 			await page.getByTestId('import-outcome').waitFor();
 			if (status === 'imported') {
-				const imported: BankImportSummary | undefined = result.workspace.imports.find((record: BankImportSummary): boolean => record.id === result.importOutcome?.importId);
+				const imported: IBankImportSummary | undefined = result.workspace.imports.find((record: IBankImportSummary): boolean => record.id === result.importOutcome?.importId);
 				assert.ok(imported);
 				await page.getByRole('combobox', { name: 'Statement', exact: true }).getByText(path.basename(imported.filePath) + ' ·', { exact: false }).waitFor();
 			}
@@ -474,9 +527,9 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 			page.locator('.statement-imports').evaluate((element: HTMLElement | SVGElement): void => element.scrollIntoView({ block: 'start' }))
 		);
 		await settle();
-		const captured: { bytes: number; sampledColors: number; visible: boolean; contentBounds: Electron.Rectangle; height: number; width: number; } = await bounded(
+		const captured: ICaptureDetails = await bounded(
 			`Capturing the actual ReceiptMatch viewport (${name})`,
-			currentApplication().evaluate(async ({ BrowserWindow }: typeof Electron.CrossProcessExports, file: string): Promise<{ bytes: number; sampledColors: number; visible: boolean; contentBounds: Electron.Rectangle; height: number; width: number; }> => {
+			currentApplication().evaluate(async ({ BrowserWindow }: typeof Electron.CrossProcessExports, file: string): Promise<ICaptureDetails> => {
 				const main: Electron.BrowserWindow | undefined = BrowserWindow.getAllWindows().find((window: Electron.BrowserWindow): boolean => window.webContents.getURL() === 'receiptmatch://app/index.html');
 				if (!main) {
 					throw new Error('ReceiptMatch main window is missing.');
@@ -553,7 +606,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		return values.map((value: StoredBankImport): StoredBankImport => storedBankImportSchema.parse(value));
 	}
 
-	async function selectStatement(record: { filePath: string }): Promise<void> {
+	async function selectStatement(record: Record<'filePath', string>): Promise<void> {
 		const filename: string = path.basename(record.filePath);
 		const picker: Locator = page.getByRole('combobox', { name: 'Statement', exact: true });
 		await picker.click();
@@ -574,12 +627,12 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 
 	async function hook(channel: string, mode: 'count' | 'fail-one' | 'delay-one' | 'delay-rename'): Promise<void> {
 		await currentApplication().evaluate(
-			({ ipcMain }: typeof Electron.CrossProcessExports, { channel, mode }: { channel: string; mode: "count" | "fail-one" | "delay-one" | "delay-rename"; }): void => {
-				const original: InvokeHandler | undefined = (ipcMain as TracedIpcMain)._invokeHandlers?.get(channel);
+			({ ipcMain }: typeof Electron.CrossProcessExports, { channel, mode }: IImportHookOptions): void => {
+				const original: InvokeHandler | undefined = (ipcMain as ITracedIpcMain)._invokeHandlers?.get(channel);
 				if (typeof original !== 'function') {
 					throw new Error(`The pinned Electron invocation handler cannot be instrumented: ${channel}`);
 				}
-				const probe: ImportHook = { channel, original, calls: 0, held: false, release: null };
+				const probe: IImportHook = { channel, original, calls: 0, held: false, release: null };
 				globalThis.uiImportHook = probe;
 				ipcMain.removeHandler(channel);
 				ipcMain.handle(channel, async (event: Electron.IpcMainInvokeEvent, ...args: [command?: WorkspaceCommand]): Promise<unknown> => {
@@ -601,9 +654,9 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		);
 	}
 
-	async function hookState(): Promise<{ calls: number; held: boolean; }> {
-		return currentApplication().evaluate((): { calls: number; held: boolean; } => {
-			const hook: ImportHook | undefined = globalThis.uiImportHook;
+	async function hookState(): Promise<Pick<IImportHook, 'calls' | 'held'>> {
+		return currentApplication().evaluate((): Pick<IImportHook, 'calls' | 'held'> => {
+			const hook: IImportHook | undefined = globalThis.uiImportHook;
 			if (!hook) {
 				throw new Error('The controlled IPC hook was not installed.');
 			}
@@ -623,13 +676,13 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 	}
 
 	async function releaseHook(): Promise<void> {
-		await currentApplication().evaluate((): void | undefined => globalThis.uiImportHook?.release?.());
+		await currentApplication().evaluate((): void => globalThis.uiImportHook?.release?.());
 		await settle();
 	}
 
 	async function restoreHook(): Promise<void> {
 		await currentApplication().evaluate(({ ipcMain }: typeof Electron.CrossProcessExports): void => {
-			const probe: ImportHook | undefined = globalThis.uiImportHook;
+			const probe: IImportHook | undefined = globalThis.uiImportHook;
 			if (!probe) {
 				return;
 			}
@@ -683,14 +736,15 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		importedAt: '2032-03-01T12:00:00.000Z',
 		filePath: path.join(root, 'presentation-only-seeded.pdf'),
 		result: presented,
-		accounts: presented.accountSections.map((section: { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; }): { sectionId: string; accountId: `${string}-${string}-${string}-${string}-${string}`; statementId: `${string}-${string}-${string}-${string}-${string}`; } => ({ sectionId: section.sectionId, accountId: randomUUID(), statementId: randomUUID() })),
-		transactions: presented.transactions.map((row: TransactionCandidate): { rowId: string; transactionId: `${string}-${string}-${string}-${string}-${string}`; } => ({ rowId: row.rowId, transactionId: randomUUID() })),
+		accounts: presented.accountSections.map((section: BankImportResult['accountSections'][number]): IGeneratedAccountIdentity =>
+			({ sectionId: section.sectionId, accountId: randomUUID(), statementId: randomUUID() })),
+		transactions: presented.transactions.map((row: TransactionCandidate): IGeneratedTransactionIdentity => ({ rowId: row.rowId, transactionId: randomUUID() })),
 		drafts: []
 	});
 	await createWorkspace(precisionFile, { ...newMetadata(), name: 'Presentation-only exact values' }, [presentationRecord]);
 	const snapshotA: string = path.join(root, 'snapshot-a.receiptmatch');
 	const snapshotB: string = path.join(root, 'snapshot-b.receiptmatch');
-	const snapshotMetadata: { name: string; id: string; createdAt: string; savedAt: string | null; } = { ...newMetadata(), name: 'Same identity snapshots' };
+	const snapshotMetadata: WorkspaceMetadata = { ...newMetadata(), name: 'Same identity snapshots' };
 	for (const [file, marker, amount] of [
 		[snapshotA, 'SAME-IDENTITY SNAPSHOT A', '-101'],
 		[snapshotB, 'SAME-IDENTITY SNAPSHOT B', '-202']
@@ -730,7 +784,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		await clickCommand(page.getByRole('button', { name: 'Save', exact: true }), 'save');
 		await waitState({ dirty: false });
 		const saved: Awaited<ReturnType<typeof state>> = await state();
-		const ids: string[] = saved.workspace.imports.map((record: BankImportSummary): string => record.id);
+		const ids: string[] = saved.workspace.imports.map((record: IBankImportSummary): string => record.id);
 		await close();
 		await launch();
 		await dialogs({ opens: [workspaceFile] });
@@ -738,20 +792,20 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		await waitState({ filePath: workspaceFile, dirty: false });
 		await transactions().waitFor();
 		assert.deepEqual(
-			(await state()).workspace.imports.map((record: BankImportSummary): string => record.id),
+			(await state()).workspace.imports.map((record: IBankImportSummary): string => record.id),
 			ids
 		);
 		assert.equal(await transactions().locator('tbody > tr').count(), 2);
 		assert.equal(await fingerprint(original), beforeOriginal);
 	});
 	await check('identical-import-and-renaming-do-not-refetch-or-duplicate-clean-records', async (): Promise<void> => {
-		const ids: string[] = (await state()).workspace.imports.map((record: BankImportSummary): string => record.id);
+		const ids: string[] = (await state()).workspace.imports.map((record: IBankImportSummary): string => record.id);
 		await hook('workspace:bank-imports', 'count');
 		try {
 			const skipped: Awaited<ReturnType<typeof importFile>> = await importFile(duplicate, 'skipped');
 			assert.equal(skipped.workspace.dirty, false);
 			assert.deepEqual(
-				skipped.workspace.imports.map((record: BankImportSummary): string => record.id),
+				skipped.workspace.imports.map((record: IBankImportSummary): string => record.id),
 				ids
 			);
 			await page.getByLabel('Workspace name', { exact: true }).fill('UI import records renamed');
@@ -764,7 +818,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 			await restoreHook();
 		}
 	});
-	await check('partial-import-separates-valid-transactions-from-unknown-drafts-and-issues', async (): Promise<{ screenshot: string; }> => {
+	await check('partial-import-separates-valid-transactions-from-unknown-drafts-and-issues', async (): Promise<Record<'screenshot', string>> => {
 		await stage('partial: before real import click');
 		const imported: Awaited<ReturnType<typeof importFile>> = await importFile(partial);
 		await drafts().waitFor();
@@ -859,7 +913,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		await importFile(duplicate, 'skipped');
 		assert.equal(await transactions().locator('tbody > tr').count(), 2);
 	});
-	await check('explicitly-seeded-presentation-preserves-system-locale-scale18-precision-and-escapes-raw-text', async (): Promise<{ source: string; screenshot: string; }> => {
+	await check('explicitly-seeded-presentation-preserves-system-locale-scale18-precision-and-escapes-raw-text', async (): Promise<ISourceCapture> => {
 		await openFile(precisionFile, 'Presentation-only exact values');
 		await transactions().waitFor();
 		const first: Locator = transactions().locator('tbody > tr').nth(0);
@@ -948,8 +1002,8 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		const secondState: Awaited<ReturnType<typeof state>> = await state();
 		assert.equal(secondState.workspace.id, firstState.workspace.id);
 		assert.deepEqual(
-			secondState.workspace.imports.map((record: BankImportSummary): string => record.id),
-			firstState.workspace.imports.map((record: BankImportSummary): string => record.id)
+			secondState.workspace.imports.map((record: IBankImportSummary): string => record.id),
+			firstState.workspace.imports.map((record: IBankImportSummary): string => record.id)
 		);
 		assert.equal(secondState.workspace.savedAt, firstState.workspace.savedAt);
 		assert.match(normalized(await transactions().locator('tbody > tr').first().textContent()), /-2,02 EUR/);
@@ -962,11 +1016,11 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		await page.waitForFunction((): boolean => document.querySelector('[data-testid="transactions-table"] .row-description')?.textContent?.trim() === 'SAME-IDENTITY SNAPSHOT B');
 		assert.match(normalized(await transactions().locator('tbody > tr').first().textContent()), /-2,02 EUR/);
 	});
-	await check('keyboard-source-details-and-680px-layout-keep-tables-contained-with-real-visible-captures', async (): Promise<{ bounds: { width: number; content: number; client: number; }; screenshot: string; }> => {
+	await check('keyboard-source-details-and-680px-layout-keep-tables-contained-with-real-visible-captures', async (): Promise<ILayoutCapture> => {
 		await openFile(workspaceFile);
 		await transactions().waitFor();
-		const imports: BankImportSummary[] = (await state()).workspace.imports;
-		const partialImport: BankImportSummary | undefined = imports.find((record: BankImportSummary): boolean => path.basename(record.filePath) === path.basename(partial));
+		const imports: IBankImportSummary[] = (await state()).workspace.imports;
+		const partialImport: IBankImportSummary | undefined = imports.find((record: IBankImportSummary): boolean => path.basename(record.filePath) === path.basename(partial));
 		assert.ok(partialImport);
 		await selectStatement(partialImport);
 		await drafts().waitFor();
@@ -976,7 +1030,8 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		const sourceDrawer: Locator = page.getByRole('dialog', { name: 'Source details', exact: true });
 		await expect(sourceDrawer).toBeVisible();
 		await expect(sourceDrawer.getByRole('button', { name: 'Close', exact: true })).toBeFocused();
-		const edge: { right: number; viewport: number; } = await sourceDrawer.evaluate((drawer: HTMLElement | SVGElement): { right: number; viewport: number; } => ({ right: drawer.getBoundingClientRect().right, viewport: document.documentElement.clientWidth }));
+		const edge: ICellViewport = await sourceDrawer.evaluate((drawer: HTMLElement | SVGElement): ICellViewport =>
+			({ right: drawer.getBoundingClientRect().right, viewport: document.documentElement.clientWidth }));
 		assert.ok(Math.abs(edge.right - edge.viewport) < 2, JSON.stringify(edge));
 		await page.keyboard.press('Escape');
 		await expect(sourceDrawer).toBeHidden();
@@ -988,7 +1043,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		const before: number = await region.evaluate((element: HTMLElement | SVGElement): number => element.scrollLeft);
 		await page.keyboard.press('ArrowRight');
 		await page.waitForFunction((before: number): boolean => (document.querySelector('[aria-label="Transactions table, horizontally scrollable"]')?.scrollLeft ?? 0) > before, before);
-		const bounds: { width: number; content: number; client: number; } = await page.evaluate((): { width: number; content: number; client: number; } => ({ width: innerWidth, content: document.documentElement.scrollWidth, client: document.documentElement.clientWidth }));
+		const bounds: IContentWidth = await page.evaluate((): IContentWidth => ({ width: innerWidth, content: document.documentElement.scrollWidth, client: document.documentElement.clientWidth }));
 		assert.equal(bounds.width, 680);
 		assert.ok(bounds.content <= bounds.client + 1, JSON.stringify(bounds));
 		assert.equal(await region.evaluate((element: HTMLElement | SVGElement): boolean => document.activeElement === element), true);
@@ -1003,7 +1058,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 	await airwallexFixture(airwallexPartial, true);
 	const airwallexOriginalHash: string = await fingerprint(airwallex);
 	const airwallexScanHash: string = await fingerprint(airwallexScanned);
-	await check('airwallex-actual-ui-keeps-exact-values-provenance-and-both-banks-through-explicit-save-and-restart', async (): Promise<{ screenshot: string; retainedBanks: (string | undefined)[]; }> => {
+	await check('airwallex-actual-ui-keeps-exact-values-provenance-and-both-banks-through-explicit-save-and-restart', async (): Promise<IRetainedImportsCapture> => {
 		await currentApplication().evaluate(({ BrowserWindow }: typeof Electron.CrossProcessExports): void => BrowserWindow.getAllWindows()[0].setContentSize(1120, 900));
 		await openFile(workspaceFile);
 		await transactions().waitFor();
@@ -1032,13 +1087,14 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 			]
 		);
 		assert.deepEqual(
-			record.result.transactions.map((row: TransactionCandidate): { coefficient: string; currency: string; scale: number; } | null => row.reportedOriginalAmount?.value ?? null),
+			record.result.transactions.map((row: TransactionCandidate): Money | null => row.reportedOriginalAmount?.value ?? null),
 			[{ coefficient: '-1807', currency: 'USD', scale: 2 }, null, { coefficient: '419', currency: 'EUR', scale: 2 }, null]
 		);
 		assert.equal(record.result.accountSections[0].accountReference, null);
 		assert.ok(record.result.transactions.every((row: TransactionCandidate): boolean => row.bookingDate.basisLabel === 'Date (Central European Time)' && row.valueDate === null));
 		assert.ok(record.result.sourceProvenance);
-		const pageIds: Map<string, number> = new Map(record.result.sourceProvenance.pages.map((page: { pageId: string; pageNumber: number; width: number; height: number; }): [string, number] => [page.pageId, page.pageNumber]));
+		const pageIds: Map<string, number> = new Map(record.result.sourceProvenance.pages.map(
+			(page: Pick<ImportPage, 'pageId' | 'pageNumber' | 'width' | 'height'>): [string, number] => [page.pageId, page.pageNumber]));
 		assert.ok(record.result.transactions[0].bookingDate.evidence.some((value: SourceEvidence): boolean => pageIds.get(value.pageId) === 3));
 		assert.ok(record.result.transactions[2].description.evidence.every((value: SourceEvidence): boolean => pageIds.get(value.pageId) === 2));
 		assert.equal(await transactions().locator('tbody > tr').count(), 4);
@@ -1109,7 +1165,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		assert.equal(await fingerprint(airwallex), airwallexOriginalHash);
 		return { screenshot: wide, retainedBanks: [...new Set(retained.map((record: StoredBankImport): string | undefined => record.result.adapter?.bankId))] };
 	});
-	await check('airwallex-partial-ui-retains-three-valid-rows-and-one-visible-unknown-draft-after-restart', async (): Promise<{ screenshot: string; bounds: { width: number; content: number; client: number; }; }> => {
+	await check('airwallex-partial-ui-retains-three-valid-rows-and-one-visible-unknown-draft-after-restart', async (): Promise<ILayoutCapture> => {
 		const before: Awaited<ReturnType<typeof bankRecords>> = await bankRecords();
 		const savedHash: string = await fingerprint(workspaceFile);
 		const imported: Awaited<ReturnType<typeof importFile>> = await importFile(airwallexPartial);
@@ -1152,7 +1208,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		await settle();
 		const region: Locator = page.getByRole('region', { name: 'Transactions table, horizontally scrollable', exact: true });
 		await region.focus();
-		const bounds: { width: number; content: number; client: number; } = await page.evaluate((): { width: number; content: number; client: number; } => ({ width: innerWidth, content: document.documentElement.scrollWidth, client: document.documentElement.clientWidth }));
+		const bounds: IContentWidth = await page.evaluate((): IContentWidth => ({ width: innerWidth, content: document.documentElement.scrollWidth, client: document.documentElement.clientWidth }));
 		assert.equal(bounds.width, 680);
 		assert.ok(bounds.content <= bounds.client + 1, JSON.stringify(bounds));
 		return { screenshot: await screenshot('airwallex-partial-narrow'), bounds };
@@ -1177,7 +1233,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 			assert.equal(normalized(await drafts().locator('.amount-cell').first().textContent()), 'Unknown');
 		}
 	});
-	await check('airwallex-uncertain-real-ocr-retains-visible-drafts-without-inventing-financial-values-through-save-and-restart', async (): Promise<{ transactions: number; unresolvedDrafts: number; sourceHash: string; }> => {
+	await check('airwallex-uncertain-real-ocr-retains-visible-drafts-without-inventing-financial-values-through-save-and-restart', async (): Promise<IBankReopenSummary> => {
 		const uncertain: string = path.resolve('tests/fixtures/airwallex-synthetic-uncertain-scan.pdf');
 		const sourceHash: string = await fingerprint(uncertain);
 		const before: Awaited<ReturnType<typeof bankRecords>> = await bankRecords();
@@ -1195,7 +1251,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		assert.equal(record.result.sourceProvenance?.sha256, sourceHash);
 		assert.ok(record.result.transactions.length > 0, 'Readable financial rows must remain available beside unresolved rows.');
 		assert.ok(record.result.unresolvedDrafts.length > 0);
-		const expected: Map<string, { amount: string; direction: string; original: { coefficient: string; currency: string; scale: number; }; } | { amount: string; direction: string; original: null; }> = new Map([
+		const expected: Map<string, IVisibleAmountWithOriginal | IVisibleAmountWithoutOriginal> = new Map([
 			['2032-03-01', { amount: '-1643', direction: 'outgoing', original: { coefficient: '-1807', currency: 'USD', scale: 2 } }],
 			['2032-03-02', { amount: '-1307', direction: 'outgoing', original: null }],
 			['2032-03-03', { amount: '419', direction: 'incoming', original: { coefficient: '419', currency: 'EUR', scale: 2 } }]
@@ -1210,7 +1266,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 			}
 		const retainedDates: Set<unknown> = new Set();
 		for (const row of record.result.transactions) {
-			const wanted: { amount: string; direction: string; original: { coefficient: string; currency: string; scale: number; }; } | { amount: string; direction: string; original: null; } | undefined = expected.get(row.bookingDate.value);
+			const wanted: IVisibleAmountWithOriginal | IVisibleAmountWithoutOriginal | undefined = expected.get(row.bookingDate.value);
 			assert.ok(wanted, 'Only a known, readable source transaction can be imported.');
 			assert.ok(!retainedDates.has(row.bookingDate.value));
 			retainedDates.add(row.bookingDate.value);
@@ -1254,7 +1310,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 		}
 		await clickCommand(page.getByRole('button', { name: 'Cancel import', exact: true }), 'cancel-import');
 		const cancelled: Awaited<ReturnType<typeof outcome>> = await outcome('cancelled');
-		const completion: CommandTraceEntry = await commandEnd('import-statement', sequence);
+		const completion: ICommandTraceEntry = await commandEnd('import-statement', sequence);
 		assert.equal(completion.outcome, 'cancelled');
 		assert.equal(cancelled.workspace.dirty, false);
 		assert.deepEqual(await bankRecords(), before);
@@ -1281,7 +1337,7 @@ test('packaged Electron bank import interface', async ({ uiImport: { playwright,
 			]
 		);
 		assert.deepEqual(
-			record.result.transactions.map((row: TransactionCandidate): { coefficient: string; currency: string; scale: number; } | null => row.reportedOriginalAmount?.value ?? null),
+			record.result.transactions.map((row: TransactionCandidate): Money | null => row.reportedOriginalAmount?.value ?? null),
 			[{ coefficient: '-1807', currency: 'USD', scale: 2 }, null, { coefficient: '419', currency: 'EUR', scale: 2 }]
 		);
 		assert.ok(

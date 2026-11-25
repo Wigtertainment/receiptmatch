@@ -6,7 +6,7 @@ import path from 'node:path';
 import { test } from 'vitest';
 import { importIssue, type BankImportInput, type BankImportResult, type PositionedSpan } from '../../src/shared/bank-import.js';
 import { PDF_EXTRACTION_VERSION, type ExtractionResult } from '../../src/shared/pdf-extraction.js';
-import { StatementImportService, type BankImportAttempt, type BankImportOptions, type StatementFallbackResult } from '../../electron/import/service.js';
+import { StatementImportService, type BankImportAttempt, type IBankImportOptions, type StatementFallbackResult } from '../../electron/import/service.js';
 import { proposeStatementTransactions } from '../../electron/import/statement-table.js';
 import type { StatementProposalExtraction } from '../../electron/import/nuextract-statement.js';
 import { span, statement } from './bank-fixtures.js';
@@ -35,7 +35,7 @@ test('offers recognition only on request and retries the same original bytes aft
         let selectionCount: number = 0;
         let recognitionCount: number = 0;
         let ready: boolean = false;
-        const service: StatementImportService = new StatementImportService({
+        const statementImportService: StatementImportService = new StatementImportService({
             choose: (): Promise<string> => {
                 selectionCount++;
                 return Promise.resolve(file);
@@ -49,7 +49,7 @@ test('offers recognition only on request and retries the same original bytes aft
                     { status: 'unavailable', issues: [importIssue('local-model-unavailable', 'Make the model available in Settings.')] });
             }
         });
-        const offered: BankImportAttempt = await service.run({ existing: [] });
+        const offered: BankImportAttempt = await statementImportService.run({ existing: [] });
         assert.equal(offered.status, 'unsupported');
         assert.ok('fallback' in offered);
         assert.equal(offered.fallback.filePath, file);
@@ -67,7 +67,7 @@ test('offers recognition only on request and retries the same original bytes aft
         assert.equal(recognitionCount, 2);
 
         await writeFile(file, original);
-        assert.deepEqual(await service.run({ existing: [proposed.record] }), { status: 'skipped', importId: proposed.record.id });
+        assert.deepEqual(await statementImportService.run({ existing: [proposed.record] }), { status: 'skipped', importId: proposed.record.id });
         assert.equal(recognitionCount, 2);
     } finally {
         await rm(root, { recursive: true, force: true });
@@ -80,10 +80,10 @@ test('validates recognized provenance and honors cancellation before the proposa
         const file: string = path.join(root, 'synthetic.pdf');
         await writeFile(file, original);
         const aborted: AbortController = new AbortController();
-        const service: StatementImportService = new StatementImportService({
+        const statementImportService: StatementImportService = new StatementImportService({
             choose: (): Promise<string> => Promise.resolve(file),
             extract: (bytes: Uint8Array, sourceId: string): Promise<ExtractionResult> => Promise.resolve(extract(bytes, sourceId)),
-            propose: (_bytes: Uint8Array, input: BankImportInput, options: Pick<BankImportOptions, 'signal' | 'onProgress'>): Promise<StatementProposalExtraction> => {
+            propose: (_bytes: Uint8Array, input: BankImportInput, options: Pick<IBankImportOptions, 'signal' | 'onProgress'>): Promise<StatementProposalExtraction> => {
                 const result: BankImportResult = proposeStatementTransactions(input, new Map([[1, table]]));
                 if (options.signal) {
                     aborted.abort();
@@ -93,7 +93,7 @@ test('validates recognized provenance and honors cancellation before the proposa
                 return Promise.resolve({ status: 'proposed', result });
             }
         });
-        const offered: BankImportAttempt = await service.run({ existing: [] });
+        const offered: BankImportAttempt = await statementImportService.run({ existing: [] });
         assert.ok('fallback' in offered);
         const mismatch: StatementFallbackResult = await offered.fallback.run({});
         assert.equal(mismatch.status, 'failed');
@@ -111,7 +111,7 @@ test('keeps recognized-bank imports and failed extraction on their normal paths'
         await writeFile(file, original);
         let fail: boolean = false;
         let currency: string = 'EUR';
-        const service: StatementImportService = new StatementImportService({
+        const statementImportService: StatementImportService = new StatementImportService({
             choose: (): Promise<string> => Promise.resolve(file),
             extract: (bytes: Uint8Array, sourceId: string): Promise<ExtractionResult> => {
                 if (fail) {
@@ -124,16 +124,16 @@ test('keeps recognized-bank imports and failed extraction on their normal paths'
             },
             propose: (): Promise<never> => assert.fail('An existing adapter or extraction failure reached local recognition.')
         });
-        const imported: BankImportAttempt = await service.run({ existing: [] });
+        const imported: BankImportAttempt = await statementImportService.run({ existing: [] });
         assert.equal(imported.status, 'imported');
         assert.equal(imported.record.result.adapter?.bankId, 'revolut');
         currency = 'GBP';
-        const unsupported: BankImportAttempt = await service.run({ existing: [] });
+        const unsupported: BankImportAttempt = await statementImportService.run({ existing: [] });
         assert.equal(unsupported.status, 'unsupported');
         assert.equal(unsupported.issues[0].code, 'unsupported-currency');
         assert.equal('fallback' in unsupported, false);
         fail = true;
-        const failed: BankImportAttempt = await service.run({ existing: [] });
+        const failed: BankImportAttempt = await statementImportService.run({ existing: [] });
         assert.equal(failed.status, 'failed');
         assert.equal('fallback' in failed, false);
     } finally {

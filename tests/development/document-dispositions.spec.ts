@@ -33,8 +33,8 @@ test('excludes uncertain recognitions, distinguishes notes and persists reversib
             args: ['.', '--hidden', '--disable-gpu', '--user-data-dir=' + path.join(root, 'profile')], env: { ...process.env, ELECTRON_START_URL: '' }, chromiumSandbox: true });
         await app.evaluate(({ dialog, BrowserWindow }: typeof Electron.CrossProcessExports, file: string): void => {
             BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
-            dialog.showOpenDialog = async (): Promise<{ canceled: false; filePaths: string[] }> => Promise.resolve({ canceled: false, filePaths: [file] });
-            dialog.showMessageBox = async (): Promise<{ response: number; checkboxChecked: false }> => Promise.resolve({ response: 1, checkboxChecked: false });
+            dialog.showOpenDialog = async (): Promise<Electron.OpenDialogReturnValue> => Promise.resolve({ canceled: false, filePaths: [file] });
+            dialog.showMessageBox = async (): Promise<Electron.MessageBoxReturnValue> => Promise.resolve({ response: 1, checkboxChecked: false });
         }, workspaceFile);
         page = await app.firstWindow();
         await page.getByRole('button', { name: 'Open workspace', exact: true }).click();

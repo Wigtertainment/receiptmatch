@@ -7,7 +7,7 @@ import {
     bankImportResultSchema,
     calendarDateSchema,
     importIssue,
-    type BankAdapter,
+    type IBankAdapter,
     type BankImportInput
 } from '../../src/shared/bank-import.js';
 import { moneySchema } from '../../src/shared/money.js';
@@ -286,7 +286,7 @@ test('shared money schema is unchanged and output validation checks calendar dat
 
 test('registry considers every adapter, refuses ambiguous matches, validates results and contains adapter failure', (): void => {
     let called: boolean = false;
-    const other: BankAdapter = {
+    const other: IBankAdapter = {
         metadata: { bankId: 'synthetic-bank', adapterId: 'synthetic-adapter', version: '1', layouts: [{ layoutId: 'fixture', version: '1' }] },
         identify: (): true => true,
         parse: (): never => {
@@ -298,12 +298,14 @@ test('registry considers every adapter, refuses ambiguous matches, validates res
     assert.equal(result.issues[0].code, 'ambiguous-adapter');
     assert.equal(called, false);
     assert.equal(parseBankStatement(statement(), [other]).issues[0].code, 'adapter-failed');
-    const badResult: BankAdapter = {
+    const badResult: IBankAdapter = {
         ...other,
-        parse: (input: BankImportInput): { status: "complete"; transactions: never[]; issues: ImportIssue[]; contractVersion: "1"; adapter: { bankId: string; adapterId: string; version: string; layoutId: string; layoutVersion: string; } | null; sourceProvenance: { sourceId: string; sha256: string; extractionRunId: string; extractionVersion: string; pages: { pageId: string; pageNumber: number; width: number; height: number; }[]; } | null; accountSections: { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; }[]; unresolvedDrafts: UnresolvedDraft[]; } => ({ ...revolutAdapter.parse(input), status: 'complete', transactions: [], issues: [importIssue('invalid', 'Should not be complete.')] })
+        parse: (input: BankImportInput): BankImportResult => ({
+            ...revolutAdapter.parse(input), status: 'complete', transactions: [], issues: [importIssue('invalid', 'Should not be complete.')]
+        })
     };
     assert.equal(parseBankStatement(statement(), [badResult]).issues[0].code, 'invalid-adapter-result');
-    const wrongSource: BankAdapter = {
+    const wrongSource: IBankAdapter = {
         ...revolutAdapter,
         parse: (input: BankImportInput): BankImportResult => {
             const result: BankImportResult = revolutAdapter.parse(input);
@@ -312,7 +314,7 @@ test('registry considers every adapter, refuses ambiguous matches, validates res
         }
     };
     assert.equal(parseBankStatement(statement(), [wrongSource]).issues[0].code, 'invalid-adapter-provenance');
-    const wrongPages: BankAdapter = {
+    const wrongPages: IBankAdapter = {
         ...revolutAdapter,
         parse: (input: BankImportInput): BankImportResult => {
             const result: BankImportResult = revolutAdapter.parse(input);

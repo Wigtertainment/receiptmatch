@@ -3,12 +3,12 @@ import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test, vi, type TestContext } from 'vitest';
-import type { DocumentImportService } from '../../electron/documents/service.js';
-import type { BankImportAttempt, BankImportService } from '../../electron/import/service.js';
+import type { IDocumentImportService } from '../../electron/documents/service.js';
+import type { BankImportAttempt, IBankImportService } from '../../electron/import/service.js';
 import { prepareStatementAnalysisVersion } from '../../electron/import/statement-analyses.js';
 import { reconciliationRows, type ReconciliationRow } from '../../electron/reconciliation-csv.js';
-import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, type SavedWorkspace } from '../../electron/store.js';
-import { WorkspaceSession, type WorkspaceDialogs } from '../../electron/workspace-session.js';
+import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, type ISavedWorkspace } from '../../electron/store.js';
+import { WorkspaceSession, type IWorkspaceDialogs } from '../../electron/workspace-session.js';
 import type { BankImportResult } from '../../src/shared/bank-import.js';
 import { defaultExportFilenamePattern } from '../../src/shared/export-filename.js';
 import type { StatementAnalysisVersion } from '../../src/shared/statement-analysis.js';
@@ -16,9 +16,9 @@ import type { StoredBankImport } from '../../src/shared/workspace-import.js';
 import type { StoredDocumentImport, StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
 import { documentRun, retainedBank, retainedDocument } from './document-fixtures.js';
 
-interface Fixture { root: string; file: string; original: StoredBankImport; versions: StatementAnalysisVersion[]; }
+interface IFixture { root: string; file: string; original: StoredBankImport; versions: StatementAnalysisVersion[]; }
 
-function saveVersions(current: SavedWorkspace, versions: StatementAnalysisVersion[]): Promise<SavedWorkspace> {
+function saveVersions(current: ISavedWorkspace, versions: StatementAnalysisVersion[]): Promise<ISavedWorkspace> {
     return saveWorkspace(current, current.metadata, current.imports, current.documentImports, current.matchDecisions, current.bankCorrections,
         current.documentCorrections, current.reviewApprovals, current.duplicateDecisions, current.sourceRelocations, current.sourceReplacements,
         current.archivedSourceReviews, current.ignoredTransactions, current.receiptAnalysisVersions, new Set(), current.documentFieldReviews, versions);
@@ -32,7 +32,7 @@ function proposed(record: StoredBankImport, date: string): BankImportResult {
     return result;
 }
 
-async function fixture(context: TestContext): Promise<Fixture> {
+async function fixture(context: TestContext): Promise<IFixture> {
     const parent: string = await realpath(tmpdir());
     const root: string = await mkdtemp(path.join(parent, 'receiptmatch-statement-versions-'));
     context.onTestFinished(async (): Promise<void> => {
@@ -46,18 +46,18 @@ async function fixture(context: TestContext): Promise<Fixture> {
     next.transactions = next.transactions.slice(0, 1);
     const second: StatementAnalysisVersion = prepareStatementAnalysisVersion(original, first.record, next);
     const versions: StatementAnalysisVersion[] = [first, second];
-    const initial: SavedWorkspace = await createWorkspace(file, newMetadata(), [original]);
+    const initial: ISavedWorkspace = await createWorkspace(file, newMetadata(), [original]);
     await saveVersions(initial, versions);
     return { root, file, original, versions };
 }
 
-function dialogs(file: string, destination: string = file): WorkspaceDialogs {
+function dialogs(file: string, destination: string = file): IWorkspaceDialogs {
     return { open: async (): Promise<string> => Promise.resolve(file), save: async (): Promise<string> => Promise.resolve(destination),
         unsaved: async (): Promise<'discard'> => Promise.resolve('discard') };
 }
 
 test('session, corrections and reconciliation export use the latest statement analysis after reopen', async (context: TestContext): Promise<void> => {
-    const { root, file, original, versions }: Fixture = await fixture(context);
+    const { root, file, original, versions }: IFixture = await fixture(context);
     const latest: StoredBankImport = versions[1].record;
     const id: string = latest.transactions[0].transactionId;
     const session: WorkspaceSession = new WorkspaceSession(dialogs(file));
@@ -76,7 +76,7 @@ test('session, corrections and reconciliation export use the latest statement an
     await session.dispatch({ type: 'save' });
     assert.equal(session.state().error, null);
     assert.equal(session.state().workspace!.dirty, false);
-    const reopened: SavedWorkspace = await loadWorkspace(file);
+    const reopened: ISavedWorkspace = await loadWorkspace(file);
     assert.deepEqual(reopened.imports, [original]);
     assert.deepEqual(reopened.statementAnalysisVersions, versions);
     const rows: ReconciliationRow[] = reconciliationRows(reopened);
@@ -100,7 +100,7 @@ test('session, corrections and reconciliation export use the latest statement an
 });
 
 test('removing a statement also removes its analysis history and latest booking decisions', async (context: TestContext): Promise<void> => {
-    const { file, original, versions }: Fixture = await fixture(context);
+    const { file, original, versions }: IFixture = await fixture(context);
     const session: WorkspaceSession = new WorkspaceSession(dialogs(file));
     await session.dispatch({ type: 'open' });
     await session.dispatch({ type: 'set-transaction-ignored', revision: session.state().workspace!.matchRevision,
@@ -112,14 +112,14 @@ test('removing a statement also removes its analysis history and latest booking 
     assert.deepEqual(session.matchResults(), []);
     await session.dispatch({ type: 'save' });
     assert.equal(session.state().error, null);
-    const reopened: SavedWorkspace = await loadWorkspace(file);
+    const reopened: ISavedWorkspace = await loadWorkspace(file);
     assert.deepEqual(reopened.imports, []);
     assert.deepEqual(reopened.statementAnalysisVersions, []);
     assert.equal(reopened.ignoredTransactions.size, 0);
 });
 
 test('a new workspace clears statement analysis versions without altering the previously saved workspace', async (context: TestContext): Promise<void> => {
-    const { root, file, versions }: Fixture = await fixture(context);
+    const { root, file, versions }: IFixture = await fixture(context);
     const destination: string = path.join(root, 'new.receiptmatch');
     const session: WorkspaceSession = new WorkspaceSession(dialogs(file, destination));
     await session.dispatch({ type: 'open' });
@@ -131,15 +131,15 @@ test('a new workspace clears statement analysis versions without altering the pr
 });
 
 test('new statement and document imports cannot reuse retired analysis row identities', async (context: TestContext): Promise<void> => {
-    const { root, file, versions }: Fixture = await fixture(context);
+    const { root, file, versions }: IFixture = await fixture(context);
     const retired: string = versions[0].record.transactions[0].transactionId;
     const bank: StoredBankImport = retainedBank(root);
     bank.transactions[0].transactionId = retired;
     const document: StoredSupportingDocument = retainedDocument(root);
     document.id = retired;
     const documents: StoredDocumentImport = documentRun(root, [document]);
-    const bankService: BankImportService = { run: async (): Promise<BankImportAttempt> => Promise.resolve({ status: 'imported', record: bank }) };
-    const documentService: DocumentImportService = { run: async (): Promise<StoredDocumentImport> => Promise.resolve(documents) };
+    const bankService: IBankImportService = { run: async (): Promise<BankImportAttempt> => Promise.resolve({ status: 'imported', record: bank }) };
+    const documentService: IDocumentImportService = { run: async (): Promise<StoredDocumentImport> => Promise.resolve(documents) };
     for (const type of ['import-statement', 'import-documents'] as const) {
         const session: WorkspaceSession = new WorkspaceSession(dialogs(file), undefined, bankService, documentService);
         await session.dispatch({ type: 'open' });
@@ -155,7 +155,7 @@ test('new statement and document imports cannot reuse retired analysis row ident
 });
 
 test('known original bank scope preserves duplicate decisions and permits reviewing overlaps after reanalysis', async (context: TestContext): Promise<void> => {
-    const { root, original }: Fixture = await fixture(context);
+    const { root, original }: IFixture = await fixture(context);
     const other: StoredBankImport = retainedBank(root);
     const file: string = path.join(root, 'duplicates.receiptmatch');
     await createWorkspace(file, newMetadata(), [original, other]);

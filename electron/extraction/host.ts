@@ -13,26 +13,35 @@ import {
     PDF_EXTRACTION_LIMITS,
     PDF_EXTRACTION_VERSION,
     RECEIPT_RASTER_LIMITS,
+    type ExtractionEvent,
     type ExtractionJob,
     type ExtractionProgress,
-    type ExtractionResult
+    type ExtractionResult,
+    type OcrRaster
 } from '../../src/shared/pdf-extraction.js';
 import { imageInputDimensions, ImageInputError } from './image-input.js';
 
-export interface ExtractionOptions {
+export interface IExtractionOptions {
     signal?: AbortSignal;
     onProgress?: (progress: ExtractionProgress) => void;
 }
-export type DocumentImagesResult = { status: 'complete'; images: Uint8Array[] } | { status: 'failed' | 'cancelled'; issues: ImportIssue[] };
+interface IRenderedDocumentImages { status: 'complete'; images: Uint8Array[] }
+interface IDocumentImageFailure { status: 'failed' | 'cancelled'; issues: ImportIssue[] }
+export type DocumentImagesResult = IRenderedDocumentImages | IDocumentImageFailure;
+
+interface IExtractionScheme {
+    scheme: string;
+    privileges: Required<Pick<Electron.Privileges, 'standard' | 'secure' | 'supportFetchAPI' | 'corsEnabled' | 'stream'>>;
+}
 
 export const EXTRACTION_URL: "receiptmatch-extraction://engine/index.html" = 'receiptmatch-extraction://engine/index.html';
-export const EXTRACTION_SCHEME_DESCRIPTOR: { scheme: string; privileges: { standard: boolean; secure: boolean; supportFetchAPI: boolean; corsEnabled: boolean; stream: boolean; }; } = {
+export const EXTRACTION_SCHEME_DESCRIPTOR: IExtractionScheme = {
     scheme: 'receiptmatch-extraction',
     privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true }
 };
 const csp: string =
     "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' data: blob:; font-src 'self' blob:; style-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'";
-const readySchema: z.ZodObject<{ jobId: z.ZodUUID; }, z.core.$strict> = z.strictObject({ jobId: z.uuid() });
+const readySchema: z.ZodObject<Record<'jobId', z.ZodUUID>, z.core.$strict> = z.strictObject({ jobId: z.uuid() });
 let active: boolean = false;
 let cleanupFailed: boolean = false;
 
@@ -94,7 +103,7 @@ async function cleanupSession(value: Session, handled: boolean): Promise<boolean
 export async function extractPdfBytes(
     bytes: Uint8Array,
     sourceId: string,
-    options: ExtractionOptions = {}
+    options: IExtractionOptions = {}
 ): Promise<ExtractionResult> {
     return extractDocumentBytes(bytes, sourceId, 'pdf', { signal: options.signal, onProgress: options.onProgress });
 }
@@ -103,12 +112,12 @@ export async function extractDocumentBytes(
     bytes: Uint8Array,
     sourceId: string,
     format: 'pdf' | 'png' | 'jpeg',
-    options: ExtractionOptions = {}
+    options: IExtractionOptions = {}
 ): Promise<ExtractionResult> {
     return extractDocument(bytes, sourceId, format, options);
 }
 
-export async function renderDocumentImages(bytes: Uint8Array, sourceId: string, format: ExtractionJob['format'], options: ExtractionOptions = {}): Promise<DocumentImagesResult> {
+export async function renderDocumentImages(bytes: Uint8Array, sourceId: string, format: ExtractionJob['format'], options: IExtractionOptions = {}): Promise<DocumentImagesResult> {
     const images: Uint8Array[] = [];
     const result: ExtractionResult = await extractDocument(bytes, sourceId, format, { signal: options.signal, onProgress: options.onProgress }, images);
     if (result.status === 'complete') {
@@ -129,7 +138,7 @@ async function extractDocument(
     bytes: Uint8Array,
     sourceId: string,
     format: 'pdf' | 'png' | 'jpeg',
-    options: ExtractionOptions,
+    options: IExtractionOptions,
     rasters?: Uint8Array[]
 ): Promise<ExtractionResult> {
     if (!validDocumentInput(bytes, sourceId)) {
@@ -148,7 +157,7 @@ async function extractDocument(
         return failure('engine-cleanup', 'The extraction session could not be cleared safely. Restart ReceiptMatch before another extraction.');
     }
     const snapshot: Uint8Array<ArrayBuffer> = Uint8Array.from(bytes);
-    let imageDimensions: { width: number; height: number } | null;
+    let imageDimensions: ReturnType<typeof imageInputDimensions> | null;
     try {
         imageDimensions = format === 'pdf' ? null : imageInputDimensions(snapshot, format);
     } catch (error: unknown) {
@@ -161,7 +170,7 @@ async function extractDocument(
     const jobId: `${string}-${string}-${string}-${string}-${string}` = randomUUID();
     const job: ExtractionJob = { jobId, sourceId, format, sha256: createHash('sha256').update(snapshot).digest('hex'), bytes: snapshot,
         rasterOnly: rasters ? true : undefined };
-    return new Promise<ExtractionResult>((resolve: (value: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; } | PromiseLike<{ status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }>) => void): void => {
+    return new Promise<ExtractionResult>((resolve: (value: ExtractionResult | PromiseLike<ExtractionResult>) => void): void => {
         let window: BrowserWindow | undefined;
         let isolatedSession: Session | undefined;
         let settled: boolean = false;
@@ -208,12 +217,12 @@ async function extractDocument(
             if (!rasters || !authorized(event) || settled || !started || requestJobId !== jobId) {
                 throw new Error('OCR raster request denied.');
             }
-            const parsed: z.ZodSafeParseResult<{ pageNumber: number; width: number; height: number; png: Uint8Array<ArrayBuffer>; }> = ocrRasterSchema.safeParse(payload);
+            const parsed: z.ZodSafeParseResult<OcrRaster> = ocrRasterSchema.safeParse(payload);
             if (!parsed.success) {
                 throw new Error('Invalid OCR raster.');
             }
-            const { pageNumber, width, height, png }: { pageNumber: number; width: number; height: number; png: Uint8Array<ArrayBuffer>; } = parsed.data;
-            const dimensions: { width: number; height: number; } = imageInputDimensions(png, 'png', OCR_RASTER_BYTES);
+            const { pageNumber, width, height, png }: OcrRaster = parsed.data;
+            const dimensions: ReturnType<typeof imageInputDimensions> = imageInputDimensions(png, 'png', OCR_RASTER_BYTES);
             if (dimensions.width !== width || dimensions.height !== height || (format !== 'pdf' && pageNumber !== 1) ||
                 rasterPixels + width * height > PDF_EXTRACTION_LIMITS.pixelsTotal) {
                 throw new Error('Invalid OCR raster.');
@@ -231,7 +240,7 @@ async function extractDocument(
             if (!authorized(event) || settled) {
                 return;
             }
-            const parsed: z.ZodSafeParseResult<{ jobId: string; }> = readySchema.safeParse(payload);
+            const parsed: z.ZodSafeParseResult<z.infer<typeof readySchema>> = readySchema.safeParse(payload);
             if (!parsed.success || parsed.data.jobId !== jobId || started) {
                 return;
             }
@@ -243,12 +252,12 @@ async function extractDocument(
             if (!authorized(event) || settled) {
                 return;
             }
-            const parsed: z.ZodSafeParseResult<{ jobId: string; event: { type: "progress"; progress: ExtractionProgress; } | { type: "result"; result: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }; }; }> = extractionEventSchema.safeParse(payload);
+            const parsed: z.ZodSafeParseResult<z.infer<typeof extractionEventSchema>> = extractionEventSchema.safeParse(payload);
             if (!parsed.success || parsed.data.jobId !== jobId || !started) {
                 finish(failure('engine-result', 'The extraction engine returned an invalid message.'));
                 return;
             }
-            const message: { type: "progress"; progress: ExtractionProgress; } | { type: "result"; result: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }; } = parsed.data.event;
+            const message: ExtractionEvent = parsed.data.event;
             if (message.type === 'progress') {
                 try {
                     options.onProgress?.(message.progress);
@@ -257,7 +266,7 @@ async function extractDocument(
                 }
                 return;
             }
-            const result: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; } = message.result;
+            const result: ExtractionResult = message.result;
             if (result.status === 'complete' || result.status === 'partial') {
                 const checked: z.ZodSafeParseResult<BankImportInput> = bankImportInputSchema.safeParse(result.input);
                 if (
@@ -334,11 +343,11 @@ async function extractDocument(
                         additionalArguments: [`--receiptmatch-extraction-job=${jobId}`]
                     }
                 });
-                window.webContents.setWindowOpenHandler((): { action: "deny"; } => ({ action: 'deny' }));
+                window.webContents.setWindowOpenHandler((): Record<'action', 'deny'> => ({ action: 'deny' }));
                 window.webContents.on('will-navigate', (event: Electron.Event<Electron.WebContentsWillNavigateEventParams>): void => event.preventDefault());
                 window.webContents.on('will-frame-navigate', (event: Electron.Event<Electron.WebContentsWillFrameNavigateEventParams>): void => event.preventDefault());
                 window.webContents.on('will-redirect', (event: Electron.Event<Electron.WebContentsWillRedirectEventParams>): void => event.preventDefault());
-                window.webContents.on('will-attach-webview', (event: { preventDefault: () => void; readonly defaultPrevented: boolean; }): void => event.preventDefault());
+                window.webContents.on('will-attach-webview', (event: Pick<Electron.Event, 'preventDefault' | 'defaultPrevented'>): void => event.preventDefault());
                 window.webContents.once('render-process-gone', (): void => finish(failure('engine-crashed', 'The isolated document extraction process stopped.')));
                 window.once('closed', (): void => finish(failure('engine-crashed', 'The isolated document extraction window closed.')));
                 await window.loadURL(EXTRACTION_URL);

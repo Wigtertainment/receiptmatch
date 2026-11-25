@@ -9,13 +9,14 @@ import { importIssue } from '../../src/shared/bank-import.js';
 import { NUEXTRACT_RECEIPT_VERSION, receiptAiRequestSchema, type ReceiptAiRequest, type ReceiptAiResult } from '../../src/shared/receipt-ai.js';
 import type { StoredDocumentImport, StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
 import { interpretSupportingDocument } from '../../electron/documents/interpret.js';
-import type { ReceiptAiSource } from '../../electron/documents/nuextract-receipt.js';
+import type { IReceiptAiSource } from '../../electron/documents/nuextract-receipt.js';
 import { compareDocuments } from '../../electron/source-comparison.js';
 import type { SupportingDocument } from '../../src/shared/supporting-document.js';
-import { WorkspaceSession, type ReceiptAiDependencies, type WorkspaceDialogs } from '../../electron/workspace-session.js';
+import { WorkspaceSession, type IReceiptAiDependencies, type IWorkspaceDialogs } from '../../electron/workspace-session.js';
 import { documentRun, extractedDocument, retainedDocument } from './document-fixtures.js';
+import type { OriginalAdoptionRequest } from '../../src/shared/original-preview.js';
 
-async function modelAnalysis(source: ReceiptAiSource): Promise<ReceiptAiResult> {
+async function modelAnalysis(source: IReceiptAiSource): Promise<ReceiptAiResult> {
     const bytes: NonSharedBuffer = await readFile(source.filePath);
     const extracted: ReturnType<typeof extractedDocument> = extractedDocument(bytes, source.sourceId ?? randomUUID(), source.format);
     extracted.input.extraction.version = NUEXTRACT_RECEIPT_VERSION;
@@ -27,8 +28,8 @@ async function modelAnalysis(source: ReceiptAiSource): Promise<ReceiptAiResult> 
     return { status: 'ready', model: 'nuextract3', analysis, changes, conflicts };
 }
 
-async function sessionFor(run: StoredDocumentImport, dependencies: ReceiptAiDependencies, relocated?: string): Promise<WorkspaceSession> {
-    const dialogs: WorkspaceDialogs = { open: (): Promise<null> => Promise.resolve(null), save: (): Promise<null> => Promise.resolve(null),
+async function sessionFor(run: StoredDocumentImport, dependencies: IReceiptAiDependencies, relocated?: string): Promise<WorkspaceSession> {
+    const dialogs: IWorkspaceDialogs = { open: (): Promise<null> => Promise.resolve(null), save: (): Promise<null> => Promise.resolve(null),
         unsaved: (): Promise<'discard'> => Promise.resolve('discard'), relinkOriginal: (): Promise<string | null> => Promise.resolve(relocated ?? null) };
     const session: WorkspaceSession = new WorkspaceSession(dialogs, undefined, undefined, { run: (): Promise<StoredDocumentImport> => Promise.resolve(run) }, undefined, undefined, dependencies);
     await session.dispatch({ type: 'new' });
@@ -75,7 +76,7 @@ test('rejects failed receipts even if they have a verified fingerprint', async (
         const failedPath: string = path.join(root, 'unreadable.pdf');
         const bytes: string = 'synthetic failed document';
         await writeFile(failedPath, bytes);
-        const failed: Extract<StoredDocumentImport['files'][number], { status: 'failed' }> = {
+        const failed: Extract<StoredDocumentImport['files'][number], Record<'status', 'failed'>> = {
             status: 'failed', filePath: failedPath, format: 'pdf', analysis: null, sha256: createHash('sha256').update(bytes).digest('hex'),
             issues: [importIssue('unreadable', 'Initial OCR failed.')]
         };
@@ -104,8 +105,8 @@ test('cancels in-flight receipt recognition through the workspace import control
         const started: Promise<void> = new Promise<void>((resolve: () => void): void => {
             markStarted = resolve;
         });
-        const analyze: ReceiptAiDependencies['analyze'] = (_source: ReceiptAiSource,
-            options?: Parameters<ReceiptAiDependencies['analyze']>[1]): Promise<ReceiptAiResult> => {
+        const analyze: IReceiptAiDependencies['analyze'] = (_source: IReceiptAiSource,
+            options?: Parameters<IReceiptAiDependencies['analyze']>[1]): Promise<ReceiptAiResult> => {
             assert.ok(options?.signal);
             const signal: AbortSignal = options.signal;
             return new Promise((resolve: (result: ReceiptAiResult) => void): void => {
@@ -133,7 +134,7 @@ test('isolates unverified AI values and invalidates the preview when it is disca
         const document: StoredSupportingDocument = retainedDocument(root);
         await writeFile(document.filePath, 'synthetic.pdf');
         const run: StoredDocumentImport = documentRun(root, [document]);
-        const analyze: ReceiptAiDependencies['analyze'] = (source: ReceiptAiSource): Promise<ReceiptAiResult> => Promise.resolve({
+        const analyze: IReceiptAiDependencies['analyze'] = (source: IReceiptAiSource): Promise<ReceiptAiResult> => Promise.resolve({
             status: 'ready', model: 'nuextract3', analysis: structuredClone(source.previous!),
             changes: [{ label: 'Reference number', before: null, after: 'UNVERIFIED-ACCOUNT', unrecognized: true }],
             conflicts: []
@@ -144,7 +145,7 @@ test('isolates unverified AI values and invalidates the preview when it is disca
         assert.equal(result.status, 'ready');
         assert.deepEqual(result.changes, [{ label: 'Reference number', before: null, after: 'UNVERIFIED-ACCOUNT', unrecognized: true }]);
         assert.match(result.blockingConflict ?? '', /no proposed changes could be verified/i);
-        const adoption: { token: string; loadRevision: number; acknowledgeConflicts: true } = { token: result.token, loadRevision: request.loadRevision, acknowledgeConflicts: true };
+        const adoption: OriginalAdoptionRequest & Record<'acknowledgeConflicts', true> = { token: result.token, loadRevision: request.loadRevision, acknowledgeConflicts: true };
         assert.equal((await session.acceptReceiptAnalysis(adoption)).status, 'failed');
         session.discardReceiptAnalysis({ token: result.token, loadRevision: request.loadRevision });
         const stale: Awaited<ReturnType<WorkspaceSession['acceptReceiptAnalysis']>> = await session.acceptReceiptAnalysis(adoption);

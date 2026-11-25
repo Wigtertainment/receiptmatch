@@ -1,52 +1,52 @@
-import type { BankImportSummary } from "../src/shared/workspace-import.js";
-import type { DocumentImportSummary } from "../src/shared/protocol.js";
-import type { ImportIssue, SourceEvidence } from "../src/shared/bank-import.js";
+import type { IBankImportSummary } from "../src/shared/workspace-import.js";
+import type { IDocumentImportSummary } from "../src/shared/protocol.js";
 import type { DocumentIssue, DocumentSection, SupportingDocument } from "../src/shared/supporting-document.js";
 import type { MatchApproval } from "../src/shared/match-approvals.js";
 import type { ExtractionProgress } from "../src/shared/pdf-extraction.js";
-import type { StatementOverlap } from "../src/shared/statement-overlaps.js";
+import type { IStatementOverlap } from "../src/shared/statement-overlaps.js";
 import type { StoredSupportingDocument } from "../src/shared/workspace-documents.js";
-import type { DocumentFileResult, DocumentImportProgress } from "../src/shared/workspace-documents.js";
+import type { DocumentFileResult, IDocumentImportProgress } from "../src/shared/workspace-documents.js";
 import { isDeepStrictEqual } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { ZodError, type ZodSafeParseResult } from 'zod';
-import type { DocumentSnapshot, DocumentSnapshotRequest, StatementFallbackState, WorkspaceCommand, WorkspaceState } from '../src/shared/protocol.js';
-import type { ReceiptAiAcceptRequest, ReceiptAiChange, ReceiptAiDiscardRequest, ReceiptAiPreviewResult, ReceiptAiProposal, ReceiptAiRequest, ReceiptAiResult } from '../src/shared/receipt-ai.js';
+import type { IDocumentSnapshot, DocumentSnapshotRequest, OriginalDocumentFields, StatementFallbackState, WorkspaceCommand, IWorkspaceState } from '../src/shared/protocol.js';
+import type { ReceiptAiAcceptRequest, IReceiptAiChange, ReceiptAiDiscardRequest, ReceiptAiPreviewResult, IReceiptAiProposal, ReceiptAiRequest, ReceiptAiResult } from '../src/shared/receipt-ai.js';
 import { importIssue, type TransactionCandidate, type UnresolvedDraft } from '../src/shared/bank-import.js';
 import { bankCorrectionSchema, type BankCorrection } from '../src/shared/bank-corrections.js';
 import type { StatementAnalysisVersion } from '../src/shared/statement-analysis.js';
-import type { StatementAiAcceptRequest, StatementAiDiscardRequest, StatementAiPreviewResult, StatementAiRequest, StatementAiResult, StatementAiRow } from '../src/shared/statement-ai.js';
+import type { StatementAiAcceptRequest, StatementAiDiscardRequest, StatementAiPreviewResult, StatementAiRequest, StatementAiResult, IStatementAiRow } from '../src/shared/statement-ai.js';
 import { projectCorrectedStatementAnalyses, projectStatementAnalyses } from './import/statement-analyses.js';
-import type { StatementAiService, StatementAiSource } from './import/reanalyze-statement.js';
-import { prepareStatementAnalysis, type StatementAnalysisPlan } from './import/prepare-statement-analysis.js';
-import { activeDocumentFieldDisposition, documentFieldConfirmationIssue, documentFieldReviewKey, documentFieldReviewSchema, documentFieldSignature, isDocumentFieldConfirmed, type DocumentFieldReview } from '../src/shared/document-field-reviews.js';
-import { documentCorrectionKey, documentCorrectionSchema, type DocumentCorrection, type DocumentCorrectionValue } from '../src/shared/document-corrections.js';
-import { sameMoneyValue } from '../src/shared/money.js';
+import type { IStatementAiService, IStatementAiSource } from './import/reanalyze-statement.js';
+import { prepareStatementAnalysis, type IStatementAnalysisPlan } from './import/prepare-statement-analysis.js';
+import { activeDocumentFieldDisposition, documentFieldConfirmationIssue, documentFieldReviewKey, documentFieldReviewSchema, documentFieldSignature, isDocumentFieldConfirmed,
+  type DocumentFieldReview, type DocumentFieldReviewTarget } from '../src/shared/document-field-reviews.js';
+import { documentCorrectionKey, documentCorrectionSchema, type DocumentCorrection, type DocumentCorrectionTarget, type DocumentCorrectionValue } from '../src/shared/document-corrections.js';
+import { sameMoneyValue, type Money } from '../src/shared/money.js';
 import { advanceReviewRevision, currentMatchApprovals, documentRevisionIndex, sameApprovalSelection,
   type MatchApprovalSelection, type ReviewApprovalState } from '../src/shared/match-approvals.js';
 import { originalSourceExtensions, type OriginalAdoptionRequest, type OriginalAdoptionResult, type OriginalAnalysisResult, type OriginalPreviewRequest,
   type OriginalRelinkResult } from '../src/shared/original-preview.js';
-import type { OriginalSource } from './original-preview.js';
+import type { IOriginalSource } from './original-preview.js';
 import { storedBankImportSchema, type StoredBankImport } from '../src/shared/workspace-import.js';
 import { createWorkspace, isSourceRelocationPath, loadWorkspace, newMetadata, saveWorkspace, validateSourceReplacements, withoutRemovedSourceSkips,
-  type SavedWorkspace, type WorkspaceMetadata } from './store.js';
-import type { BankImportAttempt, BankImportOptions, BankImportService, StatementFallback, StatementFallbackResult } from './import/service.js';
+  type ISavedWorkspace, type WorkspaceMetadata } from './store.js';
+import type { BankImportAttempt, IBankImportOptions, IBankImportService, IStatementFallback, StatementFallbackResult } from './import/service.js';
 import { readSourceSnapshot } from './import/source.js';
-import type { DocumentImportService } from './documents/service.js';
-import { applySelectedReceiptAi, type ReceiptAiSource } from './documents/nuextract-receipt.js';
-import type { ExtractionOptions } from './extraction/host.js';
-import { prepareReceiptAnalysisVersion, type ReceiptVersionPlan } from './documents/prepare-analysis-version.js';
+import type { IDocumentImportService } from './documents/service.js';
+import { applySelectedReceiptAi, type IReceiptAiSource } from './documents/nuextract-receipt.js';
+import type { IExtractionOptions } from './extraction/host.js';
+import { prepareReceiptAnalysisVersion, type IReceiptVersionPlan } from './documents/prepare-analysis-version.js';
 import type { ReceiptAnalysisVersion } from './documents/analysis-history.js';
-import { storedDocumentImportSchema, type StoredDocumentImport, type WorkspaceSource } from '../src/shared/workspace-documents.js';
-import type { MatchDetails, MatchReviewCounts, MatchSummary, ReviewMatch, TransactionMatch } from '../src/shared/workspace-matching.js';
+import { storedDocumentImportSchema, type StoredDocumentImport, type IWorkspaceSource } from '../src/shared/workspace-documents.js';
+import type { IMatchDetails, MatchReviewCounts, IMatchSummary, IReviewMatch, TransactionMatch } from '../src/shared/workspace-matching.js';
 import { suggestWorkspaceMatches } from './matching.js';
 import { describeMatch, summarizeMatches } from './match-view.js';
 import { WorkspaceDocumentState } from './documents/document-state.js';
 import { evaluateReviewMatches } from './review-matching.js';
-import { approvedExportDocuments, copyApprovedDocuments, type ApprovedExportDocument } from './document-export.js';
+import { approvedExportDocuments, copyApprovedDocuments, type IApprovedExportDocument } from './document-export.js';
 import { writeReconciliationExport } from './reconciliation-export.js';
-import type { DocumentExportReport, ReconciliationExportReport } from '../src/shared/document-export.js';
+import type { IDocumentExportReport, IReconciliationExportReport } from '../src/shared/document-export.js';
 import { indexStatementOverlaps, originalStatementBankIds } from '../src/shared/statement-overlaps.js';
 import { duplicatePairKey, excludeDuplicateTransactions, excludeTransactions, secondaryDuplicateId, validateDuplicateDecisions, type DuplicateDecision } from '../src/shared/transaction-duplicates.js';
 import { activeStatements, activeSupportingDocuments } from '../src/shared/source-replacements.js';
@@ -56,12 +56,12 @@ import { prepareStatementRemoval } from './statement-removal.js';
 import { readTransactionIgnoreRules, setTransactionIgnoreRule, transactionIgnoreRuleKey, transactionsIgnoredByRules } from './transaction-ignore-rules.js';
 import type { $ZodIssue } from 'zod/v4/core';
 
-export interface WorkspaceDialogs {
+export interface IWorkspaceDialogs {
+  analyzeOriginal?: (source: IOriginalSource) => Promise<string | null>;
   open(): Promise<string | null>;
   save(name: string): Promise<string | null>;
   unsaved(name: string): Promise<'save' | 'discard' | 'cancel'>;
-  relinkOriginal?(source: OriginalSource): Promise<string | null>;
-  analyzeOriginal?: (source: OriginalSource) => Promise<string | null>;
+  relinkOriginal?(source: IOriginalSource): Promise<string | null>;
 }
 
 function message(error: unknown): string {
@@ -98,35 +98,50 @@ function sameDocumentCorrection(previous: DocumentCorrectionValue, change: Docum
   return previous.kind === change.kind && previous.value === change.value && (!('role' in change) || ('role' in previous && previous.role === change.role));
 }
 
-type PendingStatementFallback = { stage: 'offer'; token: string; source: StatementFallback } | { stage: 'review'; token: string; record: StoredBankImport };
-type StatementAiCommand = Extract<WorkspaceCommand, { type: 'try-statement-ai' | 'confirm-statement-ai' | 'discard-statement-ai' }>;
+interface IStatementFallbackOffer { stage: 'offer'; token: string; source: IStatementFallback }
+interface IStatementFallbackReview { stage: 'review'; token: string; record: StoredBankImport }
+type PendingStatementFallback = IStatementFallbackOffer | IStatementFallbackReview;
+type StatementAiCommand = Extract<WorkspaceCommand, Record<'type', 'try-statement-ai' | 'confirm-statement-ai' | 'discard-statement-ai'>>;
 
 function isStatementAiCommand(command: WorkspaceCommand): command is StatementAiCommand {
   return command.type === 'try-statement-ai' || command.type === 'confirm-statement-ai' || command.type === 'discard-statement-ai';
 }
 
-interface ReceiptAnalysisSource extends ReceiptAiSource {
+interface IReceiptAnalysisSource extends IReceiptAiSource {
   documentId: string;
   sourceId: string;
 }
-interface PendingReceiptAnalysis {
+interface IPendingReceiptAnalysis {
   token: string;
   request: ReceiptAiRequest;
   matchRevision: number;
-  source: Omit<ReceiptAnalysisSource, 'previous'>;
-  plan: ReceiptVersionPlan;
-  proposals?: ReceiptAiProposal[];
+  source: Omit<IReceiptAnalysisSource, 'previous'>;
+  plan: IReceiptVersionPlan;
+  proposals?: IReceiptAiProposal[];
 }
 
-interface PendingStatementAnalysis {
+interface IPendingStatementAnalysis {
   token: string;
   request: StatementAiRequest;
   matchRevision: number;
-  source: StatementAiSource;
-  plan: StatementAnalysisPlan;
+  source: IStatementAiSource;
+  plan: IStatementAnalysisPlan;
 }
 
-type StatementProtectionState = Pick<SavedWorkspace, 'bankCorrections' | 'matchDecisions' | 'reviewApprovals' | 'ignoredTransactions' | 'duplicateDecisions' | 'archivedSourceReviews'>;
+interface IReviewMatchCache { source: TransactionMatch[]; results: IReviewMatch[] }
+interface IRuleMatchCache { imports: StoredBankImport[]; rules: ReadonlySet<string>; ids: ReadonlySet<string> }
+interface IPendingOriginalAnalysis {
+  token: string;
+  revision: number;
+  oldSourceId: string;
+  replacement: AnalyzedSource;
+  plan: ReturnType<typeof prepareAdoption>;
+}
+interface IArchivedDuplicateReview { sourceId: string; transactionId: string; documentId: string }
+type BankSourceProvenance = NonNullable<StoredBankImport['result']['sourceProvenance']>;
+type SourceIdentity = Pick<BankSourceProvenance, 'sourceId' | 'sha256'>;
+
+type StatementProtectionState = Pick<ISavedWorkspace, 'bankCorrections' | 'matchDecisions' | 'reviewApprovals' | 'ignoredTransactions' | 'duplicateDecisions' | 'archivedSourceReviews'>;
 
 function protectedStatementRows(state: StatementProtectionState): string[] {
   return [...state.bankCorrections.keys(), ...state.matchDecisions.keys(), ...state.reviewApprovals.keys(), ...state.ignoredTransactions,
@@ -134,19 +149,19 @@ function protectedStatementRows(state: StatementProtectionState): string[] {
     ...[...state.archivedSourceReviews.values()].flatMap((reviews: Map<string, string | null>): string[] => [...reviews.keys()])];
 }
 
-function statementPreviewRows(record: StoredBankImport): Map<string, StatementAiRow> {
+function statementPreviewRows(record: StoredBankImport): Map<string, IStatementAiRow> {
   const transactions: Map<string, string> = new Map(record.transactions.map((item: StoredBankImport['transactions'][number]): [string, string] => [item.rowId, item.transactionId]));
   const drafts: Map<string, string> = new Map(record.drafts.map((item: StoredBankImport['drafts'][number]): [string, string] => [item.rowId, item.draftId]));
-  return new Map([...record.result.transactions.map((row: TransactionCandidate): [string, StatementAiRow] => {
+  return new Map([...record.result.transactions.map((row: TransactionCandidate): [string, IStatementAiRow] => {
     const id: string = transactions.get(row.rowId)!;
     return [id, { id, kind: 'transaction', row }];
-  }), ...record.result.unresolvedDrafts.map((row: UnresolvedDraft): [string, StatementAiRow] => {
+  }), ...record.result.unresolvedDrafts.map((row: UnresolvedDraft): [string, IStatementAiRow] => {
     const id: string = drafts.get(row.rowId)!;
     return [id, { id, kind: 'draft', row }];
   })]);
 }
 
-function preserveReceiptCorrection(proposal: ReceiptAiProposal, document: SupportingDocument, corrections: readonly DocumentCorrection[]): ReceiptAiProposal {
+function preserveReceiptCorrection(proposal: IReceiptAiProposal, document: SupportingDocument, corrections: readonly DocumentCorrection[]): IReceiptAiProposal {
   if (proposal.unavailable || !corrections.length) {
     return proposal;
   }
@@ -161,59 +176,59 @@ function preserveReceiptCorrection(proposal: ReceiptAiProposal, document: Suppor
   return maintained ? { ...proposal, unavailable: 'This field has a manual correction. Edit it in the receipt details.' } : proposal;
 }
 
-export interface ReceiptAiDependencies {
-  analyze(source: ReceiptAiSource, options?: ExtractionOptions): Promise<ReceiptAiResult>;
+export interface IReceiptAiDependencies {
+  analyze(source: IReceiptAiSource, options?: IExtractionOptions): Promise<ReceiptAiResult>;
 }
 
 export class WorkspaceSession {
+  constructor(private readonly dialogs: IWorkspaceDialogs, private readonly changed?: (state: IWorkspaceState) => void, private readonly importService?: IBankImportService,
+    private readonly documentService?: IDocumentImportService, private readonly extractReplacement?: ReplacementExtraction,
+    private readonly ignoreRulesDirectory?: string, private readonly receiptAi?: IReceiptAiDependencies, private readonly statementAiService?: IStatementAiService) {}
+
   private metadata: WorkspaceMetadata | null = null;
-  private saved: SavedWorkspace | null = null;
+  private saved: ISavedWorkspace | null = null;
   private busy: boolean = false;
   private error: string | null = null;
-  private approvalIssue: WorkspaceState['approvalIssue'];
+  private approvalIssue: IWorkspaceState['approvalIssue'];
   private importRecords: StoredBankImport[] = [];
   private effectiveImports: StoredBankImport[] = [];
   private statementAnalysisVersions: StatementAnalysisVersion[] = [];
-  private pendingStatementAnalysis: PendingStatementAnalysis | null = null;
+  private pendingStatementAnalysis: IPendingStatementAnalysis | null = null;
   private bankCorrections: Map<string, BankCorrection> = new Map<string, BankCorrection>();
   private documentRecords: StoredDocumentImport[] = [];
   private receiptAnalysisVersions: ReceiptAnalysisVersion[] = [];
-  private pendingReceiptAnalysis: PendingReceiptAnalysis | null = null;
+  private pendingReceiptAnalysis: IPendingReceiptAnalysis | null = null;
   private documentView: WorkspaceDocumentState | null = null;
   private documentCorrections: Map<string, DocumentCorrection> = new Map<string, DocumentCorrection>();
   private documentFieldReviews: Map<string, DocumentFieldReview> = new Map();
   private matches: TransactionMatch[] = [];
-  private reviewMatches: { source: TransactionMatch[]; results: ReviewMatch[] } | null = null;
+  private reviewMatches: IReviewMatchCache | null = null;
   private ignoredTransactions: Set<string> = new Set<string>();
   private ignoreRules: Set<string> = new Set<string>();
-  private ruleMatches: { imports: StoredBankImport[]; rules: ReadonlySet<string>; ids: ReadonlySet<string> } | null = null;
+  private ruleMatches: IRuleMatchCache | null = null;
   private matchDecisions: Map<string, string | null> = new Map<string, string | null>();
   private reviewApprovals: Map<string, ReviewApprovalState> = new Map<string, ReviewApprovalState>();
   private duplicateDecisions: Map<string, DuplicateDecision> = new Map<string, DuplicateDecision>();
   private sourceRelocations: Map<string, string> = new Map<string, string>();
   private sourceReplacements: Map<string, string> = new Map<string, string>();
   private archivedSourceReviews: Map<string, Map<string, string | null>> = new Map<string, Map<string, string | null>>();
-  private pendingAnalysis: { token: string; revision: number; oldSourceId: string; replacement: AnalyzedSource;
-    plan: ReturnType<typeof prepareAdoption> } | null = null;
+  private pendingAnalysis: IPendingOriginalAnalysis | null = null;
   private importController: AbortController | null = null;
-  private statementImport: WorkspaceState['statementImport'] = null;
+  private statementImport: IWorkspaceState['statementImport'] = null;
   private pendingStatementFallback: PendingStatementFallback | null = null;
-  private importOutcome: WorkspaceState['importOutcome'] = null;
-  private documentImport: WorkspaceState['documentImport'] = null;
-  private documentOutcome: WorkspaceState['documentOutcome'] = null;
+  private importOutcome: IWorkspaceState['importOutcome'] = null;
+  private documentImport: IWorkspaceState['documentImport'] = null;
+  private documentOutcome: IWorkspaceState['documentOutcome'] = null;
   private loadRevision: number = 0;
   private matchRevision: number = 0;
-  constructor(private readonly dialogs: WorkspaceDialogs, private readonly changed?: (state: WorkspaceState) => void, private readonly importService?: BankImportService,
-    private readonly documentService?: DocumentImportService, private readonly extractReplacement?: ReplacementExtraction,
-    private readonly ignoreRulesDirectory?: string, private readonly receiptAi?: ReceiptAiDependencies, private readonly statementAi?: StatementAiService) {}
 
-  state(): WorkspaceState {
+  state(): IWorkspaceState {
     const originalBankIds: Map<string, string> = originalStatementBankIds(this.importRecords);
     const predecessors: Map<string, string> = new Map(this.importRecords.flatMap((record: StoredBankImport): [string, string][] => {
       const target: string | undefined = this.sourceReplacements.get(record.result.sourceProvenance!.sourceId);
       return target ? [[target, record.id]] : [];
     }));
-    const imports: BankImportSummary[] = this.effectiveImports.map((record: StoredBankImport): BankImportSummary => {
+    const imports: IBankImportSummary[] = this.effectiveImports.map((record: StoredBankImport): IBankImportSummary => {
       const replacesStatementId: string | undefined = predecessors.get(record.result.sourceProvenance!.sourceId);
       return {
         id: record.id, filePath: record.filePath, bankId: record.result.adapter?.bankId ?? originalBankIds.get(record.id) ?? null,
@@ -233,10 +248,12 @@ export class WorkspaceSession {
       const documentId: string | null | undefined = this.matchDecisions.get(transactionId);
       matchReviewCounts[documentId === undefined ? 'open' : documentId === null ? 'completed-without-document' : 'assigned']++;
     }
-    const documentImports: DocumentImportSummary[] = this.documentRecords.map((record: StoredDocumentImport): DocumentImportSummary => ({
+    const documentImports: IDocumentImportSummary[] = this.documentRecords.map((record: StoredDocumentImport): IDocumentImportSummary => ({
       id: record.id, folderPath: record.folderPath, status: record.status,
-      imported: record.files.filter((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): file is { status: "imported"; record: StoredSupportingDocument; } => file.status === 'imported').length, skipped: record.files.filter((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): file is { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } => file.status === 'skipped').length,
-      failed: record.files.filter((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): file is { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; } => file.status === 'failed').length, unsupported: record.files.filter((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): file is { status: "unsupported"; filePath: string; issues: ImportIssue[]; } => file.status === 'unsupported').length,
+      imported: record.files.filter((file: DocumentFileResult): boolean => file.status === 'imported').length,
+      skipped: record.files.filter((file: DocumentFileResult): boolean => file.status === 'skipped').length,
+      failed: record.files.filter((file: DocumentFileResult): boolean => file.status === 'failed').length,
+      unsupported: record.files.filter((file: DocumentFileResult): boolean => file.status === 'unsupported').length,
       directoryIssues: record.directoryIssues.length
     }));
     const statementFallback: StatementFallbackState | undefined = this.statementFallbackState();
@@ -255,7 +272,7 @@ export class WorkspaceSession {
         bankCorrections: structuredClone([...this.bankCorrections.values()]), documentCorrections: structuredClone([...this.documentCorrections.values()]), documentFieldReviews: structuredClone([...this.documentFieldReviews.values()]),
         duplicateDecisions: structuredClone([...this.duplicateDecisions.values()]),
         supersededStatements: this.importRecords.filter((record: StoredBankImport): boolean => this.sourceReplacements.has(record.result.sourceProvenance!.sourceId)).map((record: StoredBankImport): string => record.id),
-        supersededDocuments: this.documentRecords.flatMap((run: StoredDocumentImport): string[] => run.files.flatMap((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): string[] => file.status === 'imported' &&
+        supersededDocuments: this.documentRecords.flatMap((run: StoredDocumentImport): string[] => run.files.flatMap((file: DocumentFileResult): string[] => file.status === 'imported' &&
           this.sourceReplacements.has(file.record.result.input!.source.sourceId) ? [file.record.id] : []))
       } : null,
       busy: this.busy, error: this.error, ...(this.approvalIssue ? { approvalIssue: { ...this.approvalIssue } } : {}),
@@ -293,19 +310,26 @@ export class WorkspaceSession {
     return structuredClone(this.documents().correctionBase);
   }
 
-  documentSnapshot(request: DocumentSnapshotRequest): DocumentSnapshot | null {
+  documentSnapshot(request: DocumentSnapshotRequest): IDocumentSnapshot | null {
     if (!this.metadata || request.loadRevision !== this.loadRevision || request.revision !== this.matchRevision) {
       return null;
     }
     const documents: WorkspaceDocumentState = this.documents();
-    const originals: Record<string, { sections: DocumentSection[]; issues: DocumentIssue[]; }> = Object.fromEntries(documents.analyzed.flatMap((run: StoredDocumentImport): [string, { sections: DocumentSection[]; issues: DocumentIssue[]; }][] => run.files.flatMap((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): [] | [[string, { sections: DocumentSection[]; issues: DocumentIssue[]; }]] => {
-      if (file.status !== 'imported') {
-        return [];
-      }
-      const { id, result: { sections, issues } }: StoredSupportingDocument = file.record;
-      return [[id, { sections, issues }]];
-    })));
-    const reviewBases: Record<string, { sections: DocumentSection[]; issues: DocumentIssue[]; }> = Object.fromEntries(documents.reviewBase.flatMap((run: StoredDocumentImport): [string, { sections: DocumentSection[]; issues: DocumentIssue[]; }][] => run.files.flatMap((file: StoredDocumentImport['files'][number]): [string, { sections: DocumentSection[]; issues: DocumentIssue[]; }][] => file.status === 'imported' ? [[file.record.id, { sections: file.record.result.sections, issues: file.record.result.issues }]] : [])));
+    const originals: Record<string, OriginalDocumentFields> = Object.fromEntries(
+      documents.analyzed.flatMap((run: StoredDocumentImport): [string, OriginalDocumentFields][] =>
+        run.files.flatMap((file: DocumentFileResult): [] | [[string, OriginalDocumentFields]] => {
+          if (file.status !== 'imported') {
+            return [];
+          }
+          const { id, result: { sections, issues } }: StoredSupportingDocument = file.record;
+          return [[id, { sections, issues }]];
+        }))
+    );
+    const reviewBases: Record<string, OriginalDocumentFields> = Object.fromEntries(
+      documents.reviewBase.flatMap((run: StoredDocumentImport): [string, OriginalDocumentFields][] =>
+        run.files.flatMap((file: DocumentFileResult): [string, OriginalDocumentFields][] =>
+          file.status === 'imported' ? [[file.record.id, { sections: file.record.result.sections, issues: file.record.result.issues }]] : []))
+    );
     return structuredClone({ ...request, reports: documents.effective, originals, reviewBases });
   }
 
@@ -313,7 +337,7 @@ export class WorkspaceSession {
     return this.saved?.fingerprint ?? null;
   }
 
-  private importedOriginal({ kind, id, loadRevision }: OriginalPreviewRequest): (OriginalSource & { sourceId: string }) | null {
+  private importedOriginal({ kind, id, loadRevision }: OriginalPreviewRequest): (IOriginalSource & Record<'sourceId', string>) | null {
     if (!this.metadata || this.loadRevision !== loadRevision) {
       return null;
     }
@@ -322,13 +346,13 @@ export class WorkspaceSession {
       if (!record) {
         return null;
       }
-      const { sha256, sourceId }: { sourceId: string; sha256: string; extractionRunId: string; extractionVersion: string; pages: { pageId: string; pageNumber: number; width: number; height: number; }[]; } = record.result.sourceProvenance!;
+      const { sha256, sourceId }: BankSourceProvenance = record.result.sourceProvenance!;
       return { filePath: record.filePath, sha256, sourceId, format: 'pdf' };
     }
     for (const record of this.documentRecords) {
       for (const file of record.files) {
       if (file.status === 'imported' && file.record.id === id) {
-        const { sha256, sourceId }: { sourceId: string; sha256: string; } = file.record.result.input!.source;
+        const { sha256, sourceId }: SourceIdentity = file.record.result.input!.source;
         return { filePath: file.record.filePath, sha256, sourceId, format: file.record.format };
       }
     }
@@ -336,8 +360,8 @@ export class WorkspaceSession {
     return null;
   }
 
-  originalSource(request: OriginalPreviewRequest): OriginalSource | null {
-    const source: (OriginalSource & { sourceId: string; }) | null = this.importedOriginal(request);
+  originalSource(request: OriginalPreviewRequest): IOriginalSource | null {
+    const source: (IOriginalSource & Record<'sourceId', string>) | null = this.importedOriginal(request);
     if (!source) {
       return null;
     }
@@ -348,7 +372,7 @@ export class WorkspaceSession {
     if (this.busy) {
       return { status: 'failed', error: 'Finish the current workspace action before relinking a file.' };
     }
-    const source: (OriginalSource & { sourceId: string; }) | null = this.importedOriginal(request);
+    const source: (IOriginalSource & Record<'sourceId', string>) | null = this.importedOriginal(request);
     if (!source || !this.dialogs.relinkOriginal) {
       return { status: 'failed', error: 'The original is not available in this workspace.' };
     }
@@ -385,8 +409,8 @@ export class WorkspaceSession {
     if (this.busy) {
       return { status: 'failed', error: 'Finish the current workspace action before analyzing a file.' };
     }
-    const source: (OriginalSource & { sourceId: string; }) | null = this.importedOriginal(request);
-    const choose: ((source: OriginalSource) => Promise<string | null>) | undefined = this.dialogs.analyzeOriginal, extract: ReplacementExtraction | undefined = this.extractReplacement;
+    const source: (IOriginalSource & Record<'sourceId', string>) | null = this.importedOriginal(request);
+    const choose: ((source: IOriginalSource) => Promise<string | null>) | undefined = this.dialogs.analyzeOriginal, extract: ReplacementExtraction | undefined = this.extractReplacement;
     if (!source || this.sourceReplacements.has(source.sourceId) || !choose || !extract) {
       return { status: 'failed', error: 'Only an active source can be replaced.' };
     }
@@ -412,16 +436,16 @@ export class WorkspaceSession {
       if (hash === source.sha256) {
         return { status: 'failed', error: 'This file is identical to the original. Use Relink original.' };
       }
-      if (this.sources().some((item: WorkspaceSource): boolean => item.sha256 === hash)) {
+      if (this.sources().some((item: IWorkspaceSource): boolean => item.sha256 === hash)) {
         return { status: 'failed', error: 'This file has already been imported into the workspace.' };
       }
       const replacement: AnalyzedSource = await analyzeSource(request.kind, newPath, source.format, bytes, extract);
-      const plan: { changes: { label: string; before: string | null; after: string | null; }[]; conflicts: string[]; blockingConflict: string | undefined; preserved: number; revoked: number; archive: Map<string, string | null>; reviews: Map<string, string | null>; approvals: Map<string, ReviewApprovalState>; bankCorrections: Map<string, BankCorrection>; documentCorrections: Map<string, DocumentCorrection>; ignoredTransactions: Set<string>; } = prepareAdoption(original, replacement, { reviews: this.matchDecisions, approvals: this.reviewApprovals, currentApprovals: this.currentApprovals(),
+      const plan: ReturnType<typeof prepareAdoption> = prepareAdoption(original, replacement, { reviews: this.matchDecisions, approvals: this.reviewApprovals, currentApprovals: this.currentApprovals(),
         bankCorrections: this.bankCorrections, documentCorrections: this.documentCorrections, duplicates: this.duplicateDecisions,
         ignoredTransactions: this.ignoredTransactions });
       const token: `${string}-${string}-${string}-${string}-${string}` = randomUUID();
       this.pendingAnalysis = { token, revision: this.matchRevision, oldSourceId: source.sourceId, replacement, plan };
-      const { changes, conflicts, preserved, revoked }: { changes: { label: string; before: string | null; after: string | null; }[]; conflicts: string[]; blockingConflict: string | undefined; preserved: number; revoked: number; archive: Map<string, string | null>; reviews: Map<string, string | null>; approvals: Map<string, ReviewApprovalState>; bankCorrections: Map<string, BankCorrection>; documentCorrections: Map<string, DocumentCorrection>; ignoredTransactions: Set<string>; } = plan;
+      const { changes, conflicts, preserved, revoked }: ReturnType<typeof prepareAdoption> = plan;
       return { status: 'ready', comparison: { token, oldPath, newPath, changes, conflicts, preserved, revoked } };
     } catch (error: unknown) {
       return { status: 'failed', error: message(error) };
@@ -431,7 +455,7 @@ export class WorkspaceSession {
     }
   }
 
-  private statementAiSource(request: StatementAiRequest): StatementAiSource | null {
+  private statementAiSource(request: StatementAiRequest): IStatementAiSource | null {
     if (!this.metadata || request.loadRevision !== this.loadRevision) {
       return null;
     }
@@ -445,8 +469,8 @@ export class WorkspaceSession {
     if (this.busy) {
       return { status: 'failed', error: 'Finish the current workspace action before analyzing a statement.' };
     }
-    const source: StatementAiSource | null = this.statementAiSource(request);
-    if (!source || !this.statementAi) {
+    const source: IStatementAiSource | null = this.statementAiSource(request);
+    if (!source || !this.statementAiService) {
       return { status: 'failed', error: 'Choose an active statement with a verifiable original.' };
     }
     const controller: AbortController = new AbortController();
@@ -457,7 +481,7 @@ export class WorkspaceSession {
     this.busy = true;
     try {
       this.publish();
-      const result: StatementAiResult = await this.statementAi.analyze(structuredClone(source), this.statementProgress(controller, this.metadata!.id));
+      const result: StatementAiResult = await this.statementAiService.analyze(structuredClone(source), this.statementProgress(controller, this.metadata!.id));
       if (controller.signal.aborted) {
         return { status: 'cancelled' };
       }
@@ -481,14 +505,14 @@ export class WorkspaceSession {
     return new Set([...protectedStatementRows(current), ...(this.saved ? protectedStatementRows(this.saved) : [])]);
   }
 
-  private prepareStatementPreview(request: StatementAiRequest, source: StatementAiSource, result: Extract<StatementAiResult, { status: 'ready' }>): StatementAiPreviewResult {
+  private prepareStatementPreview(request: StatementAiRequest, source: IStatementAiSource, result: Extract<StatementAiResult, Record<'status', 'ready'>>): StatementAiPreviewResult {
     const current: StoredBankImport = projectStatementAnalyses(this.importRecords, this.statementAnalysisVersions).find((record: StoredBankImport): boolean => record.id === request.importId)!;
-    const plan: StatementAnalysisPlan = prepareStatementAnalysis(source.original, current, result.result, this.statementProtections());
+    const plan: IStatementAnalysisPlan = prepareStatementAnalysis(source.original, current, result.result, this.statementProtections());
     const versions: StatementAnalysisVersion[] = [...this.statementAnalysisVersions, plan.version];
     const proposed: StoredBankImport = projectCorrectedStatementAnalyses(this.importRecords, versions, this.bankCorrections).find((record: StoredBankImport): boolean => record.id === request.importId)!;
     const previous: StoredBankImport = this.effectiveImports.find((record: StoredBankImport): boolean => record.id === request.importId)!;
-    const before: Map<string, StatementAiRow> = statementPreviewRows(previous);
-    const after: Map<string, StatementAiRow> = statementPreviewRows(proposed);
+    const before: Map<string, IStatementAiRow> = statementPreviewRows(previous);
+    const after: Map<string, IStatementAiRow> = statementPreviewRows(proposed);
     const conflicts: string[] = [...plan.conflicts];
     if ([...this.currentApprovals().keys()].some((id: string): boolean => before.has(id))) {
       conflicts.push('Approved matches for this statement will need review again.');
@@ -498,7 +522,7 @@ export class WorkspaceSession {
     return structuredClone({ ...result, token, previous: previous.result, result: proposed.result,
       summary: { ...plan.summary, beforeTransactions: previous.transactions.length, beforeDrafts: previous.drafts.length,
         afterTransactions: proposed.transactions.length, afterDrafts: proposed.drafts.length }, conflicts, blockingConflict: plan.blockingConflict,
-      changes: plan.changes.map((change: StatementAnalysisPlan['changes'][number]): StatementAnalysisPlan['changes'][number] => ({ ...change,
+      changes: plan.changes.map((change: IStatementAnalysisPlan['changes'][number]): IStatementAnalysisPlan['changes'][number] => ({ ...change,
         before: change.before ? before.get(change.before.id) ?? change.before : null, after: change.after ? after.get(change.after.id) ?? change.after : null })) });
   }
 
@@ -509,7 +533,7 @@ export class WorkspaceSession {
   }
 
   async acceptStatementAnalysis(request: StatementAiAcceptRequest): Promise<OriginalAdoptionResult> {
-    const pending: PendingStatementAnalysis | null = this.pendingStatementAnalysis;
+    const pending: IPendingStatementAnalysis | null = this.pendingStatementAnalysis;
     if (this.busy || pending?.token !== request.token || request.loadRevision !== this.loadRevision || pending.matchRevision !== this.matchRevision) {
       return { status: 'failed', error: 'The statement preview is no longer current. Analyze the statement again.' };
     }
@@ -537,8 +561,8 @@ export class WorkspaceSession {
     }
   }
 
-  private async statementAnalysisStillCurrent(pending: PendingStatementAnalysis): Promise<boolean> {
-    const current: StatementAiSource | null = this.statementAiSource(pending.request);
+  private async statementAnalysisStillCurrent(pending: IPendingStatementAnalysis): Promise<boolean> {
+    const current: IStatementAiSource | null = this.statementAiSource(pending.request);
     if (current?.filePath !== pending.source.filePath || !isDeepStrictEqual(current.original, pending.source.original)) {
       return false;
     }
@@ -550,7 +574,7 @@ export class WorkspaceSession {
     }
   }
 
-  private applyStatementAnalysis(pending: PendingStatementAnalysis): void {
+  private applyStatementAnalysis(pending: IPendingStatementAnalysis): void {
     const version: StatementAnalysisVersion = { ...pending.plan.version, acceptedAt: new Date().toISOString() };
     const versions: StatementAnalysisVersion[] = [...this.statementAnalysisVersions, version];
     const effective: StoredBankImport[] = projectCorrectedStatementAnalyses(this.importRecords, versions, this.bankCorrections);
@@ -571,7 +595,7 @@ export class WorkspaceSession {
     this.matchRevision++;
   }
 
-  private receiptAiSource(request: ReceiptAiRequest): ReceiptAnalysisSource | null {
+  private receiptAiSource(request: ReceiptAiRequest): IReceiptAnalysisSource | null {
     if (!this.metadata || request.loadRevision !== this.loadRevision) {
       return null;
     }
@@ -591,7 +615,7 @@ export class WorkspaceSession {
     if (this.busy) {
       return { status: 'failed', error: 'Finish the current workspace action before analyzing a receipt.' };
     }
-    const source: ReceiptAnalysisSource | null = this.receiptAiSource(request);
+    const source: IReceiptAnalysisSource | null = this.receiptAiSource(request);
     if (!source || !this.receiptAi) {
       return { status: 'failed', error: 'Choose an active receipt with a verifiable original.' };
     }
@@ -599,7 +623,7 @@ export class WorkspaceSession {
     this.pendingReceiptAnalysis = null;
     this.importController = controller;
     this.busy = true;
-    const progress: DocumentImportProgress = { phase: 'extracting', filePath: source.filePath, completedFiles: 0, extraction: null };
+    const progress: IDocumentImportProgress = { phase: 'extracting', filePath: source.filePath, completedFiles: 0, extraction: null };
     this.documentImport = { cancelling: false, progress, localAi: true };
     try {
       this.publish();
@@ -623,22 +647,22 @@ export class WorkspaceSession {
     }
   }
 
-  private prepareReceiptAnalysis(request: ReceiptAiRequest, source: ReceiptAnalysisSource, result: Extract<ReceiptAiResult, { status: 'ready' }>): ReceiptAiPreviewResult {
+  private prepareReceiptAnalysis(request: ReceiptAiRequest, source: IReceiptAnalysisSource, result: Extract<ReceiptAiResult, Record<'status', 'ready'>>): ReceiptAiPreviewResult {
     const records: StoredDocumentImport[] = result.proposals ? this.documents().correctionBase : this.documents().analyzed;
-    const current: Extract<AnalyzedSource, { kind: 'document' }> | null = supportingDocumentSource(records, source.documentId);
+    const current: Extract<AnalyzedSource, Record<'kind', 'document'>> | null = supportingDocumentSource(records, source.documentId);
     if (!current) {
       return { status: 'failed', error: 'The original receipt is no longer available. Analyze it again.' };
     }
     const corrections: DocumentCorrection[] = [...this.documentCorrections.values()].filter((edit: DocumentCorrection): boolean => edit.documentId === source.documentId);
-    const plan: ReceiptVersionPlan = prepareReceiptAnalysisVersion(current.record, result.analysis, corrections, result.proposals !== undefined);
+    const plan: IReceiptVersionPlan = prepareReceiptAnalysisVersion(current.record, result.analysis, corrections, result.proposals !== undefined);
     if (result.proposals) {
-      const proposals: ReceiptAiProposal[] = result.proposals.map((proposal: ReceiptAiProposal): ReceiptAiProposal => preserveReceiptCorrection(proposal, current.record.result, corrections));
-      const hasSelectable: boolean = proposals.some((proposal: ReceiptAiProposal): boolean => !proposal.unavailable);
+      const proposals: IReceiptAiProposal[] = result.proposals.map((proposal: IReceiptAiProposal): IReceiptAiProposal => preserveReceiptCorrection(proposal, current.record.result, corrections));
+      const hasSelectable: boolean = proposals.some((proposal: IReceiptAiProposal): boolean => !proposal.unavailable);
       const conflicts: string[] = hasSelectable && [...this.currentApprovals().values()].some((approval: MatchApproval): boolean => approval.documentId === source.documentId)
         ? ['Changing this receipt may send approved matches back for review.'] : [];
       const blockingConflict: string | undefined = hasSelectable ? undefined : 'There are no suggestions available to apply.';
       const token: string = randomUUID();
-      const { documentId, filePath, format, sha256, sourceId }: ReceiptAnalysisSource = source;
+      const { documentId, filePath, format, sha256, sourceId }: IReceiptAnalysisSource = source;
       this.pendingReceiptAnalysis = { token, request, source: { documentId, filePath, format, sha256, sourceId },
         plan: { ...plan, conflicts, blockingConflict }, proposals, matchRevision: this.matchRevision };
       return structuredClone({ ...result, token, proposals, analysis: plan.analysis, conflicts, blockingConflict });
@@ -647,9 +671,9 @@ export class WorkspaceSession {
     if (plan.invalidatesApproval && [...this.currentApprovals().values()].some((approval: MatchApproval): boolean => approval.documentId === source.documentId)) {
       conflicts.push('Approved matches for this receipt will need review again.');
     }
-    const unverified: ReceiptAiChange[] = result.changes.filter((change: ReceiptAiChange): boolean => change.unrecognized === true);
-    const changes: ReceiptAiChange[] = [...plan.changes, ...unverified];
-    const hasVerifiedChanges: boolean = changes.some((change: ReceiptAiChange): boolean => change.unrecognized !== true && change.kind !== 'warnings');
+    const unverified: IReceiptAiChange[] = result.changes.filter((change: IReceiptAiChange): boolean => change.unrecognized === true);
+    const changes: IReceiptAiChange[] = [...plan.changes, ...unverified];
+    const hasVerifiedChanges: boolean = changes.some((change: IReceiptAiChange): boolean => change.unrecognized !== true && change.kind !== 'warnings');
     if (unverified.length) {
       conflicts.push('Unverified AI suggestions are shown for review and will not be applied.');
     }
@@ -657,7 +681,7 @@ export class WorkspaceSession {
       result.model === 'nuextract3' ? 'NuExtract3 did not propose a verified change.' : undefined;
     const blockingConflict: string | undefined = plan.blockingConflict ?? (hasVerifiedChanges ? undefined : noChange);
     const token: string = randomUUID();
-    const { documentId, filePath, format, sha256, sourceId }: ReceiptAnalysisSource = source;
+    const { documentId, filePath, format, sha256, sourceId }: IReceiptAnalysisSource = source;
     this.pendingReceiptAnalysis = { token, request, source: { documentId, filePath, format, sha256, sourceId },
       plan: { ...plan, changes, conflicts, blockingConflict }, matchRevision: this.matchRevision };
     return structuredClone({ status: 'ready', model: result.model, device: result.device, token, analysis: plan.analysis, changes, conflicts, blockingConflict });
@@ -670,7 +694,7 @@ export class WorkspaceSession {
   }
 
   async acceptReceiptAnalysis(request: ReceiptAiAcceptRequest): Promise<OriginalAdoptionResult> {
-    const pending: PendingReceiptAnalysis | null = this.pendingReceiptAnalysis;
+    const pending: IPendingReceiptAnalysis | null = this.pendingReceiptAnalysis;
     if (this.busy || pending?.token !== request.token || request.loadRevision !== this.loadRevision || pending.matchRevision !== this.matchRevision) {
       return { status: 'failed', error: 'The receipt preview is no longer current. Analyze the receipt again.' };
     }
@@ -687,7 +711,7 @@ export class WorkspaceSession {
         this.pendingReceiptAnalysis = null;
         return { status: 'failed', error: 'The original receipt changed or is no longer available. Analyze it again.' };
       }
-      const plan: ReceiptVersionPlan = pending.proposals ? this.selectedReceiptPlan(pending, request) : pending.plan;
+      const plan: IReceiptVersionPlan = pending.proposals ? this.selectedReceiptPlan(pending, request) : pending.plan;
       if (plan.blockingConflict) {
         return { status: 'failed', error: plan.blockingConflict };
       }
@@ -702,11 +726,11 @@ export class WorkspaceSession {
     }
   }
 
-  private selectedReceiptPlan(pending: PendingReceiptAnalysis, request: ReceiptAiAcceptRequest): ReceiptVersionPlan {
+  private selectedReceiptPlan(pending: IPendingReceiptAnalysis, request: ReceiptAiAcceptRequest): IReceiptVersionPlan {
     if (!request.selectedFields?.length) {
       throw new Error('Select at least one suggestion to apply.');
     }
-    const current: Extract<AnalyzedSource, { kind: 'document' }> | null = supportingDocumentSource(this.documents().correctionBase, pending.source.documentId);
+    const current: Extract<AnalyzedSource, Record<'kind', 'document'>> | null = supportingDocumentSource(this.documents().correctionBase, pending.source.documentId);
     if (!current) {
       throw new Error('The original receipt is no longer available. Analyze it again.');
     }
@@ -715,8 +739,8 @@ export class WorkspaceSession {
     return prepareReceiptAnalysisVersion(current.record, proposed, corrections, true);
   }
 
-  private async receiptAnalysisStillCurrent(pending: PendingReceiptAnalysis): Promise<boolean> {
-    const current: ReceiptAnalysisSource | null = this.receiptAiSource(pending.request);
+  private async receiptAnalysisStillCurrent(pending: IPendingReceiptAnalysis): Promise<boolean> {
+    const current: IReceiptAnalysisSource | null = this.receiptAiSource(pending.request);
     if (current?.filePath !== pending.source.filePath || current.sha256 !== pending.source.sha256 ||
       current.documentId !== pending.source.documentId || current.sourceId !== pending.source.sourceId) {
       return false;
@@ -729,7 +753,7 @@ export class WorkspaceSession {
     }
   }
 
-  private applyReceiptAnalysis({ source, plan }: PendingReceiptAnalysis): void {
+  private applyReceiptAnalysis({ source, plan }: IPendingReceiptAnalysis): void {
     const acceptedAt: string = new Date().toISOString();
     const versions: ReceiptAnalysisVersion[] = [...this.receiptAnalysisVersions, { documentId: source.documentId, analysis: plan.analysis, acceptedAt }];
     const latest: number = documentRevisionIndex(this.documentCorrections.values(), this.documentFieldReviews.values()).get(source.documentId) ?? 1;
@@ -756,11 +780,11 @@ export class WorkspaceSession {
     if (this.busy) {
       return { status: 'failed', error: 'Finish the current workspace action before applying this analysis.' };
     }
-    const pending: { token: string; revision: number; oldSourceId: string; replacement: AnalyzedSource; plan: ReturnType<typeof prepareAdoption>; } | null = this.pendingAnalysis;
+    const pending: IPendingOriginalAnalysis | null = this.pendingAnalysis;
     if (!this.metadata || request.loadRevision !== this.loadRevision || pending?.token !== request.token || pending.revision !== this.matchRevision) {
       return { status: 'failed', error: 'The workspace changed. Analyze the replacement again.' };
     }
-    const { replacement, plan, oldSourceId }: { token: string; revision: number; oldSourceId: string; replacement: AnalyzedSource; plan: ReturnType<typeof prepareAdoption>; } = pending;
+    const { replacement, plan, oldSourceId }: IPendingOriginalAnalysis = pending;
     if (plan.blockingConflict) {
       return { status: 'failed', error: plan.blockingConflict };
     }
@@ -771,7 +795,7 @@ export class WorkspaceSession {
     try {
       this.publish();
       const record: StoredBankImport | StoredSupportingDocument = replacement.record;
-      const provenance: { sourceId: string; sha256: string; } = replacement.kind === 'statement' ? replacement.record.result.sourceProvenance! : replacement.record.result.input!.source;
+      const provenance: SourceIdentity = replacement.kind === 'statement' ? replacement.record.result.sourceProvenance! : replacement.record.result.input!.source;
       const format: "png" | "jpeg" | "pdf" = replacement.kind === 'statement' ? 'pdf' : replacement.record.format;
       const bytes: Uint8Array<ArrayBufferLike> = await readSourceSnapshot(record.filePath, originalSourceExtensions[format]);
       if (createHash('sha256').update(bytes).digest('hex') !== provenance.sha256) {
@@ -823,7 +847,7 @@ export class WorkspaceSession {
     return activeSupportingDocuments(imports, this.sourceReplacements);
   }
 
-  private restoreMatches(saved: SavedWorkspace): void {
+  private restoreMatches(saved: ISavedWorkspace): void {
     this.ignoredTransactions = new Set(saved.ignoredTransactions);
     this.duplicateDecisions = structuredClone(saved.duplicateDecisions);
     this.sourceReplacements = new Map(saved.sourceReplacements);
@@ -846,7 +870,7 @@ export class WorkspaceSession {
     return byRule.size ? new Set([...this.ignoredTransactions, ...byRule]) : this.ignoredTransactions;
   }
 
-  private matchesForReview(): ReviewMatch[] {
+  private matchesForReview(): IReviewMatch[] {
     if (this.reviewMatches?.source !== this.matches) {
       const active: StoredBankImport[] = this.activeImports(), imports: StoredBankImport[] = excludeTransactions(active, this.allIgnoredTransactions());
       const documents: StoredDocumentImport[] = this.activeDocuments();
@@ -856,18 +880,18 @@ export class WorkspaceSession {
     return this.reviewMatches.results;
   }
 
-  matchSummaries(revision: number): MatchSummary[] | null {
+  matchSummaries(revision: number): IMatchSummary[] | null {
     return this.metadata && revision === this.matchRevision ? summarizeMatches(
       this.matchesForReview(), this.activeImports(), this.matchDecisions, this.bankCorrections, this.reviewApprovals,
       documentRevisionIndex(this.documentCorrections.values(), this.documentFieldReviews.values()), this.allIgnoredTransactions(), this.ignoredByRule()
     ) : null;
   }
 
-  matchDetails(revision: number, transactionId: string): MatchDetails | null {
+  matchDetails(revision: number, transactionId: string): IMatchDetails | null {
     if (!this.metadata || revision !== this.matchRevision) {
       return null;
     }
-    const match: ReviewMatch | undefined = this.matchesForReview().find((row: ReviewMatch): boolean => row.transactionId === transactionId);
+    const match: IReviewMatch | undefined = this.matchesForReview().find((row: IReviewMatch): boolean => row.transactionId === transactionId);
     return match ? describeMatch(match, this.effectiveImports, this.documents().effective, this.documentCorrections) : null;
   }
 
@@ -883,7 +907,7 @@ export class WorkspaceSession {
     return approvals;
   }
 
-  async exportApprovedDocuments(loadRevision: number, destination: string, pattern: string): Promise<DocumentExportReport> {
+  async exportApprovedDocuments(loadRevision: number, destination: string, pattern: string): Promise<IDocumentExportReport> {
     if (this.busy) {
       throw new Error('Finish the current workspace action before exporting.');
     }
@@ -893,22 +917,22 @@ export class WorkspaceSession {
     this.busy = true;
     try {
       this.publish();
-      const documents: ApprovedExportDocument[] = approvedExportDocuments(this.activeImports(), this.activeDocuments(this.documentRecords), this.exportableApprovals(), this.sourceRelocations);
-      return await copyApprovedDocuments(destination, pattern, documents, [...this.sources().map((source: WorkspaceSource): string => source.filePath), ...this.sourceRelocations.values()]);
+      const documents: IApprovedExportDocument[] = approvedExportDocuments(this.activeImports(), this.activeDocuments(this.documentRecords), this.exportableApprovals(), this.sourceRelocations);
+      return await copyApprovedDocuments(destination, pattern, documents, [...this.sources().map((source: IWorkspaceSource): string => source.filePath), ...this.sourceRelocations.values()]);
     } finally {
       this.busy = false;
       this.publish();
     }
   }
 
-  async exportReconciliation(loadRevision: number, destination: string, pattern: string): Promise<ReconciliationExportReport> {
+  async exportReconciliation(loadRevision: number, destination: string, pattern: string): Promise<IReconciliationExportReport> {
     if (this.busy) {
       throw new Error('Finish the current workspace action before exporting.');
     }
     if (!this.metadata || loadRevision !== this.loadRevision) {
       throw new Error('The workspace changed before the export started.');
     }
-    const snapshot: SavedWorkspace | null = this.saved;
+    const snapshot: ISavedWorkspace | null = this.saved;
     if (!snapshot) {
       throw new Error('Save the workspace before exporting a reconciliation report.');
     }
@@ -929,19 +953,19 @@ export class WorkspaceSession {
     return this.saved?.imports.filter((record: StoredBankImport): boolean => !retained.has(record.id)) ?? [];
   }
 
-  private sources(): WorkspaceSource[] {
-    const sources: Map<string, WorkspaceSource> = new Map((this.saved?.sources ?? []).map((source: WorkspaceSource): [string, WorkspaceSource] => [source.id, source]));
+  private sources(): IWorkspaceSource[] {
+    const sources: Map<string, IWorkspaceSource> = new Map((this.saved?.sources ?? []).map((source: IWorkspaceSource): [string, IWorkspaceSource] => [source.id, source]));
     for (const record of this.removedSavedStatements()) {
       sources.delete(record.result.sourceProvenance!.sourceId);
     }
     for (const record of this.importRecords) {
-      const source: { sourceId: string; sha256: string; extractionRunId: string; extractionVersion: string; pages: { pageId: string; pageNumber: number; width: number; height: number; }[]; } = record.result.sourceProvenance!;
+      const source: BankSourceProvenance = record.result.sourceProvenance!;
       sources.set(source.sourceId, { id: source.sourceId, filePath: record.filePath, sha256: source.sha256 });
     }
     for (const record of this.documentRecords) {
       for (const file of record.files) {
         if (file.status === 'imported') {
-      const source: { sourceId: string; sha256: string; } = file.record.result.input!.source;
+      const source: SourceIdentity = file.record.result.input!.source;
       sources.set(source.sourceId, { id: source.sourceId, filePath: file.record.filePath, sha256: source.sha256 });
     }
       }
@@ -949,7 +973,7 @@ export class WorkspaceSession {
     return structuredClone([...sources.values()]);
   }
 
-  rejectRequest(): WorkspaceState {
+  rejectRequest(): IWorkspaceState {
     return { ...this.state(), error: 'This workspace request is not supported.' };
   }
 
@@ -1012,7 +1036,7 @@ export class WorkspaceSession {
     this.importOutcome = { status: 'failed', importId: null, issues: [importIssue(code, detail)] };
   }
 
-  private statementProgress(controller: AbortController, workspaceId: string): Pick<BankImportOptions, 'signal' | 'onProgress'> {
+  private statementProgress(controller: AbortController, workspaceId: string): Pick<IBankImportOptions, 'signal' | 'onProgress'> {
     return { signal: controller.signal, onProgress: (progress: ExtractionProgress): void => {
       if (this.importController !== controller || controller.signal.aborted || this.metadata?.id !== workspaceId || !this.statementImport) {
         return;
@@ -1038,7 +1062,7 @@ export class WorkspaceSession {
       this.retainStatementImport(result.record, workspaceId);
     } else if (result.status === 'skipped') {
       if (result.importId === null) {
-        if (!this.sources().some((source: WorkspaceSource): boolean => source.id === result.existingSourceId)) {
+        if (!this.sources().some((source: IWorkspaceSource): boolean => source.id === result.existingSourceId)) {
           this.failedImport('invalid-import', 'The duplicate source could not be identified.'); return;
         }
         this.importOutcome = { status: 'skipped', importId: null, issues: [] }; return;
@@ -1110,14 +1134,14 @@ export class WorkspaceSession {
     if (duplicate) {
       this.importOutcome = { status: 'skipped', importId: duplicate.id, issues: [] }; return;
     }
-    if (this.sources().some((source: WorkspaceSource): boolean => source.sha256 === record.result.sourceProvenance?.sha256)) {
+    if (this.sources().some((source: IWorkspaceSource): boolean => source.sha256 === record.result.sourceProvenance?.sha256)) {
       this.importOutcome = { status: 'skipped', importId: null, issues: [] }; return;
     }
     const identities: (value: StoredBankImport) => string[] = (value: StoredBankImport): string[] => [
-      value.id, value.result.sourceProvenance!.sourceId, ...value.accounts.flatMap((account: { sectionId: string; accountId: string; statementId: string; }): string[] => [account.accountId, account.statementId]),
-      ...value.transactions.map((row: { rowId: string; transactionId: string; }): string => row.transactionId), ...value.drafts.map((row: { rowId: string; draftId: string; }): string => row.draftId)
+      value.id, value.result.sourceProvenance!.sourceId, ...value.accounts.flatMap((account: StoredBankImport['accounts'][number]): string[] => [account.accountId, account.statementId]),
+      ...value.transactions.map((row: StoredBankImport['transactions'][number]): string => row.transactionId), ...value.drafts.map((row: StoredBankImport['drafts'][number]): string => row.draftId)
     ];
-    const existingIds: Set<string> = new Set([...this.statementHistory().flatMap(identities), ...this.documentIdentities(), ...this.sources().map((source: WorkspaceSource): string => source.id), workspaceId].map((id: string): string => id.toLowerCase()));
+    const existingIds: Set<string> = new Set([...this.statementHistory().flatMap(identities), ...this.documentIdentities(), ...this.sources().map((source: IWorkspaceSource): string => source.id), workspaceId].map((id: string): string => id.toLowerCase()));
     if (identities(record).some((id: string): boolean => existingIds.has(id.toLowerCase()))) {
       this.failedImport('invalid-import', 'The statement import contains reused workspace identities.'); return;
     }
@@ -1131,7 +1155,7 @@ export class WorkspaceSession {
     this.importOutcome = { status: 'imported', importId: record.id, issues: structuredClone(record.result.issues) };
   }
 
-  private removeStatement({ importId, revision }: Extract<WorkspaceCommand, { type: 'remove-statement' }>): void {
+  private removeStatement({ importId, revision }: Extract<WorkspaceCommand, Record<'type', 'remove-statement'>>): void {
     if (!this.metadata || revision !== this.matchRevision) {
       throw new Error('The workspace has changed. Select the statement again before removing it.');
     }
@@ -1181,7 +1205,7 @@ export class WorkspaceSession {
   }
 
   private documentIdentities(): string[] {
-    return this.documentRecords.flatMap((record: StoredDocumentImport): string[] => [record.id, ...record.files.flatMap((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): string[] => file.status === 'imported'
+    return this.documentRecords.flatMap((record: StoredDocumentImport): string[] => [record.id, ...record.files.flatMap((file: DocumentFileResult): string[] => file.status === 'imported'
       ? [file.record.id, file.record.result.input!.source.sourceId] : file.status === 'failed' && file.analysis?.input ? [file.analysis.input.source.sourceId] : [])]);
   }
 
@@ -1192,7 +1216,7 @@ export class WorkspaceSession {
     }
     const result: StoredDocumentImport | null = await this.documentService.run({
       existingSources: this.sources(), signal: controller.signal,
-      onProgress: (progress: DocumentImportProgress): void => {
+      onProgress: (progress: IDocumentImportProgress): void => {
         if (this.importController !== controller || controller.signal.aborted || this.metadata?.id !== workspaceId || !this.documentImport) {
           return;
         }
@@ -1213,7 +1237,7 @@ export class WorkspaceSession {
     this.validateDocumentImport(record, workspaceId);
     const imports: StoredDocumentImport[] = [...this.documentRecords, record];
     const documentView: WorkspaceDocumentState = new WorkspaceDocumentState(imports, this.documentCorrections, this.receiptAnalysisVersions, this.documentFieldReviews);
-    const hasNewDocuments: boolean = record.files.some((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): file is { status: "imported"; record: StoredSupportingDocument; } => file.status === 'imported');
+    const hasNewDocuments: boolean = record.files.some((file: DocumentFileResult): boolean => file.status === 'imported');
     const matches: TransactionMatch[] = hasNewDocuments ? suggestWorkspaceMatches(this.activeImports(), this.activeDocuments(documentView.effective)) : this.matches;
     this.documentRecords = imports;
     this.documentView = documentView;
@@ -1225,11 +1249,11 @@ export class WorkspaceSession {
   }
 
   private validateDocumentImport(record: StoredDocumentImport, workspaceId: string): void {
-    const identities: Set<string> = new Set([workspaceId, ...this.documentIdentities(), ...this.sources().map((source: WorkspaceSource): string => source.id), ...this.statementHistory().flatMap((bank: StoredBankImport): string[] => [
-      bank.id, ...bank.accounts.flatMap((account: { sectionId: string; accountId: string; statementId: string; }): string[] => [account.accountId, account.statementId]), ...bank.transactions.map((row: { rowId: string; transactionId: string; }): string => row.transactionId), ...bank.drafts.map((row: { rowId: string; draftId: string; }): string => row.draftId)
+    const identities: Set<string> = new Set([workspaceId, ...this.documentIdentities(), ...this.sources().map((source: IWorkspaceSource): string => source.id), ...this.statementHistory().flatMap((bank: StoredBankImport): string[] => [
+      bank.id, ...bank.accounts.flatMap((account: StoredBankImport['accounts'][number]): string[] => [account.accountId, account.statementId]), ...bank.transactions.map((row: StoredBankImport['transactions'][number]): string => row.transactionId), ...bank.drafts.map((row: StoredBankImport['drafts'][number]): string => row.draftId)
     ])].map((id: string): string => id.toLowerCase()));
-    const sources: Map<string, WorkspaceSource> = new Map(this.sources().map((source: WorkspaceSource): [string, WorkspaceSource] => [source.id, source]));
-    const hashes: Set<string> = new Set([...sources.values()].flatMap((source: WorkspaceSource): string[] => source.sha256 ? [source.sha256] : []));
+    const sources: Map<string, IWorkspaceSource> = new Map(this.sources().map((source: IWorkspaceSource): [string, IWorkspaceSource] => [source.id, source]));
+    const hashes: Set<string> = new Set([...sources.values()].flatMap((source: IWorkspaceSource): string[] => source.sha256 ? [source.sha256] : []));
     const reserve: (id: string) => void = (id: string): void => {
       if (identities.has(id.toLowerCase())) {
         throw new Error('The document import reuses a workspace identity.');
@@ -1239,7 +1263,7 @@ export class WorkspaceSession {
     reserve(record.id);
     for (const file of record.files) {
       if (file.status === 'imported') {
-        const source: { sourceId: string; sha256: string; } = file.record.result.input!.source;
+        const source: SourceIdentity = file.record.result.input!.source;
         reserve(file.record.id); reserve(source.sourceId);
         if (hashes.has(source.sha256)) {
           throw new Error('The document import contains content already present in the workspace.');
@@ -1255,7 +1279,7 @@ export class WorkspaceSession {
     }
   }
 
-  private reviewMatch({ revision, transactionId, review }: Extract<WorkspaceCommand, { type: 'review-match' }>): void {
+  private reviewMatch({ revision, transactionId, review }: Extract<WorkspaceCommand, Record<'type', 'review-match'>>): void {
     if (!this.metadata || revision !== this.matchRevision) {
       throw new Error('The match review has changed. Refresh it before making a decision.');
     }
@@ -1280,7 +1304,7 @@ export class WorkspaceSession {
   }
 
   private validateReviewAssignment(transactionId: string, documentId: string): void {
-    if (!this.activeDocuments(this.documentRecords).some((record: StoredDocumentImport): boolean => record.files.some((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): boolean => file.status === 'imported' && file.record.id === documentId))) {
+    if (!this.activeDocuments(this.documentRecords).some((record: StoredDocumentImport): boolean => record.files.some((file: DocumentFileResult): boolean => file.status === 'imported' && file.record.id === documentId))) {
       throw new Error('This supporting document is not available in the workspace.');
     }
     for (const [owner, assignedDocument] of this.matchDecisions) {
@@ -1290,7 +1314,7 @@ export class WorkspaceSession {
     }
   }
 
-  private async setTransactionIgnored({ revision, transactionId, ignored, remember }: Extract<WorkspaceCommand, { type: 'set-transaction-ignored' }>): Promise<void> {
+  private async setTransactionIgnored({ revision, transactionId, ignored, remember }: Extract<WorkspaceCommand, Record<'type', 'set-transaction-ignored'>>): Promise<void> {
     if (!this.metadata || revision !== this.matchRevision) {
       throw new Error('The match review has changed. Refresh it before changing the ignored status.');
     }
@@ -1324,8 +1348,8 @@ export class WorkspaceSession {
   }
 
   private rememberedIgnoreRuleKey(transactionId: string): string {
-    const bank: StoredBankImport = this.effectiveImports.find((record: StoredBankImport): boolean => record.transactions.some((row: { rowId: string; transactionId: string; }): boolean => row.transactionId === transactionId))!;
-    const rowId: string = bank.transactions.find((row: { rowId: string; transactionId: string; }): boolean => row.transactionId === transactionId)!.rowId;
+    const bank: StoredBankImport = this.effectiveImports.find((record: StoredBankImport): boolean => record.transactions.some((row: StoredBankImport['transactions'][number]): boolean => row.transactionId === transactionId))!;
+    const rowId: string = bank.transactions.find((row: StoredBankImport['transactions'][number]): boolean => row.transactionId === transactionId)!.rowId;
     const key: string | null = transactionIgnoreRuleKey(bank.result.transactions.find((row: TransactionCandidate): boolean => row.rowId === rowId)!);
     if (!key) {
       throw new Error('A description is required to remember this booking.');
@@ -1344,7 +1368,7 @@ export class WorkspaceSession {
     this.ignoredTransactions.delete(transactionId);
   }
 
-  private setDuplicateDecision({ revision, transactionId, otherTransactionId, decision }: Extract<WorkspaceCommand, { type: 'set-duplicate-decision' }>): void {
+  private setDuplicateDecision({ revision, transactionId, otherTransactionId, decision }: Extract<WorkspaceCommand, Record<'type', 'set-duplicate-decision'>>): void {
     if (!this.metadata || revision !== this.matchRevision) {
       throw new Error('The duplicate review has changed. Refresh it before making a decision.');
     }
@@ -1355,7 +1379,7 @@ export class WorkspaceSession {
     }
     const active: StoredBankImport[] = activeStatements(this.effectiveImports, this.sourceReplacements);
     const duplicates: Map<string, DuplicateDecision> = new Map(this.duplicateDecisions), reviews: Map<string, string | null> = new Map(this.matchDecisions), approvals: Map<string, ReviewApprovalState> = new Map(this.reviewApprovals);
-    let history: { sourceId: string; transactionId: string; documentId: string } | undefined;
+    let history: IArchivedDuplicateReview | undefined;
     let secondary: string | null;
     if (decision === 'clear') {
       secondary = secondaryDuplicateId(previous!);
@@ -1391,13 +1415,13 @@ export class WorkspaceSession {
 
   private restoreDuplicateAssignment(
     active: StoredBankImport[], secondary: string | null, review: DuplicateDecision['archivedReview'], reviews: Map<string, string | null>
-  ): { sourceId: string; transactionId: string; documentId: string } | undefined {
+  ): IArchivedDuplicateReview | undefined {
     if (!secondary || !review || !active.some((record: StoredBankImport): boolean =>
       record.transactions.some((row: StoredBankImport['transactions'][number]): boolean => row.transactionId === secondary))) {
         return undefined;
       }
     const documentId: string | null = review.documentId;
-    const source: { kind: "document"; record: StoredSupportingDocument; run: StoredDocumentImport; } | null = documentId ? supportingDocumentSource(this.documentRecords, documentId) : null;
+    const source: NonNullable<ReturnType<typeof supportingDocumentSource>> | null = documentId ? supportingDocumentSource(this.documentRecords, documentId) : null;
     const superseded: boolean = source?.kind === 'document' && this.sourceReplacements.has(source.record.result.input!.source.sourceId);
     if (documentId && [...reviews.values()].includes(documentId)) {
       throw new Error('The archived document is now assigned to another booking. Remove that assignment before undoing this decision.');
@@ -1412,11 +1436,11 @@ export class WorkspaceSession {
 
   private chooseDuplicateDecision(
     active: StoredBankImport[], transactionId: string, otherTransactionId: string,
-    decision: Exclude<Extract<WorkspaceCommand, { type: 'set-duplicate-decision' }>['decision'], 'clear'>, reviews: Map<string, string | null>
+    decision: Exclude<Extract<WorkspaceCommand, Record<'type', 'set-duplicate-decision'>>['decision'], 'clear'>, reviews: Map<string, string | null>
   ): DuplicateDecision {
-    const statement: StoredBankImport | undefined = this.effectiveImports.find((record: StoredBankImport): boolean => record.transactions.some((row: { rowId: string; transactionId: string; }): boolean => row.transactionId === transactionId));
+    const statement: StoredBankImport | undefined = this.effectiveImports.find((record: StoredBankImport): boolean => record.transactions.some((row: StoredBankImport['transactions'][number]): boolean => row.transactionId === transactionId));
     if (!statement || !indexStatementOverlaps(active, originalStatementBankIds(this.importRecords))(statement.id).get(transactionId)
-      .some((row: StatementOverlap): boolean => row.transactionId === otherTransactionId)) {
+      .some((row: IStatementOverlap): boolean => row.transactionId === otherTransactionId)) {
       throw new Error('These bookings are no longer possible duplicates.');
     }
     const [firstId, secondId]: string[] = [transactionId, otherTransactionId].sort();
@@ -1426,15 +1450,15 @@ export class WorkspaceSession {
     return { firstId, secondId, primaryId, archivedReview: documentId === undefined ? null : { documentId } };
   }
 
-  private approveMatches({ loadRevision, selections }: Extract<WorkspaceCommand, { type: 'approve-matches' }>): void {
+  private approveMatches({ loadRevision, selections }: Extract<WorkspaceCommand, Record<'type', 'approve-matches'>>): void {
     if (!this.metadata || loadRevision !== this.loadRevision) {
       throw new Error('The workspace has changed. Select the transactions again before approving.');
     }
-    const rows: Map<string, MatchSummary> = new Map(this.matchSummaries(this.matchRevision)!.map((row: MatchSummary): [string, MatchSummary] => [row.transactionId, row]));
-    const documents: Set<string> = new Set(this.documentRecords.flatMap((record: StoredDocumentImport): string[] => record.files.flatMap((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): string[] => file.status === 'imported' ? [file.record.id] : [])));
+    const rows: Map<string, IMatchSummary> = new Map(this.matchSummaries(this.matchRevision)!.map((row: IMatchSummary): [string, IMatchSummary] => [row.transactionId, row]));
+    const documents: Set<string> = new Set(this.documentRecords.flatMap((record: StoredDocumentImport): string[] => record.files.flatMap((file: DocumentFileResult): string[] => file.status === 'imported' ? [file.record.id] : [])));
     const pending: MatchApprovalSelection[] = [];
     for (const selection of selections) {
-      const row: MatchSummary | undefined = rows.get(selection.transactionId);
+      const row: IMatchSummary | undefined = rows.get(selection.transactionId);
       const current: MatchApprovalSelection = this.validateApprovalSelection(selection, row, documents);
       if (!row?.approval) {
         pending.push(current);
@@ -1452,7 +1476,7 @@ export class WorkspaceSession {
     this.matchRevision++;
   }
 
-  private validateApprovalSelection(selection: MatchApprovalSelection, row: MatchSummary | undefined, documents: ReadonlySet<string>): MatchApprovalSelection {
+  private validateApprovalSelection(selection: MatchApprovalSelection, row: IMatchSummary | undefined, documents: ReadonlySet<string>): MatchApprovalSelection {
     const current: MatchApprovalSelection | null | undefined = row?.approvalSelection;
     if (!current) {
       return this.rejectApprovalSelection(selection.transactionId, row, 'not-assigned');
@@ -1466,7 +1490,7 @@ export class WorkspaceSession {
     return current;
   }
 
-  private rejectApprovalSelection(transactionId: string, row: MatchSummary | undefined, reason: NonNullable<WorkspaceState['approvalIssue']>['reason']): never {
+  private rejectApprovalSelection(transactionId: string, row: IMatchSummary | undefined, reason: NonNullable<IWorkspaceState['approvalIssue']>['reason']): never {
     this.approvalIssue = { transactionId, reason };
     const description: string | undefined = row?.description.trim().split(/\r?\n/, 1)[0].slice(0, 120);
     const label: string = description?.length ? description : transactionId;
@@ -1479,7 +1503,7 @@ export class WorkspaceSession {
     throw new Error(`The selection for “${label}” has changed. Review it again before approving.`);
   }
 
-  private correctBankRow({ revision, rowId, changes }: Extract<WorkspaceCommand, { type: 'correct-bank-row' }>): void {
+  private correctBankRow({ revision, rowId, changes }: Extract<WorkspaceCommand, Record<'type', 'correct-bank-row'>>): void {
     if (!this.metadata || revision !== this.matchRevision) {
       throw new Error('The statement has changed. Refresh it before correcting a row.');
     }
@@ -1488,9 +1512,9 @@ export class WorkspaceSession {
       throw new Error('This statement row is no longer available.');
     }
     const bookingDate: string | undefined = changes.bookingDate !== current.bookingDate?.value ? changes.bookingDate : undefined;
-    const amount: { coefficient: string; currency: string; scale: number; } | undefined = changes.accountAmount;
-    const previousAmount: { coefficient: string; currency: string; scale: number; }   | undefined = current.accountAmount?.value;
-    const accountAmount: { coefficient: string; currency: string; scale: number; } | undefined = amount && previousAmount && sameMoneyValue(amount, previousAmount) ? undefined : amount;
+    const amount: Money | undefined = changes.accountAmount;
+    const previousAmount: Money   | undefined = current.accountAmount?.value;
+    const accountAmount: Money | undefined = amount && previousAmount && sameMoneyValue(amount, previousAmount) ? undefined : amount;
     if (bookingDate === undefined && accountAmount === undefined) {
       return;
     }
@@ -1500,8 +1524,8 @@ export class WorkspaceSession {
     const corrections: Map<string, BankCorrection> = new Map(this.bankCorrections).set(rowId, correction);
     const effective: StoredBankImport[] = projectCorrectedStatementAnalyses(this.importRecords, this.statementAnalysisVersions, corrections);
     const matches: TransactionMatch[] = suggestWorkspaceMatches(this.activeImports(effective), this.activeDocuments());
-    const before: boolean = this.effectiveImports.some((record: StoredBankImport): boolean => record.transactions.some((row: { rowId: string; transactionId: string; }): boolean => row.transactionId === rowId));
-    if (before && !effective.some((record: StoredBankImport): boolean => record.transactions.some((row: { rowId: string; transactionId: string; }): boolean => row.transactionId === rowId))) {
+    const before: boolean = this.effectiveImports.some((record: StoredBankImport): boolean => record.transactions.some((row: StoredBankImport['transactions'][number]): boolean => row.transactionId === rowId));
+    if (before && !effective.some((record: StoredBankImport): boolean => record.transactions.some((row: StoredBankImport['transactions'][number]): boolean => row.transactionId === rowId))) {
       throw new Error('A correction cannot return an existing transaction to an unresolved draft.');
     }
     this.bankCorrections = corrections;
@@ -1516,8 +1540,8 @@ export class WorkspaceSession {
       if (this.sourceReplacements.has(record.result.sourceProvenance!.sourceId)) {
         continue;
       }
-      const transaction: { rowId: string; transactionId: string; } | undefined = record.transactions.find((row: { rowId: string; transactionId: string; }): boolean => row.transactionId === rowId);
-      const draft: { rowId: string; draftId: string; } | undefined = record.drafts.find((row: { rowId: string; draftId: string; }): boolean => row.draftId === rowId);
+      const transaction: StoredBankImport['transactions'][number] | undefined = record.transactions.find((row: StoredBankImport['transactions'][number]): boolean => row.transactionId === rowId);
+      const draft: StoredBankImport['drafts'][number] | undefined = record.drafts.find((row: StoredBankImport['drafts'][number]): boolean => row.draftId === rowId);
       if (transaction) {
         current = record.result.transactions.find((row: TransactionCandidate): boolean => row.rowId === transaction.rowId);
       }
@@ -1531,15 +1555,15 @@ export class WorkspaceSession {
     return current;
   }
 
-  private setDocumentFieldConfirmed({ revision, documentId, sectionId, fieldId, confirmed }: Extract<WorkspaceCommand, { type: 'set-document-field-confirmed' }>): void {
+  private setDocumentFieldConfirmed({ revision, documentId, sectionId, fieldId, confirmed }: Extract<WorkspaceCommand, Record<'type', 'set-document-field-confirmed'>>): void {
     if (!this.metadata || revision !== this.matchRevision) {
       throw new Error('The document has changed. Refresh it before reviewing a field.');
     }
-    const source: Extract<AnalyzedSource, { kind: 'document' }> | null = supportingDocumentSource(this.activeDocuments(), documentId);
+    const source: Extract<AnalyzedSource, Record<'kind', 'document'>> | null = supportingDocumentSource(this.activeDocuments(), documentId);
     if (!source) {
       throw new Error('This document is no longer active.');
     }
-    const target: { documentId: string; sectionId: string; fieldId: string } = { documentId, sectionId, fieldId };
+    const target: DocumentFieldReviewTarget = { documentId, sectionId, fieldId };
     const base: SupportingDocument = supportingDocumentSource(this.documents().reviewBase, documentId)!.record.result;
     const key: string = documentFieldReviewKey(target);
     const previous: DocumentFieldReview | undefined = this.documentFieldReviews.get(key);
@@ -1576,7 +1600,7 @@ export class WorkspaceSession {
     return reviews;
   }
 
-  private setDocumentFieldDisposition({ revision, documentId, sectionId, fieldId, disposition }: Extract<WorkspaceCommand, { type: 'set-document-field-disposition' }>): void {
+  private setDocumentFieldDisposition({ revision, documentId, sectionId, fieldId, disposition }: Extract<WorkspaceCommand, Record<'type', 'set-document-field-disposition'>>): void {
     if (!this.metadata || revision !== this.matchRevision) {
       throw new Error('The document has changed. Refresh it before reviewing a field.');
     }
@@ -1584,7 +1608,7 @@ export class WorkspaceSession {
       throw new Error('This document is no longer active.');
     }
     const base: SupportingDocument = supportingDocumentSource(this.documents().reviewBase, documentId)!.record.result;
-    const target: { documentId: string; sectionId: string; fieldId: string } = { documentId, sectionId, fieldId };
+    const target: DocumentFieldReviewTarget = { documentId, sectionId, fieldId };
     const key: string = documentFieldReviewKey(target);
     const previous: DocumentFieldReview | undefined = this.documentFieldReviews.get(key);
     const active: string | null = activeDocumentFieldDisposition(base, target, [...this.documentFieldReviews.values()]);
@@ -1616,14 +1640,14 @@ export class WorkspaceSession {
     this.documentFieldReviews = reviews;
   }
 
-  private correctDocumentField({ revision, documentId, sectionId, fieldId, change }: Extract<WorkspaceCommand, { type: 'correct-document-field' }>): void {
+  private correctDocumentField({ revision, documentId, sectionId, fieldId, change }: Extract<WorkspaceCommand, Record<'type', 'correct-document-field'>>): void {
     if (!this.metadata || revision !== this.matchRevision) {
       throw new Error('The document has changed. Refresh it before correcting a field.');
     }
     if (!supportingDocumentSource(this.activeDocuments(this.documentRecords), documentId)) {
       throw new Error('This document is no longer active.');
     }
-    const target: { documentId: string; sectionId: string; fieldId: string | null; } = { documentId, sectionId, fieldId };
+    const target: DocumentCorrectionTarget = { documentId, sectionId, fieldId };
     const key: string = documentCorrectionKey(target, change.kind, 'role' in change ? change.role : undefined);
     const previous: DocumentCorrection | undefined = this.documentCorrections.get(key);
     if (previous) {
@@ -1659,18 +1683,18 @@ export class WorkspaceSession {
     if (analyzed && !analyzed.issues.some((issue: DocumentIssue): boolean => issue.fieldId === fieldId)) {
       const section: DocumentSection | undefined = analyzed.sections.find((section: DocumentSection): boolean => section.sectionId === sectionId);
       if (change.kind === 'date') {
-        const candidates: string[] | undefined = section?.dates.find((field: { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.id === fieldId)?.candidates;
+        const candidates: string[] | undefined = section?.dates.find((field: DocumentSection['dates'][number]): boolean => field.id === fieldId)?.candidates;
         return candidates?.length === 1 && candidates[0] === change.value;
       } else {
-        const candidates: { coefficient: string; scale: number; currency: string | null; }[] | undefined = section?.amounts.find((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.id === fieldId)?.candidates;
-        const amount: { coefficient: string; scale: number; currency: string | null; } | undefined = candidates?.[0];
+        const candidates: DocumentSection['amounts'][number]['candidates'][number][] | undefined = section?.amounts.find((field: DocumentSection['amounts'][number]): boolean => field.id === fieldId)?.candidates;
+        const amount: DocumentSection['amounts'][number]['candidates'][number] | undefined = candidates?.[0];
         return candidates?.length === 1 && !!amount?.currency && sameMoneyValue({ ...amount, currency: amount.currency }, change.value);
       }
     }
     return false;
   }
 
-  async dispatch(command: WorkspaceCommand): Promise<WorkspaceState> {
+  async dispatch(command: WorkspaceCommand): Promise<IWorkspaceState> {
     if (command.type === 'get-state') {
       return this.state();
     }
@@ -1719,7 +1743,7 @@ export class WorkspaceSession {
     return pending?.token === command.token && (command.type === 'discard-statement-ai' || pending.stage === (command.type === 'try-statement-ai' ? 'offer' : 'review'));
   }
 
-  private cancelImport(): WorkspaceState {
+  private cancelImport(): IWorkspaceState {
     if (this.importController && (this.statementImport || this.documentImport) && !this.importController.signal.aborted) {
       if (this.statementImport) {
         this.statementImport = { ...this.statementImport, cancelling: true };
@@ -1750,7 +1774,7 @@ export class WorkspaceSession {
     return true;
   }
 
-  private runCommand(command: Exclude<WorkspaceCommand, { type: 'get-state' | 'cancel-import' | 'rename' }>): Promise<unknown> | undefined {
+  private runCommand(command: Exclude<WorkspaceCommand, Record<'type', 'get-state' | 'cancel-import' | 'rename'>>): Promise<unknown> | undefined {
     switch (command.type) {
       case 'save': return this.save();
       case 'set-transaction-ignored': return this.setTransactionIgnored(command);
@@ -1801,7 +1825,7 @@ export class WorkspaceSession {
     if (!selected) {
       return;
     }
-    const loaded: SavedWorkspace = await loadWorkspace(selected);
+    const loaded: ISavedWorkspace = await loadWorkspace(selected);
     if (this.ignoreRulesDirectory) {
       this.ignoreRules = await readTransactionIgnoreRules(this.ignoreRulesDirectory);
     }

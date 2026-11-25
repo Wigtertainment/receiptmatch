@@ -6,16 +6,16 @@ import {
     emptyImportResult,
     importIssue,
     sourceProvenance,
-    type BankAdapter,
+    type IBankAdapter,
     type BankImportResult
 } from '../../src/shared/bank-import.js';
 import { revolutAdapter } from './revolut.js';
 import { airwallexAdapter } from './airwallex.js';
 import type { ZodSafeParseResult } from 'zod';
 
-export const BUILTIN_BANK_ADAPTERS: readonly BankAdapter[] = [revolutAdapter, airwallexAdapter];
+export const BUILTIN_BANK_ADAPTERS: readonly IBankAdapter[] = [revolutAdapter, airwallexAdapter];
 
-export function parseBankStatement(payload: unknown, adapters: readonly BankAdapter[] = BUILTIN_BANK_ADAPTERS): BankImportResult {
+export function parseBankStatement(payload: unknown, adapters: readonly IBankAdapter[] = BUILTIN_BANK_ADAPTERS): BankImportResult {
     const validated: ZodSafeParseResult<BankImportInput> = bankImportInputSchema.safeParse(payload);
     if (!validated.success) {
         return emptyImportResult(null, 'failed', importIssue('invalid-input', 'The extracted statement data does not satisfy the import contract.'));
@@ -24,13 +24,13 @@ export function parseBankStatement(payload: unknown, adapters: readonly BankAdap
     try {
         const ids: Set<string> = new Set<string>();
         for (const adapter of adapters) {
-            const metadata: { bankId: string; adapterId: string; version: string; layouts: { layoutId: string; version: string; }[]; } = adapterMetadataSchema.parse(adapter.metadata);
+            const metadata: IBankAdapter['metadata'] = adapterMetadataSchema.parse(adapter.metadata);
             if (ids.has(metadata.adapterId)) {
                 throw new Error('Duplicate adapter registration.');
             }
             ids.add(metadata.adapterId);
         }
-        const identified: BankAdapter[] = adapters.filter((adapter: BankAdapter): boolean => adapter.identify(input));
+        const identified: IBankAdapter[] = adapters.filter((adapter: IBankAdapter): boolean => adapter.identify(input));
         if (!identified.length) {
                 return emptyImportResult(
                 input,
@@ -41,7 +41,7 @@ export function parseBankStatement(payload: unknown, adapters: readonly BankAdap
         if (identified.length > 1) {
                 return emptyImportResult(input, 'unsupported', importIssue('ambiguous-adapter', 'Multiple adapters identified this statement; no adapter was selected.'));
             }
-        const adapter: BankAdapter = identified[0];
+        const adapter: IBankAdapter = identified[0];
         const parsed: ZodSafeParseResult<BankImportResult> = bankImportResultSchema.safeParse(adapter.parse(input));
         if (!parsed.success || parsed.data.localRecognition) {
             return emptyImportResult(input, 'failed', importIssue('invalid-adapter-result', 'The selected adapter returned an invalid result.'));
@@ -55,7 +55,8 @@ export function parseBankStatement(payload: unknown, adapters: readonly BankAdap
             (result.adapter.adapterId !== adapter.metadata.adapterId ||
                 result.adapter.bankId !== adapter.metadata.bankId ||
                 result.adapter.version !== adapter.metadata.version ||
-                !adapter.metadata.layouts.some((layout: { layoutId: string; version: string; }): boolean => layout.layoutId === result.adapter?.layoutId && layout.version === result.adapter.layoutVersion))
+                !adapter.metadata.layouts.some((layout: IBankAdapter['metadata']['layouts'][number]): boolean =>
+                    layout.layoutId === result.adapter?.layoutId && layout.version === result.adapter.layoutVersion))
         ) {
             return emptyImportResult(input, 'failed', importIssue('invalid-adapter-version', 'The adapter result claims an unregistered adapter or layout version.'));
         }

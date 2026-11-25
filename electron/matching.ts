@@ -1,9 +1,7 @@
-import type { ImportIssue, SourceEvidence } from "../src/shared/bank-import.js";
-import type { DocumentIssue, SupportingDocument } from "../src/shared/supporting-document.js";
 import type { TransactionCandidate } from '../src/shared/bank-import.js';
 import type { Money } from '../src/shared/money.js';
-import type { DocumentSection } from '../src/shared/supporting-document.js';
-import type { StoredDocumentImport, StoredSupportingDocument } from '../src/shared/workspace-documents.js';
+import type { DocumentIssue, DocumentSection } from '../src/shared/supporting-document.js';
+import type { DocumentFileResult, StoredDocumentImport, StoredSupportingDocument } from '../src/shared/workspace-documents.js';
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
 import type { MatchCandidate, TransactionMatch } from '../src/shared/workspace-matching.js';
 import { hasFullDocumentReference, mergedLegacySections, recordedDocumentPayments } from './documents/interpret.js';
@@ -14,8 +12,13 @@ type DateField = DocumentSection['dates'][number];
 type Direction = TransactionCandidate['direction'];
 type ReferenceEvidence = MatchCandidate['references'][number];
 type DateEvidence = NonNullable<MatchCandidate['date']>;
+type BankReference = TransactionCandidate['references'][number];
+type DocumentReference = DocumentSection['references'][number];
 
-interface DocumentAmounts {
+interface IAmountCandidate { field: AmountField; amount: AmountField['candidates'][number] }
+interface IReferenceEvidence { matches: ReferenceEvidence[]; conflicting: boolean }
+
+interface IDocumentAmounts {
 	documentId: string;
 	section: DocumentSection;
 	direction: Direction;
@@ -54,14 +57,14 @@ export function outgoingAmounts(section: DocumentSection, recordedPayments: Set<
 	if (payments.length) {
 		return payments;
 	}
-	if (requireIdentifiedDocument && section.kind === 'invoice' && !section.merchants.some((field: { role: "merchant"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.candidates.length === 1)) {
+	if (requireIdentifiedDocument && section.kind === 'invoice' && !section.merchants.some((field: DocumentSection['merchants'][number]): boolean => field.candidates.length === 1)) {
 		return [];
 	}
 	return section.amounts.filter((field: AmountField): boolean => field.role === 'billed-total');
 }
 
-interface IndexedAmount { document: DocumentAmounts; fieldId: string; amount: Money }
-interface SectionAmountFacts {
+interface IIndexedAmount { document: IDocumentAmounts; fieldId: string; amount: Money }
+interface ISectionAmountFacts {
 	documentId: string;
 	section: DocumentSection;
 	paymentDates: DateField[];
@@ -73,32 +76,36 @@ interface SectionAmountFacts {
 	unresolvedCoreReview: boolean;
 }
 
-function addIndexedAmounts(index: Map<string, IndexedAmount[]>, facts: SectionAmountFacts, direction: Direction, fields: AmountField[]): void {
-	const { documentId, section, paymentDates, dates, currencies, declaredCurrencies, uncertainFields, uncertainReferences, unresolvedCoreReview }: SectionAmountFacts = facts;
+function addIndexedAmounts(index: Map<string, IIndexedAmount[]>, facts: ISectionAmountFacts, direction: Direction, fields: AmountField[]): void {
+	const { documentId, section, paymentDates, dates, currencies, declaredCurrencies, uncertainFields, uncertainReferences, unresolvedCoreReview }: ISectionAmountFacts = facts;
 	if (!fields.length) {
 		return;
 	}
-	const amounts: { field: AmountField; amount: AmountField['candidates'][number]; }[] = fields.flatMap((field: AmountField): { field: AmountField; amount: AmountField['candidates'][number]; }[] => field.candidates.map((amount: AmountField['candidates'][number]): { field: AmountField; amount: AmountField['candidates'][number]; } => ({ field, amount })));
-	const values: Set<string | null> = new Set(amounts.map(({ amount }: { field: AmountField; amount: AmountField['candidates'][number]; }): string | null => (amount.currency === null ? null : moneyKey({ ...amount, currency: amount.currency }))));
+	const amounts: IAmountCandidate[] = fields.flatMap((field: AmountField): IAmountCandidate[] =>
+		field.candidates.map((amount: AmountField['candidates'][number]): IAmountCandidate => ({ field, amount })));
+	const values: Set<string | null> = new Set(amounts.map(({ amount }: IAmountCandidate): string | null =>
+		(amount.currency === null ? null : moneyKey({ ...amount, currency: amount.currency }))));
 	const conflicting: boolean = unresolvedCoreReview || values.size > 1 || declaredCurrencies.size > 1 || new Set(dates.flatMap((field: DateField): string[] => field.candidates)).size > 1 ||
 		[...fields, ...dates, ...paymentDates, ...currencies].some((field: AmountField | DateField | DocumentSection['currencies'][number]): boolean => uncertainFields.has(field.id)) ||
 		(fields.some((field: AmountField): boolean => field.role === 'billed-total') && section.kind === 'invoice' &&
 			!section.merchants.some((field: DocumentSection['merchants'][number]): boolean => field.candidates.length === 1 && !uncertainFields.has(field.id)));
-	const document: DocumentAmounts = { documentId, section, direction, dates, uncertainReferences, conflicting };
+	const document: IDocumentAmounts = { documentId, section, direction, dates, uncertainReferences, conflicting };
 	for (const { field, amount } of amounts) {
 		if (amount.currency === null || amount.coefficient === '0' || (field.role === 'billed-total' && amount.coefficient.startsWith('-'))) {
 			continue;
 		}
 		const value: Money = { ...amount, currency: amount.currency };
 		const key: string = `${direction}:${moneyKey(value)}`;
-		const entries: IndexedAmount[] = index.get(key) ?? [];
+		const entries: IIndexedAmount[] = index.get(key) ?? [];
 		const inconsistentCurrency: boolean = declaredCurrencies.size > 0 && !declaredCurrencies.has(value.currency);
 		entries.push({ document: inconsistentCurrency ? { ...document, conflicting: true } : document, fieldId: field.id, amount: value });
 		index.set(key, entries);
 	}
 }
 
-function indexSectionAmounts(index: Map<string, IndexedAmount[]>, id: string, section: DocumentSection, uncertainFields: Set<string | null>, recordedPayments: Set<string>, unresolvedCoreReview: boolean): void {
+function indexSectionAmounts(
+	index: Map<string, IIndexedAmount[]>, id: string, section: DocumentSection, uncertainFields: Set<string | null>, recordedPayments: Set<string>, unresolvedCoreReview: boolean,
+): void {
 	const paymentDates: DateField[] = section.dates.filter((field: DateField): boolean => field.role === 'payment');
 	const dates: DateField[] = paymentDates.some((field: DateField): boolean => field.candidates.length > 0) ? paymentDates : section.dates.filter((field: DateField): boolean => field.role === 'issue');
 	const currencies: DocumentSection['currencies'][number][] = section.currencies.filter((field: DocumentSection['currencies'][number]): boolean => field.role === 'settlement');
@@ -121,8 +128,8 @@ function hasUnresolvedCoreReview(section: DocumentSection, issues: DocumentIssue
 		uncertainFields.has(issue.fieldId) && ['rejected-field', 'unavailable-field'].includes(issue.code));
 }
 
-function indexDocumentAmounts(documents: readonly StoredSupportingDocument[]): Map<string, IndexedAmount[]> {
-	const index: Map<string, IndexedAmount[]> = new Map();
+function indexDocumentAmounts(documents: readonly StoredSupportingDocument[]): Map<string, IIndexedAmount[]> {
+	const index: Map<string, IIndexedAmount[]> = new Map();
 	for (const { id, result } of documents) {
 		const mergedSections: Set<string> = mergedLegacySections(result);
 		const rejectedWithReplacement: Set<string> = new Set(result.issues.filter((issue: DocumentIssue): boolean => issue.code === 'rejected-field' &&
@@ -139,19 +146,20 @@ function indexDocumentAmounts(documents: readonly StoredSupportingDocument[]): M
 }
 
 export function suggestWorkspaceMatches(bankImports: readonly StoredBankImport[], documentImports: readonly StoredDocumentImport[]): TransactionMatch[] {
-	return suggestTransactionMatches(bankImports, documentImports.flatMap((record: StoredDocumentImport): StoredSupportingDocument[] => record.files.flatMap((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): StoredSupportingDocument[] => file.status === 'imported' ? [file.record] : [])));
+	return suggestTransactionMatches(bankImports, documentImports.flatMap((record: StoredDocumentImport): StoredSupportingDocument[] =>
+		record.files.flatMap((file: DocumentFileResult): StoredSupportingDocument[] => file.status === 'imported' ? [file.record] : [])));
 }
 
-export function bankReferenceFields(row: TransactionCandidate): { label: string; value: string; evidence: SourceEvidence[]; }[] {
-	return row.references.filter((field: { label: string; value: string; evidence: SourceEvidence[]; }): boolean => /^(?:ref|reference|payment reference)$/i.test(field.label.trim()));
+export function bankReferenceFields(row: TransactionCandidate): BankReference[] {
+	return row.references.filter((field: BankReference): boolean => /^(?:ref|reference|payment reference)$/i.test(field.label.trim()));
 }
 
-export function documentReferenceFields(section: DocumentSection): { role: "unknown" | "invoice" | "receipt" | "payment" | "order" | "customer" | "account" | "table" | "related-invoice"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }[] {
-	return section.references.filter((field: { role: "unknown" | "invoice" | "receipt" | "payment" | "order" | "customer" | "account" | "table" | "related-invoice"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.role === 'payment' || field.role === 'invoice' || field.role === 'receipt');
+export function documentReferenceFields(section: DocumentSection): DocumentReference[] {
+	return section.references.filter((field: DocumentReference): boolean => field.role === 'payment' || field.role === 'invoice' || field.role === 'receipt');
 }
 
-export function referenceEvidence(row: TransactionCandidate, section: DocumentSection): { matches: ReferenceEvidence[]; conflicting: boolean } {
-	const bankReferences: { label: string; value: string; evidence: SourceEvidence[]; }[] = bankReferenceFields(row);
+export function referenceEvidence(row: TransactionCandidate, section: DocumentSection): IReferenceEvidence {
+	const bankReferences: BankReference[] = bankReferenceFields(row);
 	const matches: Map<string, ReferenceEvidence> = new Map<string, ReferenceEvidence>();
 	let conflicting: boolean = false;
 	for (const field of documentReferenceFields(section)) {
@@ -183,8 +191,8 @@ export function dateEvidence(row: TransactionCandidate, dates: DateField[]): Dat
 	return { documentFieldId: field.id, bookingDate, documentDate, role: field.role === 'payment' ? 'payment' : 'issue', daysApart, withinWindow: daysApart <= 7 };
 }
 
-function matchCandidate(row: TransactionCandidate, document: DocumentAmounts, referenceCounts: Map<string, number>): MatchCandidate {
-	const { documentId, section, direction }: DocumentAmounts = document;
+function matchCandidate(row: TransactionCandidate, document: IDocumentAmounts, referenceCounts: Map<string, number>): MatchCandidate {
+	const { documentId, section, direction }: IDocumentAmounts = document;
 	const references: ReturnType<typeof referenceEvidence> = referenceEvidence(row, section);
 	const candidate: MatchCandidate = { documentId, sectionId: section.sectionId, direction, amounts: [], references: references.matches, date: dateEvidence(row, document.dates), issues: [] };
 	if (!references.matches.length) {
@@ -199,7 +207,7 @@ function matchCandidate(row: TransactionCandidate, document: DocumentAmounts, re
 	return candidate;
 }
 
-function matchTransaction(row: TransactionCandidate, transactionId: string, index: Map<string, IndexedAmount[]>, referenceCounts: Map<string, number>): TransactionMatch {
+function matchTransaction(row: TransactionCandidate, transactionId: string, index: Map<string, IIndexedAmount[]>, referenceCounts: Map<string, number>): TransactionMatch {
 	const candidates: Map<string, MatchCandidate> = new Map<string, MatchCandidate>();
 	const bases: readonly [readonly ["account-settlement", Money], readonly ["reported-original", Money | undefined]] = [
 		['account-settlement', row.accountAmount.value],
@@ -210,7 +218,7 @@ function matchTransaction(row: TransactionCandidate, transactionId: string, inde
 			continue;
 		}
 		for (const { document, fieldId, amount: documentAmount } of index.get(`${row.direction}:${moneyKey(amount)}`) ?? []) {
-			const { documentId, section, conflicting }: DocumentAmounts = document;
+			const { documentId, section, conflicting }: IDocumentAmounts = document;
 			const key: string = JSON.stringify([documentId, section.sectionId]);
 			let candidate: MatchCandidate | undefined = candidates.get(key);
 			if (!candidate) {
@@ -242,7 +250,7 @@ function finalizeMatch(match: TransactionMatch, referenceCounts: Map<string, num
 }
 
 export function suggestTransactionMatches(bankImports: readonly StoredBankImport[], documents: readonly StoredSupportingDocument[]): TransactionMatch[] {
-	const index: Map<string, IndexedAmount[]> = indexDocumentAmounts(documents);
+	const index: Map<string, IIndexedAmount[]> = indexDocumentAmounts(documents);
 	const matches: TransactionMatch[] = [];
 	const referenceCounts: Map<string, number> = new Map<string, number>();
 	for (const record of bankImports) {

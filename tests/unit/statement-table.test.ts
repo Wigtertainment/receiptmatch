@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { test } from 'vitest';
 import { bankImportResultSchema, type BankImportInput, type BankImportResult, type ImportPage, type PositionedSpan } from '../../src/shared/bank-import.js';
 import type { DocumentImagesResult } from '../../electron/extraction/host.js';
-import type { NuExtractRequest, NuExtractRuntime, NuExtractRuntimeFiles } from '../../electron/extraction/nuextract-runtime.js';
+import type { INuExtractRequest, NuExtractRuntime, INuExtractRuntimeFiles } from '../../electron/extraction/nuextract-runtime.js';
 import { proposeNuExtractStatement, type StatementProposalExtraction } from '../../electron/import/nuextract-statement.js';
 import { proposeStatementTransactions } from '../../electron/import/statement-table.js';
 import { span } from './bank-fixtures.js';
@@ -197,7 +197,7 @@ test('checks NuExtract3 tables against the original statement and preserves the 
     let calls: number = 0;
     let closed: boolean = false;
     const outcome: StatementProposalExtraction = await proposeNuExtractStatement(bytes, input, {
-        runtimeFiles: (): Promise<NuExtractRuntimeFiles> => Promise.resolve({ executable: 'local', model: 'local', projector: 'local' }),
+        runtimeFiles: (): Promise<INuExtractRuntimeFiles> => Promise.resolve({ executable: 'local', model: 'local', projector: 'local' }),
         render: (source: Uint8Array, sourceId: string, format: string): Promise<DocumentImagesResult> => {
             assert.deepEqual(source, bytes);
             assert.equal(sourceId, input.source.sourceId);
@@ -205,7 +205,7 @@ test('checks NuExtract3 tables against the original statement and preserves the 
             return Promise.resolve({ status: 'complete', images: [image] });
         },
         start: (): Promise<Pick<NuExtractRuntime, 'extract' | 'close'>> => Promise.resolve({
-            extract: ({ images, jsonObject }: NuExtractRequest): Promise<Record<string, unknown>> => {
+            extract: ({ images, jsonObject }: INuExtractRequest): Promise<Record<string, unknown>> => {
                 calls++;
                 assert.deepEqual(images, [image]);
                 assert.equal(jsonObject, true);
@@ -233,7 +233,7 @@ test('checks NuExtract3 tables against the original statement and preserves the 
 
 test('rejects a changed statement snapshot before starting image extraction or inference', async (): Promise<void> => {
     const outcome: StatementProposalExtraction = await proposeNuExtractStatement(Buffer.from('Unrelated bytes'), inputOf(), {
-        runtimeFiles: (): Promise<NuExtractRuntimeFiles> => assert.fail('The model should not be queried for a different source'),
+        runtimeFiles: (): Promise<INuExtractRuntimeFiles> => assert.fail('The model should not be queried for a different source'),
         render: (): Promise<DocumentImagesResult> => assert.fail('The different source should not be rendered')
     });
     assert.equal(outcome.status, 'failed');

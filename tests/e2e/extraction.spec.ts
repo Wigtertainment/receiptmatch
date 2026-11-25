@@ -8,39 +8,86 @@ import { PDFDocument, StandardFonts, degrees, type PDFPage, type PDFFont } from 
 import { test as base, type ElectronApplication, type Page, type TestInfo, type PlaywrightWorkerOptions, type PlaywrightWorkerArgs, type PlaywrightTestOptions, type PlaywrightTestArgs, type TestType } from "@playwright/test";
 import type * as extractionHost from "../../electron/extraction/host.js";
 import { bankImportInputSchema, type ImportPage } from "../../src/shared/bank-import.js";
-import type { ExtractionJob, ExtractionProgress, ExtractionResult } from "../../src/shared/pdf-extraction.js";
+import type { ExtractionEvent, ExtractionJob, ExtractionProgress, ExtractionResult } from "../../src/shared/pdf-extraction.js";
 import type Module from 'node:module';
 
-interface ExtractionReport {
+interface ITestCheck { name: string; status: "passed"; milliseconds: number; detail?: unknown }
+interface IExtractionSessions { created: number; sessions: Set<Electron.Session> }
+interface IExtractionFixtureArgs { extraction: IExtractionFixture }
+type ExtractionTestContext = IExtractionFixtureArgs & PlaywrightTestArgs & PlaywrightTestOptions & PlaywrightWorkerArgs & PlaywrightWorkerOptions;
+type ObservedExtractionWindow = Pick<Electron.WebPreferences, 'sandbox' | 'contextIsolation' | 'nodeIntegration'> & Record<'persistent', boolean>;
+interface IExtractionInvocation {
+	result: ExtractionResult;
+	concurrent: ExtractionResult | undefined;
+	progress: ExtractionProgress[];
+	windows: ObservedExtractionWindow[];
+	networkProbes: (string | number)[];
+	storageProbes: (string | null)[];
+	elapsedMilliseconds: number;
+	abortedWhilePending: boolean;
+	extractionWindowsAfter: number;
+}
+interface IExtractionRequest { base64: string; mode: string; format: string }
+interface IWebContentsPreferences { getLastWebPreferences(): Electron.WebPreferences }
+interface IExtractionEventPayload { jobId: string; event: ExtractionEvent }
+interface ISpoofedExtractionIssue {
+	code: string;
+	severity: string;
+	message: string;
+	pageId: null;
+	rowId: null;
+	field: null;
+	evidence: never[];
+}
+interface ISpoofedExtractionFailure { status: string; issues: ISpoofedExtractionIssue[] }
+interface IMismatchedExtractionResultEvent { type: string; result: ISpoofedExtractionFailure }
+interface IMismatchedExtractionEvent { jobId: string; event: IMismatchedExtractionResultEvent }
+interface IImageFixtureOptions {
+	transparent?: boolean | undefined;
+	blank?: boolean | undefined;
+	rotated?: boolean | undefined;
+	long?: boolean | undefined;
+}
+interface IImageFixtureRequest { format: "png" | "jpeg"; transparent: boolean; blank: boolean; rotated: boolean; long: boolean }
+interface IJpegSegment { marker: number; bytes: Buffer<ArrayBuffer> }
+interface IExtractedPage { runId: string; page: ImportPage }
+interface IAdjacentPageProbe { pageCount: number; ocrWord: PositionedSpan }
+interface IExtractionMethodsProbe { issues: ImportIssue[]; extractionMethods: ("embedded-text" | "local-ocr")[] }
+interface IFailedPageProbe { failedPage: ImportPage & Record<'spans', never[]>; issues: ImportIssue[] }
+interface ILimitedPageProbe { pageStatuses: ("complete" | "failed")[]; issues: ImportIssue[] }
+interface IStorageBoundaryProbe { probes: string[]; boundary: string }
+interface ISessionCounts { createdSessions: number; usedSessions: number }
+
+interface IExtractionReport {
 	runId: string;
 	startedAt: string;
 	status: "running" | "passed" | "failed";
 	platform: NodeJS.Platform;
 	syntheticOnly: boolean;
 	root: string;
-	checks: { name: string; status: "passed"; milliseconds: number; detail?: unknown }[];
+	checks: ITestCheck[];
 	limits?: string[];
 	error?: string;
 	stack?: string;
 	finishedAt?: string;
 }
 
-interface ExtractionTestScope {
-	extractionTestSessions: { created: number; sessions: Set<Electron.Session> };
+interface IExtractionTestScope {
+	extractionTestSessions: IExtractionSessions;
 }
 
-interface ExtractionFixture {
-	report: ExtractionReport;
+interface IExtractionFixture {
+	report: IExtractionReport;
 	check: <Detail>(name: string, action: () => Promise<Detail>) => Promise<void>;
 	launch: () => Promise<ElectronApplication>;
 }
 
-const test: TestType<PlaywrightTestArgs & PlaywrightTestOptions & { extraction: ExtractionFixture; }, PlaywrightWorkerArgs & PlaywrightWorkerOptions> = base.extend<{ extraction: ExtractionFixture }>({
-	extraction: async ({ playwright }: { extraction: ExtractionFixture; } & PlaywrightTestArgs & PlaywrightTestOptions & PlaywrightWorkerArgs & PlaywrightWorkerOptions, use: (r: ExtractionFixture) => Promise<void>, testInfo: TestInfo): Promise<void> => {
+const test: TestType<PlaywrightTestArgs & PlaywrightTestOptions & IExtractionFixtureArgs, PlaywrightWorkerArgs & PlaywrightWorkerOptions> = base.extend<IExtractionFixtureArgs>({
+	extraction: async ({ playwright }: ExtractionTestContext, use: (r: IExtractionFixture) => Promise<void>, testInfo: TestInfo): Promise<void> => {
 		await mkdir("artifacts", { recursive: true });
 		const root: string = await mkdtemp(path.resolve("artifacts/extraction-"));
 		const reportPath: string = path.resolve(`artifacts/extraction-${process.platform}.json`);
-		const report: ExtractionReport = {
+		const report: IExtractionReport = {
 			runId: randomUUID(),
 			startedAt: new Date().toISOString(),
 			status: "running",
@@ -105,7 +152,7 @@ async function pdfFixture(kinds: string[], png?: Uint8Array): Promise<Uint8Array
 		}
 		if (kind === "scan" || kind === "same-page" || kind === "scan-long") {
 			assert.ok(png);
-			const size: { width: number; height: number; } = kind === "scan" ? { width: 600, height: 180 } : kind === "same-page" ? { width: 300, height: 90 } : { width: 600, height: 800 };
+			const size: Electron.Size = kind === "scan" ? { width: 600, height: 180 } : kind === "same-page" ? { width: 300, height: 90 } : { width: 600, height: 800 };
 			sheet.drawImage(await document.embedPng(png), { x: 0, y: 0, ...size });
 		}
 	}
@@ -122,9 +169,9 @@ function codes(result: ExtractionResult): string[] {
 	return ("input" in result ? result.input.issues : result.issues).map((issue: ImportIssue): string => issue.code);
 }
 
-async function invoke(application: ElectronApplication, bytes: Uint8Array, mode: string = "normal", format: string = "pdf"): Promise<{ result: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }; concurrent: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; } | undefined; progress: ExtractionProgress[]; windows: (Pick<Electron.WebPreferences, "sandbox" | "contextIsolation" | "nodeIntegration"> & { persistent: boolean; })[]; networkProbes: (string | number)[]; storageProbes: (string | null)[]; elapsedMilliseconds: number; abortedWhilePending: boolean; extractionWindowsAfter: number; }> {
+async function invoke(application: ElectronApplication, bytes: Uint8Array, mode: string = "normal", format: string = "pdf"): Promise<IExtractionInvocation> {
 	return application.evaluate(
-		async ({ app, BrowserWindow, ipcMain }: typeof Electron.CrossProcessExports, request: { base64: string; mode: string; format: string; }): Promise<{ result: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }; concurrent: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; } | undefined; progress: ExtractionProgress[]; windows: (Pick<Electron.WebPreferences, "sandbox" | "contextIsolation" | "nodeIntegration"> & { persistent: boolean; })[]; networkProbes: (string | number)[]; storageProbes: (string | null)[]; elapsedMilliseconds: number; abortedWhilePending: boolean; extractionWindowsAfter: number; }> => {
+		async ({ app, BrowserWindow, ipcMain }: typeof Electron.CrossProcessExports, request: IExtractionRequest): Promise<IExtractionInvocation> => {
 			const { createRequire }: typeof Module = process.getBuiltinModule("module");
 			const { join }: typeof path = process.getBuiltinModule("path");
 			const { performance }: typeof import("perf_hooks") = process.getBuiltinModule("perf_hooks");
@@ -134,7 +181,7 @@ async function invoke(application: ElectronApplication, bytes: Uint8Array, mode:
 			const bytes: Buffer<ArrayBuffer> | Uint8Array<ArrayBuffer> = request.mode === "over-byte-limit" ? new Uint8Array(25 * 1024 * 1024 + 1) : Buffer.from(request.base64, "base64");
 			const controller: AbortController = new AbortController();
 			const progress: ExtractionProgress[] = [];
-			const windows: (Pick<Electron.WebPreferences, "sandbox" | "contextIsolation" | "nodeIntegration"> & { persistent: boolean })[] = [];
+			const windows: ObservedExtractionWindow[] = [];
 			const networkProbes: (string | number)[] = [];
 			const storageProbes: (string | null)[] = [];
 			const originalRead: typeof fileSystem.readFile = fileSystem.readFile;
@@ -170,8 +217,8 @@ async function invoke(application: ElectronApplication, bytes: Uint8Array, mode:
 			}
 			const created: (_event: Electron.Event, window: Electron.BrowserWindow) => void = (_event: Electron.Event, window: Electron.BrowserWindow): void => {
 				activeWindow = window;
-				(globalThis as typeof globalThis & ExtractionTestScope).extractionTestSessions.sessions.add(window.webContents.session);
-				const contents: Electron.WebContents & { getLastWebPreferences(): Electron.WebPreferences; } = window.webContents as Electron.WebContents & { getLastWebPreferences(): Electron.WebPreferences };
+				(globalThis as typeof globalThis & IExtractionTestScope).extractionTestSessions.sessions.add(window.webContents.session);
+				const contents: Electron.WebContents & IWebContentsPreferences = window.webContents as Electron.WebContents & IWebContentsPreferences;
 				const preferences: Electron.WebPreferences = contents.getLastWebPreferences();
 				windows.push({
 					sandbox: preferences.sandbox,
@@ -184,7 +231,7 @@ async function invoke(application: ElectronApplication, bytes: Uint8Array, mode:
 
 				function instrumentImageResult(job: ExtractionJob): void {
 					const sheet: ImportPage = { pageId: "page-1", pageNumber: 1, width: 1200, height: 360, status: "complete", spans: [] };
-					const input: { source: { sourceId: string; sha256: string; }; extraction: { runId: string; version: string; }; pages: ImportPage[]; issues: never[]; } = { source: { sourceId: job.sourceId, sha256: job.sha256 }, extraction: { runId: job.jobId, version: "" }, pages: [sheet], issues: [] };
+					const input: BankImportInput = { source: { sourceId: job.sourceId, sha256: job.sha256 }, extraction: { runId: job.jobId, version: "" }, pages: [sheet], issues: [] };
 					if (request.mode === "image-forged-pages") {
 						input.pages.push({ ...sheet, pageId: "page-2", pageNumber: 2 });
 					}
@@ -196,8 +243,8 @@ async function invoke(application: ElectronApplication, bytes: Uint8Array, mode:
 					}
 					// Use the engine's real version, then mutate only the image contract being tested.
 					ipcMain.emit = function (eventName: string | symbol, ...eventArgs: unknown[]): boolean {
-						const payload: { jobId: string; event: import("../../src/shared/pdf-extraction.js").ExtractionEvent } | undefined =
-							eventName === "extraction:event" ? eventArgs[1] as { jobId: string; event: import("../../src/shared/pdf-extraction.js").ExtractionEvent } | undefined : undefined;
+						const payload: IExtractionEventPayload | undefined =
+							eventName === "extraction:event" ? eventArgs[1] as IExtractionEventPayload | undefined : undefined;
 						if (payload?.event.type === "result") {
 							const result: ExtractionResult = payload.event.result;
 							if ("input" in result) {
@@ -211,7 +258,7 @@ async function invoke(application: ElectronApplication, bytes: Uint8Array, mode:
 				}
 
 				function emitMismatchedResult(job: ExtractionJob): boolean {
-					const bogus: { jobId: string; event: { type: string; result: { status: string; issues: { code: string; severity: string; message: string; pageId: null; rowId: null; field: null; evidence: never[]; }[]; }; }; } = {
+					const bogus: IMismatchedExtractionEvent = {
 						jobId: job.jobId,
 						event: {
 							type: "result",
@@ -307,7 +354,7 @@ async function invoke(application: ElectronApplication, bytes: Uint8Array, mode:
 					}
 				};
 				// The format-rejection check intentionally sends an unsupported format.
-				const pending: Promise<{ status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }> =
+				const pending: Promise<ExtractionResult> =
 					request.format === "pdf" && request.mode !== "common-api"
 						? host.extractPdfBytes(bytes, "synthetic-source", { signal: controller.signal, onProgress })
 						: host.extractDocumentBytes(bytes, "synthetic-source", request.format as ExtractionJob["format"], { signal: controller.signal, onProgress });
@@ -318,7 +365,7 @@ async function invoke(application: ElectronApplication, bytes: Uint8Array, mode:
 				if (request.mode === "mutate-source") {
 					bytes.fill(0);
 				}
-				const result: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; } = await pending;
+				const result: ExtractionResult = await pending;
 				finished = true;
 				return {
 					result,
@@ -343,10 +390,12 @@ async function invoke(application: ElectronApplication, bytes: Uint8Array, mode:
 	);
 }
 
-async function imageFixture(page: Page, format: "png" | "jpeg", { transparent = false, blank = false, rotated = false, long = false }: { transparent?: boolean | undefined; blank?: boolean | undefined; rotated?: boolean | undefined; long?: boolean | undefined; } = {}): Promise<Buffer<ArrayBuffer>> {
+async function imageFixture(
+	page: Page, format: "png" | "jpeg", { transparent = false, blank = false, rotated = false, long = false }: IImageFixtureOptions = {}
+): Promise<Buffer<ArrayBuffer>> {
 	return Buffer.from(
 		await page.evaluate(
-			({ format, transparent, blank, rotated, long }: { format: "png" | "jpeg"; transparent: boolean; blank: boolean; rotated: boolean; long: boolean; }): string => {
+			({ format, transparent, blank, rotated, long }: IImageFixtureRequest): string => {
 				const canvas: HTMLCanvasElement = document.createElement("canvas");
 				canvas.width = rotated ? 360 : 1200;
 				canvas.height = rotated ? 1200 : long ? 1600 : 360;
@@ -390,28 +439,32 @@ function withExifOrientation(bytes: Uint8Array, orientation: number): Buffer<Arr
 
 function jpegWithSofFirst(bytes: Uint8Array): Buffer<ArrayBuffer> {
 	const jpeg: Buffer<ArrayBuffer> = Buffer.from(bytes),
-		segments: { marker: number; bytes: Buffer<ArrayBuffer> }[] = [];
+		segments: IJpegSegment[] = [];
 	let offset: number = 2;
 	while (offset < jpeg.length && jpeg[offset + 1] !== 0xda) {
 		const length: number = jpeg.readUInt16BE(offset + 2);
 		segments.push({ marker: jpeg[offset + 1], bytes: jpeg.subarray(offset, offset + 2 + length) });
 		offset += 2 + length;
 	}
-	const frame: { marker: number; bytes: Buffer<ArrayBuffer>; } | undefined = segments.find((segment: { marker: number; bytes: Buffer<ArrayBuffer>; }): boolean => [0xc0, 0xc1, 0xc2].includes(segment.marker));
+	const frame: IJpegSegment | undefined = segments.find((segment: IJpegSegment): boolean => [0xc0, 0xc1, 0xc2].includes(segment.marker));
 	assert.ok(frame);
-	return Buffer.concat([jpeg.subarray(0, 2), frame.bytes, ...segments.filter((segment: { marker: number; bytes: Buffer<ArrayBuffer>; }): boolean => segment !== frame).map((segment: { marker: number; bytes: Buffer<ArrayBuffer>; }): Buffer<ArrayBuffer> => segment.bytes), jpeg.subarray(offset)]);
+	return Buffer.concat([
+		jpeg.subarray(0, 2), frame.bytes,
+		...segments.filter((segment: IJpegSegment): boolean => segment !== frame).map((segment: IJpegSegment): Buffer<ArrayBuffer> => segment.bytes),
+		jpeg.subarray(offset),
+	]);
 }
 
 test.describe.configure({ timeout: 600_000 });
 
-test("packaged Electron PDF and image extraction", async ({ extraction: { report, check, launch } }: PlaywrightTestArgs & PlaywrightTestOptions & { extraction: ExtractionFixture; } & PlaywrightWorkerArgs & PlaywrightWorkerOptions): Promise<void> => {
+test("packaged Electron PDF and image extraction", async ({ extraction: { report, check, launch } }: ExtractionTestContext): Promise<void> => {
 	const application: ElectronApplication = await launch();
 	const page: Page = await application.firstWindow({ timeout: 30_000 });
 	page.setDefaultTimeout(30_000);
 	await page.getByRole("heading", { name: "ReceiptMatch", exact: true }).waitFor();
 	await application.evaluate(({ app }: typeof Electron.CrossProcessExports): void => {
-		const sessions: { created: number; sessions: Set<Electron.Session>; } = { created: 0, sessions: new Set<Electron.Session>() };
-		(globalThis as typeof globalThis & ExtractionTestScope).extractionTestSessions = sessions;
+		const sessions: IExtractionSessions = { created: 0, sessions: new Set<Electron.Session>() };
+		(globalThis as typeof globalThis & IExtractionTestScope).extractionTestSessions = sessions;
 		app.on("session-created", (): void => {
 			sessions.created++;
 		});
@@ -460,7 +513,7 @@ test("packaged Electron PDF and image extraction", async ({ extraction: { report
 		"base64",
 	);
 	const longScan: Uint8Array<ArrayBufferLike> = await pdfFixture(["scan-long"], longScanPng);
-	await check("real-packaged-embedded-text-provenance-and-point-geometry", async (): Promise<{ runId: string; page: ImportPage; }> => {
+	await check("real-packaged-embedded-text-provenance-and-point-geometry", async (): Promise<IExtractedPage> => {
 		const value: Awaited<ReturnType<typeof invoke>> = await invoke(application, text);
 		const input: ReturnType<typeof inputOf> = inputOf(value.result);
 		assert.equal(input.source.sourceId, "synthetic-source");
@@ -492,7 +545,7 @@ test("packaged Electron PDF and image extraction", async ({ extraction: { report
 		assert.ok(span.region.y >= 35 && span.region.y <= 70);
 		return sheet;
 	});
-	await check("bundled-english-ocr-and-mixed-pages-have-positioned-words", async (): Promise<{ pageCount: number; ocrWord: PositionedSpan; }> => {
+	await check("bundled-english-ocr-and-mixed-pages-have-positioned-words", async (): Promise<IAdjacentPageProbe> => {
 		const input: ReturnType<typeof inputOf> = inputOf((await invoke(application, mixed)).result);
 		assert.equal(input.pages.length, 2);
 		assert.ok(input.pages[0].spans.every((span: PositionedSpan): boolean => span.method === "embedded-text"));
@@ -505,7 +558,7 @@ test("packaged Electron PDF and image extraction", async ({ extraction: { report
 		assert.match(input.pages[1].spans.map((span: PositionedSpan): string => span.text).join(" "), /EUR\s+123[.,]45/);
 		return { pageCount: input.pages.length, ocrWord: word };
 	});
-	await check("same-page-text-and-image-is-explicitly-partial-without-pretend-ocr", async (): Promise<{ issues: ImportIssue[]; extractionMethods: ("embedded-text" | "local-ocr")[]; }> => {
+	await check("same-page-text-and-image-is-explicitly-partial-without-pretend-ocr", async (): Promise<IExtractionMethodsProbe> => {
 		const value: Awaited<ReturnType<typeof invoke>> = await invoke(application, await pdfFixture(["same-page"], png));
 		const input: ReturnType<typeof inputOf> = inputOf(value.result, "partial");
 		assert.equal(input.pages.length, 1);
@@ -631,7 +684,7 @@ test("packaged Electron PDF and image extraction", async ({ extraction: { report
 		}
 		inputOf((await invoke(application, imagePng, "normal", "png")).result);
 	});
-	await check("failed-page-retains-real-geometry-and-visible-partial-issue", async (): Promise<{ failedPage: ImportPage & { pageId: string; pageNumber: number; width: number; height: number; status: string; spans: never[]; }; issues: ImportIssue[]; }> => {
+	await check("failed-page-retains-real-geometry-and-visible-partial-issue", async (): Promise<IFailedPageProbe> => {
 		const input: ReturnType<typeof inputOf> = inputOf((await invoke(application, await pdfFixture(["text", "large"]))).result, "partial");
 		assert.equal(input.pages.length, 2);
 		assert.equal(input.pages[0].status, "complete");
@@ -640,15 +693,15 @@ test("packaged Electron PDF and image extraction", async ({ extraction: { report
 		return { failedPage: input.pages[1], issues: input.issues };
 	});
 	await check("malformed-and-over-page-limit-inputs-fail-with-stable-issues", async (): Promise<void> => {
-		const malformed: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; } = (await invoke(application, Buffer.from("This is not a PDF."))).result;
+		const malformed: ExtractionResult = (await invoke(application, Buffer.from("This is not a PDF."))).result;
 		assert.equal(malformed.status, "failed");
 		assert.ok(codes(malformed).includes("pdf-invalid"));
-		const manyPages: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; } = (await invoke(application, await pdfFixture(Array.from({ length: 201 }, (): string => "blank")))).result;
+		const manyPages: ExtractionResult = (await invoke(application, await pdfFixture(Array.from({ length: 201 }, (): string => "blank")))).result;
 		assert.equal(manyPages.status, "failed");
 		assert.ok(codes(manyPages).includes("page-limit"));
 	});
 	await check("password-encrypted-and-over-byte-limit-inputs-fail-explicitly", async (): Promise<void> => {
-		const password: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; } = (await invoke(application, await readFile("tests/fixtures/password-required.pdf"))).result;
+		const password: ExtractionResult = (await invoke(application, await readFile("tests/fixtures/password-required.pdf"))).result;
 		assert.equal(password.status, "failed");
 		assert.ok(codes(password).includes("pdf-password"));
 		const oversized: Awaited<ReturnType<typeof invoke>> = await invoke(application, text, "over-byte-limit");
@@ -695,7 +748,7 @@ test("packaged Electron PDF and image extraction", async ({ extraction: { report
 		assert.equal(value.extractionWindowsAfter, 0);
 		inputOf((await invoke(application, text)).result);
 	});
-	await check("missing-local-language-retains-healthy-pages-and-next-job-succeeds", async (): Promise<{ pageStatuses: ("complete" | "failed")[]; issues: ImportIssue[]; }> => {
+	await check("missing-local-language-retains-healthy-pages-and-next-job-succeeds", async (): Promise<ILimitedPageProbe> => {
 		const value: Awaited<ReturnType<typeof invoke>> = await invoke(application, await pdfFixture(["text", "scan", "text"], png), "missing-language");
 		const input: ReturnType<typeof inputOf> = inputOf(value.result, "partial");
 		assert.deepEqual(
@@ -719,21 +772,21 @@ test("packaged Electron PDF and image extraction", async ({ extraction: { report
 		assert.equal(value.extractionWindowsAfter, 0);
 		inputOf((await invoke(application, text)).result);
 	});
-	await check("ephemeral-parser-cannot-fetch-network-files-app-or-host-code", async (): Promise<{ probes: string[]; boundary: string; }> => {
+	await check("ephemeral-parser-cannot-fetch-network-files-app-or-host-code", async (): Promise<IStorageBoundaryProbe> => {
 		const value: Awaited<ReturnType<typeof invoke>> = await invoke(application, text, "probe");
 		inputOf(value.result);
 		assert.deepEqual(value.networkProbes, ["denied", "denied", "denied", "denied", "undefined"]);
 		return { probes: value.networkProbes, boundary: "Electron extraction session and CSP; not an OS-wide Windows egress test" };
 	});
-	await check("one-ephemeral-session-is-reused-and-storage-is-cleared-between-jobs", async (): Promise<{ createdSessions: number; usedSessions: number; }> => {
+	await check("one-ephemeral-session-is-reused-and-storage-is-cleared-between-jobs", async (): Promise<ISessionCounts> => {
 		const written: Awaited<ReturnType<typeof invoke>> = await invoke(application, text, "storage-write");
 		inputOf(written.result);
 		assert.deepEqual(written.storageProbes, [null, "synthetic-canary"]);
 		const read: Awaited<ReturnType<typeof invoke>> = await invoke(application, text, "storage-read");
 		inputOf(read.result);
 		assert.deepEqual(read.storageProbes, [null]);
-		const evidence: { createdSessions: number; usedSessions: number; } = await application.evaluate((): { createdSessions: number; usedSessions: number; } => {
-			const { extractionTestSessions }: typeof globalThis & ExtractionTestScope = globalThis as typeof globalThis & ExtractionTestScope;
+		const evidence: ISessionCounts = await application.evaluate((): ISessionCounts => {
+			const { extractionTestSessions }: typeof globalThis & IExtractionTestScope = globalThis as typeof globalThis & IExtractionTestScope;
 			return { createdSessions: extractionTestSessions.created, usedSessions: extractionTestSessions.sessions.size };
 		});
 		assert.deepEqual(evidence, { createdSessions: 1, usedSessions: 1 });

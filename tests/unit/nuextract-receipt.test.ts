@@ -9,9 +9,9 @@ import { PDF_EXTRACTION_VERSION } from '../../src/shared/pdf-extraction.js';
 import { NUEXTRACT_RECEIPT_VERSION, type ReceiptAiResult } from '../../src/shared/receipt-ai.js';
 import type { DocumentSection, SupportingDocument } from '../../src/shared/supporting-document.js';
 import { hasFullDocumentReference, interpretSupportingDocument } from '../../electron/documents/interpret.js';
-import { reanalyzeNuExtractReceipt, reviewNuExtractResult, type NuExtractReceiptDependencies } from '../../electron/documents/nuextract-receipt.js';
+import { reanalyzeNuExtractReceipt, reviewNuExtractResult, type INuExtractReceiptDependencies } from '../../electron/documents/nuextract-receipt.js';
 import type { DocumentImagesResult } from '../../electron/extraction/host.js';
-import type { NuExtractRequest, NuExtractRuntimeFiles } from '../../electron/extraction/nuextract-runtime.js';
+import type { INuExtractRequest, INuExtractRuntimeFiles } from '../../electron/extraction/nuextract-runtime.js';
 
 const receiptBytes: Buffer = Buffer.from('%PDF-synthetic-receipt');
 const sha256: string = createHash('sha256').update(receiptBytes).digest('hex');
@@ -108,8 +108,8 @@ test('verifies original bytes before rendering and closes the runtime after extr
         await writeFile(filePath, receiptBytes);
         const previous: SupportingDocument = document(['Invoice', 'Invoice Number: SYNTHETIC-INVOICE', 'Invoice Date: 2032-05-20', 'Invoice Total: EUR 25.80']);
         const calls: string[] = [];
-        const dependencies: NuExtractReceiptDependencies = {
-            runtimeFiles(): Promise<NuExtractRuntimeFiles> {
+        const dependencies: INuExtractReceiptDependencies = {
+            runtimeFiles(): Promise<INuExtractRuntimeFiles> {
                 return Promise.resolve({ executable: 'synthetic-server', model: 'synthetic-model', projector: 'synthetic-projector' });
             },
             render(bytes: Uint8Array): Promise<DocumentImagesResult> {
@@ -117,10 +117,10 @@ test('verifies original bytes before rendering and closes the runtime after extr
                 calls.push('render');
                 return Promise.resolve({ status: 'complete', images: [Uint8Array.of(137)] });
             },
-            start(): ReturnType<NonNullable<NuExtractReceiptDependencies['start']>> {
+            start(): ReturnType<NonNullable<INuExtractReceiptDependencies['start']>> {
                 calls.push('start');
                 return Promise.resolve({
-                    extract(input: NuExtractRequest): Promise<Record<string, unknown>> {
+                    extract(input: INuExtractRequest): Promise<Record<string, unknown>> {
                         assert.deepEqual(input.images, [Uint8Array.of(137)]);
                         assert.deepEqual(Object.keys(input.template), ['invoice_or_receipt_number', 'issue_date', 'gross_total']);
                         calls.push('extract');

@@ -1,7 +1,7 @@
 import { Component, DestroyRef, computed, effect, inject, input, signal, type EffectCleanupRegisterFn, type WritableSignal, type InputSignal, type Signal } from '@angular/core';
 import type { LocalOcrRequest, LocalOcrStatus } from '../../shared/local-ocr-settings.js';
 
-type SettingsChange = Exclude<LocalOcrRequest, { type: 'status' | 'cancel-nuextract' }>;
+type SettingsChange = Exclude<LocalOcrRequest, Record<'type', 'status' | 'cancel-nuextract'>>;
 
 const changeErrors: Record<SettingsChange['type'], string> = {
 	'install-nuextract': 'NuExtract3 could not be downloaded or installed. Try again.',
@@ -23,17 +23,6 @@ const gpuMessages: Record<LocalOcrStatus['gpu'], string> = {
 	selector: 'app-local-ocr-settings', standalone: true, templateUrl: './local-ocr-settings.component.html',
 })
 export class LocalOcrSettings {
-	readonly active: InputSignal<boolean> = input.required<boolean>();
-	readonly status: WritableSignal<LocalOcrStatus | null> = signal<LocalOcrStatus | null>(null);
-	private readonly changing: WritableSignal<boolean> = signal(false);
-	readonly cancelling: WritableSignal<boolean> = signal(false);
-	readonly error: WritableSignal<string | null> = signal<string | null>(null);
-	readonly busy: Signal<boolean> = computed((): boolean => this.changing() || this.cancelling() || this.status()?.busy === true);
-	private revision: number = 0;
-	private refreshId: number = 0;
-	private disposed: boolean = false;
-	private cancellationRequested: boolean = false;
-
 	constructor() {
 		effect((onCleanup: EffectCleanupRegisterFn): void => {
 			if (!this.active()) {
@@ -52,6 +41,17 @@ export class LocalOcrSettings {
 			this.disposed = true;
 		});
 	}
+
+	readonly active: InputSignal<boolean> = input.required<boolean>();
+	readonly status: WritableSignal<LocalOcrStatus | null> = signal<LocalOcrStatus | null>(null);
+	private readonly changing: WritableSignal<boolean> = signal(false);
+	readonly cancelling: WritableSignal<boolean> = signal(false);
+	readonly error: WritableSignal<string | null> = signal<string | null>(null);
+	readonly busy: Signal<boolean> = computed((): boolean => this.changing() || this.cancelling() || this.status()?.busy === true);
+	private revision: number = 0;
+	private refreshId: number = 0;
+	private disposed: boolean = false;
+	private cancellationRequested: boolean = false;
 
 	size(bytes: number): string {
 		const unit: "gigabyte" | "megabyte" = bytes >= 1_000_000_000 ? 'gigabyte' : 'megabyte';

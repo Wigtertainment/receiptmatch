@@ -1,4 +1,4 @@
-import type { BankImportInput, ImportIssue, PositionedSpan } from "../../src/shared/bank-import.js";
+import type { BankImportInput, PositionedSpan } from "../../src/shared/bank-import.js";
 import type { SupportingDocument } from "../../src/shared/supporting-document.js";
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -12,40 +12,37 @@ import {
 	storedDocumentImportSchema,
 	storedSupportingDocumentSchema,
 	type DocumentFormat,
-	type DocumentImportProgress,
+	type IDocumentImportProgress,
 	type StoredDocumentImport,
-	type WorkspaceSource,
+	type IWorkspaceSource,
 } from "../../src/shared/workspace-documents.js";
 import { assertSourceNotCancelled, readSourceSnapshot, SourceReadError } from "../import/source.js";
 import { interpretSupportingDocument } from "./interpret.js";
 import type { Stats } from 'node:fs';
 import type { Dirent } from 'node:fs';
 import type { BigIntStats } from 'node:fs';
+import type { IExtractionOptions } from '../extraction/host.js';
 
-export interface DocumentImportOptions {
-	existingSources: readonly WorkspaceSource[];
+export interface IDocumentImportOptions {
+	existingSources: readonly IWorkspaceSource[];
 	signal?: AbortSignal;
-	onProgress?: (progress: DocumentImportProgress) => void;
+	onProgress?: (progress: IDocumentImportProgress) => void;
 }
-export interface DocumentImportService {
-	run(options: DocumentImportOptions): Promise<StoredDocumentImport | null>;
+export interface IDocumentImportService {
+	run(options: IDocumentImportOptions): Promise<StoredDocumentImport | null>;
 }
-interface DocumentImportDependencies {
+interface IDocumentImportDependencies {
 	choose(): Promise<string | null>;
-	extract(
-		bytes: Uint8Array,
-		sourceId: string,
-		format: DocumentFormat,
-		options: { signal?: AbortSignal; onProgress?: (progress: ExtractionProgress) => void },
-	): Promise<ExtractionResult>;
+	extract(bytes: Uint8Array, sourceId: string, format: DocumentFormat, options: IExtractionOptions): Promise<ExtractionResult>;
 }
+interface ISourceReadFailure { code: string; message: string }
 const formats: Readonly<Record<string, DocumentFormat>> = { ".pdf": "pdf", ".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg" };
 function inside(root: string, target: string): boolean {
 	const relative: string = path.relative(root, target);
 	return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep));
 }
 
-function failureDetail(error: unknown): { code: string; message: string; } {
+function failureDetail(error: unknown): ISourceReadFailure {
 	return error instanceof SourceReadError
 		? { code: error.code, message: error.message }
 		: { code: "source-unavailable", message: "The local file or folder could not be read safely." };
@@ -83,10 +80,10 @@ async function verifyDirectoryPath(directoryPath: string, canonicalRoot: string)
 		}
 }
 
-export class FolderDocumentImportService implements DocumentImportService {
-	constructor(private readonly dependencies: DocumentImportDependencies) {}
+export class FolderDocumentImportService implements IDocumentImportService {
+	constructor(private readonly dependencies: IDocumentImportDependencies) {}
 
-	async run(options: DocumentImportOptions): Promise<StoredDocumentImport | null> {
+	async run(options: IDocumentImportOptions): Promise<StoredDocumentImport | null> {
 		if (options.signal?.aborted) {
 			return null;
 		}
@@ -98,7 +95,7 @@ export class FolderDocumentImportService implements DocumentImportService {
 				throw new SourceReadError("invalid-source", "Choose an absolute local folder using the document dialog.");
 			}
 		const folderPath: string = path.resolve(selected),
-			identities: Set<string> = new Set(options.existingSources.map((source: WorkspaceSource): string => source.id.toLowerCase()));
+			identities: Set<string> = new Set(options.existingSources.map((source: IWorkspaceSource): string => source.id.toLowerCase()));
 		const freshId: () => string = (): string => {
 			let id: string;
 			do {
@@ -116,11 +113,11 @@ export class FolderDocumentImportService implements DocumentImportService {
 			files: [],
 			directoryIssues: [],
 		};
-		const seen: Map<string, string> = new Map(options.existingSources.filter((source: WorkspaceSource): boolean => source.sha256 !== null).map((source: WorkspaceSource): [string, string] => [source.sha256!, source.id]));
+		const seen: Map<string, string> = new Map(options.existingSources.filter((source: IWorkspaceSource): boolean => source.sha256 !== null).map((source: IWorkspaceSource): [string, string] => [source.sha256!, source.id]));
 		let canonicalRoot: string = "",
 			directories: number = 0,
 			stopped: boolean = false;
-		const progress: (phase: DocumentImportProgress["phase"], filePath?: string | null, extraction?: ExtractionProgress | null) => void = (phase: DocumentImportProgress["phase"], filePath: string | null = null, extraction: ExtractionProgress | null = null): void => {
+		const progress: (phase: IDocumentImportProgress["phase"], filePath?: string | null, extraction?: ExtractionProgress | null) => void = (phase: IDocumentImportProgress["phase"], filePath: string | null = null, extraction: ExtractionProgress | null = null): void => {
 			if (!options.signal?.aborted) {
 				options.onProgress?.({ phase, filePath, completedFiles: report.files.length, extraction });
 			}
@@ -181,7 +178,7 @@ export class FolderDocumentImportService implements DocumentImportService {
 				acceptingProgress = true;
 				progress("extracting", filePath);
 				assertSourceNotCancelled(options.signal);
-				const raw: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; } = await this.dependencies.extract(bytes, sourceId, format, {
+				const raw: ExtractionResult = await this.dependencies.extract(bytes, sourceId, format, {
 					signal: options.signal,
 					onProgress: (value: ExtractionProgress): void => {
 						if (!acceptingProgress || options.signal?.aborted) {
@@ -197,11 +194,11 @@ export class FolderDocumentImportService implements DocumentImportService {
 				});
 				acceptingProgress = false;
 				assertSourceNotCancelled(options.signal);
-				const checked: z.ZodSafeParseResult<{ status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }> = extractionResultSchema.safeParse(raw);
+				const checked: z.ZodSafeParseResult<ExtractionResult> = extractionResultSchema.safeParse(raw);
 				if (!checked.success || invalidProgress) {
 					throw new SourceReadError("invalid-extraction", "The local extraction engine returned an invalid result.");
 				}
-				const extraction: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; } = checked.data;
+				const extraction: ExtractionResult = checked.data;
 				if (extraction.status === "cancelled") {
 					throw new SourceReadError("cancelled", "Document import was cancelled.");
 				}
@@ -231,7 +228,7 @@ export class FolderDocumentImportService implements DocumentImportService {
 				if (isCancelled(error, options.signal)) {
 					throw error;
 				}
-				const detail: { code: string; message: string; } = failureDetail(error);
+				const detail: ISourceReadFailure = failureDetail(error);
 				report.files.push({ status: "failed", filePath, format, sha256, analysis: null, issues: [importIssue(detail.code, detail.message)] });
 			} finally {
 				acceptingProgress = false;
@@ -295,7 +292,7 @@ export class FolderDocumentImportService implements DocumentImportService {
 				if (isCancelled(error, options.signal)) {
 					throw error;
 				}
-				const detail: { code: string; message: string; } = failureDetail(error);
+				const detail: ISourceReadFailure = failureDetail(error);
 				directoryIssue(directoryPath, detail.code, detail.message);
 			}
 		};
@@ -312,7 +309,7 @@ export class FolderDocumentImportService implements DocumentImportService {
 			if (isCancelled(error, options.signal)) {
 				report.status = "cancelled";
 			} else {
-				const detail: { code: string; message: string; } = failureDetail(error);
+				const detail: ISourceReadFailure = failureDetail(error);
 				directoryIssue(folderPath, detail.code, detail.message);
 			}
 		}

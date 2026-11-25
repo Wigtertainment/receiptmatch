@@ -6,8 +6,11 @@ import Database from 'better-sqlite3';
 import { PDFDocument, type PDFPage } from 'pdf-lib';
 import { expect, test, type ElectronApplication, type Page, type PlaywrightWorkerArgs } from '@playwright/test';
 import type { LocalOcrStatus } from '../../src/shared/local-ocr-settings.js';
-import type { WorkspaceState } from '../../src/shared/protocol.js';
+import type { IWorkspaceState } from '../../src/shared/protocol.js';
 import type { DocumentFileResult, StoredDocumentImport, StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
+
+interface ILocalOcrFiles { server: boolean; python: boolean; oldCli: boolean; oldScript: boolean }
+interface ILocalOcrImportPaths { folder: string; workspace: string }
 
 const legacyVersion: string = 'pdfjs-6.5.438+paddleocr-vl-1.6-gguf-spotting+document-2';
 
@@ -61,7 +64,7 @@ async function verifyRecognitionSettings(page: Page): Promise<void> {
 }
 
 async function verifyResources(application: ElectronApplication): Promise<void> {
-    const resources: { server: boolean; python: boolean; oldCli: boolean; oldScript: boolean } = await application.evaluate((): { server: boolean; python: boolean; oldCli: boolean; oldScript: boolean } => {
+    const resources: ILocalOcrFiles = await application.evaluate((): ILocalOcrFiles => {
         const fs: typeof import('node:fs') = process.getBuiltinModule('node:fs');
         const paths: typeof import('node:path') = process.getBuiltinModule('node:path');
         const installed: string = paths.join(process.resourcesPath, 'local-ocr-runtimes');
@@ -77,7 +80,7 @@ async function verifyResources(application: ElectronApplication): Promise<void> 
 }
 
 async function dialogs(application: ElectronApplication, folder: string, workspace: string): Promise<void> {
-    await application.evaluate(({ BrowserWindow, dialog }: typeof Electron.CrossProcessExports, config: { folder: string; workspace: string }): void => {
+    await application.evaluate(({ BrowserWindow, dialog }: typeof Electron.CrossProcessExports, config: ILocalOcrImportPaths): void => {
         BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
         dialog.showOpenDialog = (_window: Electron.BaseWindow | Electron.OpenDialogOptions, options?: Electron.OpenDialogOptions): Promise<Electron.OpenDialogReturnValue> => {
             return Promise.resolve({ canceled: false, filePaths: [options?.properties?.includes('openDirectory') ? config.folder : config.workspace] });
@@ -107,11 +110,11 @@ test('packaged recognition opens fresh and legacy profiles with Standard and opt
             await page.getByRole('heading', { name: 'ReceiptMatch', exact: true }).waitFor();
             await verifyResources(fresh);
             await dialogs(fresh, folder, workspace);
-            await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'new' }));
-            await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'import-documents' }));
+            await page.evaluate((): Promise<IWorkspaceState> => window.receiptmatch.command({ type: 'new' }));
+            await page.evaluate((): Promise<IWorkspaceState> => window.receiptmatch.command({ type: 'import-documents' }));
             oldReceipt = await importedReceipt(page);
             assert.match(oldReceipt.result.input!.extraction.version, /tesseract/);
-            const saved: WorkspaceState = await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'save' }));
+            const saved: IWorkspaceState = await page.evaluate((): Promise<IWorkspaceState> => window.receiptmatch.command({ type: 'save' }));
             assert.equal(saved.workspace?.filePath, workspace);
             await verifyRecognitionSettings(page);
         } finally {
@@ -129,7 +132,7 @@ test('packaged recognition opens fresh and legacy profiles with Standard and opt
             await page.getByRole('heading', { name: 'ReceiptMatch', exact: true }).waitFor();
             assert.equal(await readFile(selection, 'utf8'), '"standard"');
             await dialogs(legacy, folder, workspace);
-            await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'open' }));
+            await page.evaluate((): Promise<IWorkspaceState> => window.receiptmatch.command({ type: 'open' }));
             const saved: StoredSupportingDocument = await importedReceipt(page);
             assert.equal(saved.id, oldReceipt.id);
             assert.deepEqual(saved.result.input?.extraction, { runId, version: legacyVersion });

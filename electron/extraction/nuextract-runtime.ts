@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { PDF_EXTRACTION_LIMITS } from "../../src/shared/pdf-extraction.js";
 import { imageInputDimensions } from "./image-input.js";
 
-export interface NuExtractRuntimeFiles {
+export interface INuExtractRuntimeFiles {
 	executable: string;
 	model: string;
 	projector: string;
@@ -17,13 +17,15 @@ export interface NuExtractRuntimeFiles {
 export class NuExtractGpuUnavailableError extends Error {}
 export class NuExtractGpuCheckCancelledError extends Error {}
 
-export interface NuExtractRequest {
+export interface INuExtractRequest {
 	images: readonly Uint8Array[];
 	template: Readonly<Record<string, unknown>>;
 	instructions: string;
 	maxTokens?: number;
 	jsonObject?: true;
 }
+
+interface INuExtractImageContent { type: string; image_url: Record<"url", string> }
 
 type RuntimeProcess = ChildProcessByStdio<null, Readable, Readable>;
 type RuntimeEndpoint = "/health" | "/v1/chat/completions";
@@ -94,7 +96,7 @@ export async function listNuExtractVulkanDevices(executable: string, signal?: Ab
 	return [...new Set(devices)];
 }
 
-function argumentsFor(files: NuExtractRuntimeFiles): string[] {
+function argumentsFor(files: INuExtractRuntimeFiles): string[] {
 	// Load the CPU weights into RAM as in the verified CPU benchmark.
 	const device: string[] = files.gpuDevice
 		? ["--device", files.gpuDevice, "-ngl", "all", "--mmproj-offload"]
@@ -174,7 +176,7 @@ function requestLocal(port: number, endpoint: RuntimeEndpoint, key: string, sign
 	});
 }
 
-function requestBody(input: NuExtractRequest): string {
+function requestBody(input: INuExtractRequest): string {
 	const template: string = JSON.stringify(input.template);
 	const maxTokens: number = input.maxTokens ?? 512;
 	if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 4096) {
@@ -186,14 +188,14 @@ function requestBody(input: NuExtractRequest): string {
 	let bytes: number = 0;
 	let pixels: number = 0;
 	for (const image of input.images) {
-		const size: { width: number; height: number } = imageInputDimensions(image, "png", maxImageBytes);
+		const size: ReturnType<typeof imageInputDimensions> = imageInputDimensions(image, "png", maxImageBytes);
 		bytes += image.byteLength;
 		pixels += size.width * size.height;
 		if (bytes > maxImageBytes || pixels > PDF_EXTRACTION_LIMITS.pixelsTotal) {
 			throw new Error("NuExtract3 exceeded its local image limit.");
 		}
 	}
-	const content: { type: string; image_url: { url: string } }[] = input.images.map((png: Uint8Array): { type: string; image_url: { url: string } } => ({
+	const content: INuExtractImageContent[] = input.images.map((png: Uint8Array): INuExtractImageContent => ({
 		type: "image_url",
 		image_url: { url: `data:image/png;base64,${Buffer.from(png.buffer, png.byteOffset, png.byteLength).toString("base64")}` },
 	}));
@@ -209,7 +211,7 @@ function requestBody(input: NuExtractRequest): string {
 	});
 }
 
-function extractionResult(response: unknown, template: NuExtractRequest["template"]): Record<string, unknown> {
+function extractionResult(response: unknown, template: INuExtractRequest["template"]): Record<string, unknown> {
 	const choice: unknown = record(response) && Array.isArray(response.choices) ? response.choices[0] : undefined;
 	if (!record(choice) || choice.finish_reason !== "stop" || !record(choice.message) || typeof choice.message.content !== "string") {
 		throw new Error("NuExtract3 returned an incomplete extraction.");
@@ -228,17 +230,7 @@ function extractionResult(response: unknown, template: NuExtractRequest["templat
 }
 
 export class NuExtractRuntime {
-	private readonly stop: AbortController = new AbortController();
-	private readonly key: string = randomBytes(32).toString("hex");
-	private readonly signal: AbortSignal;
-	private readonly closed: Promise<void>;
-	private port: number = 0;
-	private modelDevice: boolean = false;
-	private unexpectedGpuOffload: boolean = false;
-	private encoder: boolean = false;
-	private busy: boolean = false;
-
-	private constructor(files: NuExtractRuntimeFiles, signal?: AbortSignal) {
+	private constructor(files: INuExtractRuntimeFiles, signal?: AbortSignal) {
 		this.signal = signal ? AbortSignal.any([signal, this.stop.signal]) : this.stop.signal;
 		const child: RuntimeProcess = spawn(files.executable, argumentsFor(files), {
 			...runtimeOptions(files.executable, this.signal, this.key),
@@ -255,7 +247,17 @@ export class NuExtractRuntime {
 		this.observe(child.stderr, files.gpuDevice);
 	}
 
-	static async start(files: NuExtractRuntimeFiles, signal?: AbortSignal): Promise<NuExtractRuntime> {
+	private readonly stop: AbortController = new AbortController();
+	private readonly key: string = randomBytes(32).toString("hex");
+	private readonly signal: AbortSignal;
+	private readonly closed: Promise<void>;
+	private port: number = 0;
+	private modelDevice: boolean = false;
+	private unexpectedGpuOffload: boolean = false;
+	private encoder: boolean = false;
+	private busy: boolean = false;
+
+	static async start(files: INuExtractRuntimeFiles, signal?: AbortSignal): Promise<NuExtractRuntime> {
 		if (![files.executable, files.model, files.projector].every(localPath) || (files.gpuDevice !== undefined && !vulkanDevice.test(files.gpuDevice))) {
 			throw new Error("NuExtract3 requires absolute local paths and a valid compute device.");
 		}
@@ -270,7 +272,7 @@ export class NuExtractRuntime {
 		}
 	}
 
-	async extract(input: NuExtractRequest, signal?: AbortSignal): Promise<Record<string, unknown>> {
+	async extract(input: INuExtractRequest, signal?: AbortSignal): Promise<Record<string, unknown>> {
 		const timeout: AbortSignal = AbortSignal.timeout(inferenceMs);
 		const requestSignal: AbortSignal = AbortSignal.any(signal ? [this.signal, signal, timeout] : [this.signal, timeout]);
 		requestSignal.throwIfAborted();

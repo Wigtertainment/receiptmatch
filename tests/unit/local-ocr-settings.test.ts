@@ -5,14 +5,14 @@ import path from 'node:path';
 import { afterEach, test, vi, type MockInstance } from 'vitest';
 import { NuExtractSettings } from '../../electron/nuextract-settings.js';
 import * as runtime from '../../electron/extraction/nuextract-runtime.js';
-import type { NuExtractRuntime, NuExtractRuntimeFiles } from '../../electron/extraction/nuextract-runtime.js';
-import { NUEXTRACT_ASSETS, type ModelAsset } from '../../electron/local-ocr-assets.js';
+import type { NuExtractRuntime, INuExtractRuntimeFiles } from '../../electron/extraction/nuextract-runtime.js';
+import { NUEXTRACT_ASSETS, type IModelAsset } from '../../electron/local-ocr-assets.js';
 import * as vulkan from '../../electron/local-ocr-vulkan.js';
-import { localOcrRequestSchema, type NuExtractSettingsStatus } from '../../src/shared/local-ocr-settings.js';
+import { localOcrRequestSchema, type INuExtractSettingsStatus } from '../../src/shared/local-ocr-settings.js';
 
-vi.mock('../../electron/local-ocr-assets.js', async (load: <T>() => Promise<T>): Promise<{ NUEXTRACT_ASSETS: ModelAsset[] }> => {
+vi.mock('../../electron/local-ocr-assets.js', async (load: <T>() => Promise<T>): Promise<Record<'NUEXTRACT_ASSETS', IModelAsset[]>> => {
     const actual: typeof import('../../electron/local-ocr-assets.js') = await load();
-    return { NUEXTRACT_ASSETS: actual.NUEXTRACT_ASSETS.map((asset: ModelAsset): ModelAsset => ({ ...asset, bytes: 1 })) };
+    return { NUEXTRACT_ASSETS: actual.NUEXTRACT_ASSETS.map((asset: IModelAsset): IModelAsset => ({ ...asset, bytes: 1 })) };
 });
 vi.mock('../../electron/local-ocr-vulkan.js', { spy: true });
 vi.mock('../../electron/extraction/nuextract-runtime.js', { spy: true });
@@ -23,7 +23,7 @@ afterEach((): void => {
 async function installedModel(root: string): Promise<void> {
     const model: string = path.join(root, 'nuextract3-' + NUEXTRACT_ASSETS[0].sha256.slice(0, 16));
     await mkdir(model);
-    await Promise.all(NUEXTRACT_ASSETS.map((asset: ModelAsset): Promise<void> => writeFile(path.join(model, asset.file), 'x')));
+    await Promise.all(NUEXTRACT_ASSETS.map((asset: IModelAsset): Promise<void> => writeFile(path.join(model, asset.file), 'x')));
     await writeFile(path.join(root, 'probe.png'), 'x');
 }
 
@@ -41,7 +41,7 @@ test('resets previous model preferences without treating old downloaded files as
             assert.equal(await readFile(path.join(root, 'selection.json'), 'utf8'), JSON.stringify('standard'));
             assert.equal(await readFile(weights, 'utf8'), 'legacy cache');
         }
-        const status: NuExtractSettingsStatus = await settings.status();
+        const status: INuExtractSettingsStatus = await settings.status();
         assert.equal(status.installed, false);
         assert.equal(status.device, 'cpu');
     } finally {
@@ -80,13 +80,13 @@ test('checks a saved GPU preference once and reuses the result after an update o
 
         await writeFile(path.join(root, 'nuextract-device.json'), JSON.stringify('gpu'));
         const reopened: NuExtractSettings = new NuExtractSettings(root, process.execPath, probe);
-        const pending: NuExtractSettingsStatus = await reopened.status();
+        const pending: INuExtractSettingsStatus = await reopened.status();
         assert.equal(pending.device, 'gpu');
         assert.equal(pending.effectiveDevice, null);
         assert.equal(pending.gpu, 'unchecked');
         assert.equal(list.mock.calls.length, 0);
 
-        const files: NuExtractRuntimeFiles | undefined = await reopened.runtimeFiles();
+        const files: INuExtractRuntimeFiles | undefined = await reopened.runtimeFiles();
         assert.equal(files?.gpuDevice, 'Vulkan0');
         assert.equal(files.executable, executable);
         assert.equal((await reopened.status()).effectiveDevice, 'gpu');
@@ -96,7 +96,7 @@ test('checks a saved GPU preference once and reuses the result after an update o
         const updatedApp: string = path.join(root, 'updated-app');
         const updatedProbe: string = path.join(updatedApp, 'probe.png');
         const updated: NuExtractSettings = new NuExtractSettings(root, path.join(updatedApp, 'cpu-runtime'), updatedProbe);
-        const saved: NuExtractSettingsStatus = await updated.status();
+        const saved: INuExtractSettingsStatus = await updated.status();
         assert.equal(saved.device, 'gpu');
         assert.equal(saved.gpu, 'available');
         assert.equal(saved.effectiveDevice, 'gpu');
@@ -150,7 +150,7 @@ test('cancels an automatic GPU check from Settings without clearing the preferre
         await started;
         await settings.cancel();
         await checked;
-        const status: NuExtractSettingsStatus = await settings.status();
+        const status: INuExtractSettingsStatus = await settings.status();
         assert.equal(status.device, 'gpu');
         assert.equal(status.effectiveDevice, null);
         assert.equal(status.busy, false);
@@ -168,7 +168,7 @@ test('keeps the saved GPU preference and reports an unavailable Vulkan runtime',
         const settings: NuExtractSettings = new NuExtractSettings(root, process.execPath, path.join(root, 'probe.png'));
         await settings.selectDevice('gpu');
         await assert.rejects(settings.runtimeFiles(), runtime.NuExtractGpuUnavailableError);
-        const status: NuExtractSettingsStatus = await settings.status();
+        const status: INuExtractSettingsStatus = await settings.status();
         assert.equal(status.device, 'gpu');
         assert.equal(status.effectiveDevice, null);
         assert.equal(status.gpu, 'download-required');

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { test } from 'vitest';
-import type { ModelAsset } from '../../electron/local-ocr-assets.js';
+import type { IModelAsset } from '../../electron/local-ocr-assets.js';
 import { installVulkanRuntime, supportsVulkanRuntime, vulkanRuntimeAsset, vulkanRuntimeDownloadBytes, vulkanRuntimeExecutable } from '../../electron/local-ocr-vulkan.js';
 
 const archiveFiles: string[] = ['llama-server.exe', 'llama-server-impl.dll', 'llama.dll', 'llama-common.dll', 'mtmd.dll', 'ggml.dll', 'ggml-base.dll', 'ggml-vulkan.dll',
@@ -33,7 +33,7 @@ test.skipIf(!supportsVulkanRuntime())('reuses a complete runtime and atomically 
         await Promise.all(archiveFiles.map((file: string): Promise<void> => writeFile(path.join(input, file), 'fixture')));
         await promisify(execFile)(tar, ['-a', '-cf', archive, '-C', input, ...archiveFiles], { windowsHide: true });
         const transfer: NonNullable<Parameters<typeof installVulkanRuntime>[3]> = async (
-            assets: readonly ModelAsset[], staging: string, receivedSignal: AbortSignal, onBytes: (bytes: number) => void
+            assets: readonly IModelAsset[], staging: string, receivedSignal: AbortSignal, onBytes: (bytes: number) => void
         ): Promise<void> => {
             transfers++;
             assert.equal(assets.length, 2);
@@ -76,7 +76,7 @@ test.skipIf(!supportsVulkanRuntime())('cleans up a cancelled Vulkan download bef
         const root: string = path.join(fixture, 'cache');
         const controller: AbortController = new AbortController();
         await assert.rejects(installVulkanRuntime(root, controller.signal, (): void => controller.abort(), async (
-            assets: readonly ModelAsset[], staging: string, _signal: AbortSignal, onBytes: (bytes: number) => void
+            assets: readonly IModelAsset[], staging: string, _signal: AbortSignal, onBytes: (bytes: number) => void
         ): Promise<void> => {
             await writeFile(path.join(staging, assets[0].file), 'partial download');
             onBytes(123);

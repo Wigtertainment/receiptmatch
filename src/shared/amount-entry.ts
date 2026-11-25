@@ -23,6 +23,6 @@ export function parseAmountEntry(value: string, currency: string): Money | null 
     }
     const fraction: string = parts[3] ?? '';
     const digits: string = (parts[2] + fraction).replace(/^0+(?=\d)/, '');
-    const amount: ZodSafeParseResult<{ coefficient: string; currency: string; scale: number; }> = moneySchema.safeParse({ coefficient: parts[1] === '-' && digits !== '0' ? '-' + digits : digits, scale: fraction.length, currency });
+    const amount: ZodSafeParseResult<Money> = moneySchema.safeParse({ coefficient: parts[1] === '-' && digits !== '0' ? '-' + digits : digits, scale: fraction.length, currency });
     return amount.success ? amount.data : null;
 }

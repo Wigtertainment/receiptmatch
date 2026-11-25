@@ -3,58 +3,26 @@ import { Component, DestroyRef, ElementRef, Injector, afterNextRender, computed,
 import { WigButtonComponent, WigIconButtonComponent } from '@wigtertainment-ltd/comp-lib';
 import type { LocalOcrStatus } from '../../shared/local-ocr-settings.js';
 import type { OriginalAdoptionResult } from '../../shared/original-preview.js';
-import type { WorkspaceState, WorkspaceView } from '../../shared/protocol.js';
-import type { StatementAiChange, StatementAiPreviewResult, StatementAiRequest } from '../../shared/statement-ai.js';
+import type { IWorkspaceState, IWorkspaceView } from '../../shared/protocol.js';
+import type { IStatementAiChange, StatementAiPreviewResult, StatementAiRequest } from '../../shared/statement-ai.js';
 import type { StoredBankImport } from '../../shared/workspace-import.js';
 import { LocalAiIcon } from '../shared/local-ai-icon.component.js';
 import { OriginalPreviewButton } from '../shared/original-preview-button.component.js';
 import { AnalysisBooking } from './analysis-booking.component.js';
 
-type Preview = Extract<StatementAiPreviewResult, { status: 'ready' }>;
-interface AnalysisContext { request: StatementAiRequest; revision: number; workspaceId: string; name: string }
-interface AnalysisReview { context: AnalysisContext; result: Preview }
+type Preview = Extract<StatementAiPreviewResult, Record<'status', 'ready'>>;
+interface IAnalysisContext { request: StatementAiRequest; revision: number; workspaceId: string; name: string }
+interface IAnalysisReview { context: IAnalysisContext; result: Preview }
 
 @Component({ selector: 'app-statement-reanalysis', standalone: true, imports: [WigButtonComponent, WigIconButtonComponent, LocalAiIcon, OriginalPreviewButton, AnalysisBooking],
     templateUrl: './statement-reanalysis.component.html' })
 export class StatementReanalysis {
-    readonly state: InputSignal<WorkspaceState> = input.required<WorkspaceState>();
-    readonly record: InputSignal<StoredBankImport> = input.required<StoredBankImport>();
-    readonly active: InputSignal<boolean> = input(true);
-    readonly applied: OutputEmitterRef<void> = output<void>();
-    readonly settingsRequested: OutputEmitterRef<void> = output<void>();
-    private readonly injector: Injector = inject(Injector);
-    private readonly destroyed: DestroyRef = inject(DestroyRef);
-    private readonly trigger: Signal<ElementRef<HTMLElement> | undefined> = viewChild('trigger', { read: ElementRef<HTMLElement> });
-    private readonly dialog: Signal<ElementRef<HTMLDialogElement> | undefined> = viewChild<ElementRef<HTMLDialogElement>>('reviewDialog');
-    private readonly heading: Signal<ElementRef<HTMLHeadingElement> | undefined> = viewChild<ElementRef<HTMLHeadingElement>>('reviewHeading');
-    private readonly changesHeading: Signal<ElementRef<HTMLHeadingElement> | undefined> = viewChild<ElementRef<HTMLHeadingElement>>('changesHeading');
-    readonly pending: WritableSignal<AnalysisContext | null> = signal<AnalysisContext | null>(null);
-    readonly review: WritableSignal<AnalysisReview | null> = signal<AnalysisReview | null>(null);
-    readonly applying: WritableSignal<boolean> = signal(false);
-    readonly acknowledged: WritableSignal<boolean> = signal(false);
-    readonly includeUnchanged: WritableSignal<boolean> = signal(false);
-    readonly page: WritableSignal<number> = signal(0);
-    readonly error: WritableSignal<string | null> = signal<string | null>(null);
-    readonly feedback: WritableSignal<string | null> = signal<string | null>(null);
-    readonly needsSettings: WritableSignal<boolean> = signal(false);
-    readonly archived: Signal<boolean> = computed((): boolean => this.state().workspace?.supersededStatements.includes(this.record().id) ?? false);
-    readonly changes: Signal<StatementAiChange[]> = computed((): StatementAiChange[] => (this.review()?.result.changes ?? [])
-        .filter((change: StatementAiChange): boolean => this.includeUnchanged() || change.kind !== 'unchanged')
-        .sort((a: StatementAiChange, b: StatementAiChange): number => Number(a.kind === 'unchanged') - Number(b.kind === 'unchanged')));
-    readonly pageCount: Signal<number> = computed((): number => Math.max(1, Math.ceil(this.changes().length / 20)));
-    readonly visibleChanges: Signal<StatementAiChange[]> = computed((): StatementAiChange[] => this.changes().slice(this.page() * 20, (this.page() + 1) * 20));
-    readonly canApply: Signal<boolean> = computed((): boolean => {
-        const preview: Preview | undefined = this.review()?.result;
-        return !!preview && !preview.blockingConflict && (!preview.conflicts.length || this.acknowledged()) && !this.applying() && !this.state().busy;
-    });
-    readonly labels: Record<StatementAiChange['kind'], string> = { unchanged: 'Unchanged', added: 'Added', removed: 'Removed', changed: 'Changed', promoted: 'Resolved draft', demoted: 'Now unresolved' };
-
     constructor() {
         effect((): void => {
-            const review: AnalysisReview | null = this.review();
-            const pending: AnalysisContext | null = this.pending();
+            const review: IAnalysisReview | null = this.review();
+            const pending: IAnalysisContext | null = this.pending();
             const active: boolean = this.active();
-            const workspace: WorkspaceView | null = this.state().workspace;
+            const workspace: IWorkspaceView | null = this.state().workspace;
             const id: string = this.record().id;
             if (pending && !active && this.state().statementImport?.localAi && !this.state().statementImport?.cancelling) {
                 untracked((): void => {
@@ -72,24 +40,56 @@ export class StatementReanalysis {
         });
 
         this.destroyed.onDestroy((): void => {
-            const review: AnalysisReview | null = this.review();
+            const review: IAnalysisReview | null = this.review();
             if (review && !this.applying()) {
                 this.discardToken(review);
             }
         });
     }
 
-    private current(context: AnalysisContext): boolean {
-        const workspace: WorkspaceView | null = this.state().workspace;
+    readonly state: InputSignal<IWorkspaceState> = input.required<IWorkspaceState>();
+    readonly record: InputSignal<StoredBankImport> = input.required<StoredBankImport>();
+    readonly active: InputSignal<boolean> = input(true);
+    readonly applied: OutputEmitterRef<void> = output<void>();
+    readonly settingsRequested: OutputEmitterRef<void> = output<void>();
+    private readonly injector: Injector = inject(Injector);
+    private readonly destroyed: DestroyRef = inject(DestroyRef);
+    private readonly trigger: Signal<ElementRef<HTMLElement> | undefined> = viewChild('trigger', { read: ElementRef<HTMLElement> });
+    private readonly dialog: Signal<ElementRef<HTMLDialogElement> | undefined> = viewChild<ElementRef<HTMLDialogElement>>('reviewDialog');
+    private readonly heading: Signal<ElementRef<HTMLHeadingElement> | undefined> = viewChild<ElementRef<HTMLHeadingElement>>('reviewHeading');
+    private readonly changesHeading: Signal<ElementRef<HTMLHeadingElement> | undefined> = viewChild<ElementRef<HTMLHeadingElement>>('changesHeading');
+    readonly pending: WritableSignal<IAnalysisContext | null> = signal<IAnalysisContext | null>(null);
+    readonly review: WritableSignal<IAnalysisReview | null> = signal<IAnalysisReview | null>(null);
+    readonly applying: WritableSignal<boolean> = signal(false);
+    readonly acknowledged: WritableSignal<boolean> = signal(false);
+    readonly includeUnchanged: WritableSignal<boolean> = signal(false);
+    readonly page: WritableSignal<number> = signal(0);
+    readonly error: WritableSignal<string | null> = signal<string | null>(null);
+    readonly feedback: WritableSignal<string | null> = signal<string | null>(null);
+    readonly needsSettings: WritableSignal<boolean> = signal(false);
+    readonly archived: Signal<boolean> = computed((): boolean => this.state().workspace?.supersededStatements.includes(this.record().id) ?? false);
+    readonly changes: Signal<IStatementAiChange[]> = computed((): IStatementAiChange[] => (this.review()?.result.changes ?? [])
+        .filter((change: IStatementAiChange): boolean => this.includeUnchanged() || change.kind !== 'unchanged')
+        .sort((a: IStatementAiChange, b: IStatementAiChange): number => Number(a.kind === 'unchanged') - Number(b.kind === 'unchanged')));
+    readonly pageCount: Signal<number> = computed((): number => Math.max(1, Math.ceil(this.changes().length / 20)));
+    readonly visibleChanges: Signal<IStatementAiChange[]> = computed((): IStatementAiChange[] => this.changes().slice(this.page() * 20, (this.page() + 1) * 20));
+    readonly canApply: Signal<boolean> = computed((): boolean => {
+        const preview: Preview | undefined = this.review()?.result;
+        return !!preview && !preview.blockingConflict && (!preview.conflicts.length || this.acknowledged()) && !this.applying() && !this.state().busy;
+    });
+    readonly labels: Record<IStatementAiChange['kind'], string> = { unchanged: 'Unchanged', added: 'Added', removed: 'Removed', changed: 'Changed', promoted: 'Resolved draft', demoted: 'Now unresolved' };
+
+    private current(context: IAnalysisContext): boolean {
+        const workspace: IWorkspaceView | null = this.state().workspace;
         return !this.destroyed.destroyed && this.active() && workspace?.id === context.workspaceId && workspace.loadRevision === context.request.loadRevision && this.record().id === context.request.importId;
     }
 
     async analyze(): Promise<void> {
-        const workspace: WorkspaceView | null = this.state().workspace;
+        const workspace: IWorkspaceView | null = this.state().workspace;
         if (!workspace || this.state().busy || this.pending() || this.review() || this.archived()) {
             return;
         }
-        const context: AnalysisContext = { request: { importId: this.record().id, loadRevision: workspace.loadRevision }, revision: workspace.matchRevision,
+        const context: IAnalysisContext = { request: { importId: this.record().id, loadRevision: workspace.loadRevision }, revision: workspace.matchRevision,
             workspaceId: workspace.id, name: this.record().filePath.split(/[\\/]/).at(-1) ?? this.record().filePath };
         this.pending.set(context);
         this.error.set(null); this.feedback.set(null); this.needsSettings.set(false);
@@ -120,7 +120,7 @@ export class StatementReanalysis {
         }
     }
 
-    private async requestAnalysis(context: AnalysisContext): Promise<StatementAiPreviewResult> {
+    private async requestAnalysis(context: IAnalysisContext): Promise<StatementAiPreviewResult> {
         const status: LocalOcrStatus = await window.receiptmatch.localOcr({ type: 'status' });
         if (!this.current(context)) {
             return { status: 'cancelled' };
@@ -135,7 +135,7 @@ export class StatementReanalysis {
         return window.receiptmatch.reanalyzeStatement(context.request);
     }
 
-    private openReview(review: AnalysisReview): void {
+    private openReview(review: IAnalysisReview): void {
         this.review.set(review); this.acknowledged.set(false); this.includeUnchanged.set(false); this.page.set(0);
         afterNextRender({ write: (): void => {
             if (this.review() === review && this.current(review.context)) {
@@ -145,7 +145,7 @@ export class StatementReanalysis {
     }
 
     async apply(): Promise<void> {
-        const review: AnalysisReview | null = this.review();
+        const review: IAnalysisReview | null = this.review();
         if (!review || !this.canApply()) {
             return;
         }
@@ -173,18 +173,18 @@ export class StatementReanalysis {
 
     discard(event?: Event): void {
         event?.preventDefault();
-        const review: AnalysisReview | null = this.review();
+        const review: IAnalysisReview | null = this.review();
         if (review && !this.applying()) {
             this.release(review); this.error.set(null); this.feedback.set('AI analysis discarded. Your current statement is unchanged.'); this.restoreFocus();
         }
     }
 
-    private release(review: AnalysisReview): void {
+    private release(review: IAnalysisReview): void {
         this.discardToken(review);
         this.dialog()?.nativeElement.close(); this.review.set(null);
     }
 
-    private discardToken(review: AnalysisReview): void {
+    private discardToken(review: IAnalysisReview): void {
         void window.receiptmatch.discardStatementAnalysis({ token: review.result.token, loadRevision: review.context.request.loadRevision }).catch((): undefined => undefined);
     }
 

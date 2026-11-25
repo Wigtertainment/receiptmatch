@@ -1,7 +1,7 @@
 import type { Money } from './money.js';
 
 // Inputs are canonical values already validated by the import/workspace schemas.
-export function formatMoney(value: (Omit<Money, 'currency'> & { currency: string | null }) | null, locale?: string | string[]): string {
+export function formatMoney(value: (Omit<Money, 'currency'> & Record<'currency', string | null>) | null, locale?: string | string[]): string {
     if (value === null) {
         return 'Unknown';
     }
@@ -10,7 +10,7 @@ export function formatMoney(value: (Omit<Money, 'currency'> & { currency: string
     const magnitude: string = value.scale === 0 ? digits : `${digits.slice(0, -value.scale)}.${digits.slice(-value.scale)}`;
     // Intl accepts a decimal string without converting it to an imprecise Number.
     const decimal: Intl.StringNumericLiteral = `${negative ? '-' : ''}${magnitude}` as Intl.StringNumericLiteral;
-    const precision: { minimumFractionDigits: number; maximumFractionDigits: number; } = { minimumFractionDigits: value.scale, maximumFractionDigits: value.scale };
+    const precision: Record<'minimumFractionDigits' | 'maximumFractionDigits', number> = { minimumFractionDigits: value.scale, maximumFractionDigits: value.scale };
     if (value.currency === null) {
         return new Intl.NumberFormat(locale, precision).format(decimal) + ' (currency unknown)';
     }

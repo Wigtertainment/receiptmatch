@@ -2,18 +2,18 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import type { Stats } from 'node:fs';
 import { copyFile, lstat, mkdir, mkdtemp, readdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
-import type { ModelAsset } from './local-ocr-assets.js';
+import type { IModelAsset } from './local-ocr-assets.js';
 import { downloadModelAssets, vulkanRuntimeArchiveUrl, vulkanRuntimeLicenseUrl } from './local-ocr-transfer.js';
 
-export const vulkanRuntimeAsset: ModelAsset = {
+export const vulkanRuntimeAsset: IModelAsset = {
     file: 'llama-vulkan.zip', url: vulkanRuntimeArchiveUrl, bytes: 38_022_362,
     sha256: '58c3426f7473bc08135c83333259366521fc940e4ad7bc6ad2b26755cc42cb03'
 };
-const licenseAsset: ModelAsset = {
+const licenseAsset: IModelAsset = {
     file: 'LICENSE', url: vulkanRuntimeLicenseUrl, bytes: 1_078,
     sha256: '94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d'
 };
-const assets: readonly ModelAsset[] = [vulkanRuntimeAsset, licenseAsset];
+const assets: readonly IModelAsset[] = [vulkanRuntimeAsset, licenseAsset];
 export const vulkanRuntimeDownloadBytes: number = vulkanRuntimeAsset.bytes + licenseAsset.bytes;
 
 const installationName: string = 'llama-server-vulkan-b12283-win-x64';

@@ -1,14 +1,20 @@
 import { z } from 'zod';
-export const nuExtractDeviceSchema: z.ZodEnum<{ cpu: 'cpu'; gpu: 'gpu' }> = z.enum(['cpu', 'gpu']);
+export const nuExtractDeviceSchema: z.ZodEnum<z.core.util.ToEnum<'cpu' | 'gpu'>> = z.enum(['cpu', 'gpu']);
 export type NuExtractDevice = z.infer<typeof nuExtractDeviceSchema>;
 
+interface ISelectNuExtractDeviceShape {
+    type: z.ZodLiteral<'select-nuextract-device'>;
+    device: typeof nuExtractDeviceSchema;
+}
+
+type OcrRequestOption<Type extends string> = z.ZodObject<Record<'type', z.ZodLiteral<Type>>, z.core.$strict>;
 type OcrRequestOptions = [
-    z.ZodObject<{ type: z.ZodLiteral<'status'> }, z.core.$strict>,
-    z.ZodObject<{ type: z.ZodLiteral<'install-nuextract'> }, z.core.$strict>,
-    z.ZodObject<{ type: z.ZodLiteral<'install-nuextract-vulkan'> }, z.core.$strict>,
-    z.ZodObject<{ type: z.ZodLiteral<'check-nuextract-gpu'> }, z.core.$strict>,
-    z.ZodObject<{ type: z.ZodLiteral<'cancel-nuextract'> }, z.core.$strict>,
-    z.ZodObject<{ type: z.ZodLiteral<'select-nuextract-device'>; device: typeof nuExtractDeviceSchema }, z.core.$strict>
+    OcrRequestOption<'status'>,
+    OcrRequestOption<'install-nuextract'>,
+    OcrRequestOption<'install-nuextract-vulkan'>,
+    OcrRequestOption<'check-nuextract-gpu'>,
+    OcrRequestOption<'cancel-nuextract'>,
+    z.ZodObject<z.core.util.Flatten<ISelectNuExtractDeviceShape>, z.core.$strict>
 ];
 export const localOcrRequestSchema: z.ZodDiscriminatedUnion<OcrRequestOptions, 'type'> = z.discriminatedUnion('type', [
     z.strictObject({ type: z.literal('status') }),
@@ -19,15 +25,15 @@ export const localOcrRequestSchema: z.ZodDiscriminatedUnion<OcrRequestOptions, '
     z.strictObject({ type: z.literal('select-nuextract-device'), device: nuExtractDeviceSchema })
 ]);
 export type LocalOcrRequest = z.infer<typeof localOcrRequestSchema>;
-export type LocalOcrStatus = NuExtractSettingsStatus;
+export type LocalOcrStatus = INuExtractSettingsStatus;
 
-export interface NuExtractDownload {
+export interface INuExtractDownload {
     kind: 'model' | 'vulkan';
     receivedBytes: number;
     totalBytes: number;
 }
 
-export interface NuExtractSettingsStatus {
+export interface INuExtractSettingsStatus {
     installed: boolean;
     cpuAvailable: boolean;
     cpuIssue?: string;
@@ -37,7 +43,7 @@ export interface NuExtractSettingsStatus {
     vulkanDownloadBytes: number;
     gpu: 'unsupported' | 'download-required' | 'unchecked' | 'checking' | 'available' | 'unavailable';
     gpuIssue?: string;
-    download: NuExtractDownload | null;
+    download: INuExtractDownload | null;
     busy: boolean;
-    failedDownload: NuExtractDownload['kind'] | null;
+    failedDownload: INuExtractDownload['kind'] | null;
 }

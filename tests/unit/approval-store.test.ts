@@ -1,11 +1,11 @@
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
 import type { StoredDocumentImport, StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
-import type { BankImportInput, PositionedSpan } from "../../src/shared/bank-import.js";
+import type { PositionedSpan } from "../../src/shared/bank-import.js";
 import type { DocumentSection } from "../../src/shared/supporting-document.js";
 import type { MatchApproval } from "../../src/shared/match-approvals.js";
-import type { WorkspaceState } from "../../src/shared/protocol.js";
-import type { MatchSummary } from "../../src/shared/workspace-matching.js";
-import type { WorkspaceView } from "../../src/shared/protocol.js";
+import type { IWorkspaceState } from "../../src/shared/protocol.js";
+import type { IMatchSummary } from "../../src/shared/workspace-matching.js";
+import type { IWorkspaceView } from "../../src/shared/protocol.js";
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -26,9 +26,9 @@ test('approves an explicit batch atomically and preserves its revisions through 
     context.onTestFinished((): Promise<void> => rm(root, { recursive: true, force: true }));
     const file: string = path.join(root, 'approvals.receiptmatch');
     const bank: StoredBankImport = retainedBank(root);
-    const [{ transactionId: first }, { transactionId: second }]: { rowId: string; transactionId: string; }[] = bank.transactions;
+    const [{ transactionId: first }, { transactionId: second }]: StoredBankImport['transactions'][number][] = bank.transactions;
     const receipt: StoredSupportingDocument = retainedDocument(root, 'uncertain.pdf');
-    const { input }: { status: "complete"; input: BankImportInput; } & { status: "complete"; } = extractedDocument(Buffer.from('uncertain receipt'), randomUUID());
+    const { input }: ReturnType<typeof extractedDocument> = extractedDocument(Buffer.from('uncertain receipt'), randomUUID());
     input.pages[0].spans = ['Receipt', 'Merchant: Cedar Workshop', 'Total: EUR 1,234.56'].map((line: string, index: number): PositionedSpan => span(line, 30, 30 + index * 30, 250));
     receipt.result = interpretSupportingDocument(input);
     const other: StoredSupportingDocument = retainedDocument(root, 'second.pdf');
@@ -41,13 +41,13 @@ test('approves an explicit batch atomically and preserves its revisions through 
     }
     const before: NonSharedBuffer = await readFile(file);
     const session: WorkspaceSession = new WorkspaceSession({ open: async (): Promise<string> => Promise.resolve(file), save: async (): Promise<string> => Promise.resolve(file), unsaved: async (): Promise<"discard"> => Promise.resolve('discard') });
-    const workspace: () => WorkspaceView = (): WorkspaceView => session.state().workspace!;
+    const workspace: () => IWorkspaceView = (): IWorkspaceView => session.state().workspace!;
 
-    const summaries: () => MatchSummary[] = (): MatchSummary[] => session.matchSummaries(workspace().matchRevision)!;
+    const summaries: () => IMatchSummary[] = (): IMatchSummary[] => session.matchSummaries(workspace().matchRevision)!;
 
-    const row: (id: string) => MatchSummary = (id: string): MatchSummary => summaries().find((summary: MatchSummary): boolean => summary.transactionId === id)!;
+    const row: (id: string) => IMatchSummary = (id: string): IMatchSummary => summaries().find((summary: IMatchSummary): boolean => summary.transactionId === id)!;
 
-    const approve: (selections: MatchApprovalSelection[], loadRevision?: number) => Promise<WorkspaceState> = (selections: MatchApprovalSelection[], loadRevision: number = workspace().loadRevision): Promise<WorkspaceState> =>
+    const approve: (selections: MatchApprovalSelection[], loadRevision?: number) => Promise<IWorkspaceState> = (selections: MatchApprovalSelection[], loadRevision: number = workspace().loadRevision): Promise<IWorkspaceState> =>
         session.dispatch(commandSchema.parse({ type: 'approve-matches', selections, loadRevision }));
     assert.equal((await session.dispatch({ type: 'open' })).error, null);
     assert.equal((await loadWorkspace(file)).schemaVersion, 7);
@@ -63,11 +63,11 @@ test('approves an explicit batch atomically and preserves its revisions through 
 
     await session.dispatch({ type: 'review-match', revision: workspace().matchRevision, transactionId: second, review: { status: 'completed-without-document' } });
     assert.equal(row(second).approvalSelection, null);
-    const noDocument: WorkspaceState = await approve([selectedFirst, selectedSecond]);
+    const noDocument: IWorkspaceState = await approve([selectedFirst, selectedSecond]);
     assert.deepEqual(noDocument.approvalIssue, { transactionId: second, reason: 'not-assigned' });
     assert.equal(row(first).approval, null);
     await session.dispatch({ type: 'review-match', revision: workspace().matchRevision, transactionId: second, review: { status: 'assigned', documentId: other.id } });
-    const stale: WorkspaceState = await approve([selectedFirst, selectedSecond]);
+    const stale: IWorkspaceState = await approve([selectedFirst, selectedSecond]);
     assert.deepEqual(stale.approvalIssue, { transactionId: second, reason: 'selection-changed' });
     assert.match(stale.error!, /River Studio/);
     assert.equal(row(first).approval, null);
@@ -77,7 +77,7 @@ test('approves an explicit batch atomically and preserves its revisions through 
     assert.equal(reassignedSecond.associationRevision, 3);
     assert.equal((await session.dispatch({ type: 'correct-bank-row', revision: workspace().matchRevision, rowId: first,
         changes: { bookingDate: '2032-02-26' } })).error, null);
-    const oldBooking: WorkspaceState = await approve([reassignedSecond, selectedFirst]);
+    const oldBooking: IWorkspaceState = await approve([reassignedSecond, selectedFirst]);
     assert.deepEqual(oldBooking.approvalIssue, { transactionId: first, reason: 'selection-changed' });
     assert.equal(row(second).approval, null);
     const updatedFirst: MatchApprovalSelection = row(first).approvalSelection!;
@@ -85,13 +85,13 @@ test('approves an explicit batch atomically and preserves its revisions through 
     const { sectionId, amounts }: DocumentSection = other.result.sections[0];
     assert.equal((await session.dispatch({ type: 'correct-document-field', revision: workspace().matchRevision, documentId: other.id,
         sectionId, fieldId: amounts[0].id, change: { kind: 'amount', value: { currency: 'EUR', coefficient: '14000', scale: 2 } } })).error, null);
-    const oldDocument: WorkspaceState = await approve([updatedFirst, reassignedSecond]);
+    const oldDocument: IWorkspaceState = await approve([updatedFirst, reassignedSecond]);
     assert.deepEqual(oldDocument.approvalIssue, { transactionId: second, reason: 'selection-changed' });
     assert.equal(row(first).approval, null);
     const updatedSecond: MatchApprovalSelection = row(second).approvalSelection!;
     assert.equal(updatedSecond.associationRevision, 3);
     assert.equal(updatedSecond.documentRevision, 2);
-    const result: WorkspaceState = await approve([updatedFirst, updatedSecond]);
+    const result: IWorkspaceState = await approve([updatedFirst, updatedSecond]);
     assert.equal(result.error, null);
     assert.equal(result.approvalIssue, undefined);
     assert.equal(workspace().dirty, true);
@@ -135,10 +135,10 @@ test('keeps approvals through reanalysis and distinguishes corrected data from a
     context.onTestFinished((): Promise<void> => rm(root, { recursive: true, force: true }));
     const file: string = path.join(root, 'approval-status.receiptmatch');
     const bank: StoredBankImport = retainedBank(root);
-    const [{ transactionId: first }, { transactionId: second }]: { rowId: string; transactionId: string; }[] = bank.transactions;
+    const [{ transactionId: first }, { transactionId: second }]: StoredBankImport['transactions'][number][] = bank.transactions;
     const invoice: (name: string) => StoredSupportingDocument = (name: string): StoredSupportingDocument => {
         const document: StoredSupportingDocument = retainedDocument(root, name);
-        const { input }: { status: "complete"; input: BankImportInput; } & { status: "complete"; } = extractedDocument(Buffer.from(name), randomUUID());
+        const { input }: ReturnType<typeof extractedDocument> = extractedDocument(Buffer.from(name), randomUUID());
         const lines: string[] = ['Invoice', 'Merchant: Cedar Workshop', 'Invoice Number: SYNTHETIC-A', 'Invoice Date: 2032-02-28', 'Invoice Total: EUR 1,234.56'];
         input.pages[0].spans = lines.map((line: string, index: number): PositionedSpan => span(line, 30, 30 + index * 30, 250));
         return { ...document, result: interpretSupportingDocument(input) };
@@ -151,11 +151,11 @@ test('keeps approvals through reanalysis and distinguishes corrected data from a
     const session: WorkspaceSession = new WorkspaceSession({ open: async (): Promise<string> => Promise.resolve(file), save: async (): Promise<string> => Promise.resolve(file), unsaved: async (): Promise<"discard"> => Promise.resolve('discard') }, undefined, undefined,
         { run: async (): Promise<StoredDocumentImport> => Promise.resolve(documentRun(root, [competing])) });
     assert.equal((await session.dispatch({ type: 'open' })).error, null);
-    const workspace: () => WorkspaceView = (): WorkspaceView => session.state().workspace!;
+    const workspace: () => IWorkspaceView = (): IWorkspaceView => session.state().workspace!;
 
-    const row: (id: string) => MatchSummary = (id: string): MatchSummary => session.matchSummaries(workspace().matchRevision)!.find((summary: MatchSummary): boolean => summary.transactionId === id)!;
+    const row: (id: string) => IMatchSummary = (id: string): IMatchSummary => session.matchSummaries(workspace().matchRevision)!.find((summary: IMatchSummary): boolean => summary.transactionId === id)!;
 
-    const approve: (...ids: string[]) => Promise<WorkspaceState> = (...ids: string[]): Promise<WorkspaceState> => session.dispatch({ type: 'approve-matches', loadRevision: workspace().loadRevision,
+    const approve: (...ids: string[]) => Promise<IWorkspaceState> = (...ids: string[]): Promise<IWorkspaceState> => session.dispatch({ type: 'approve-matches', loadRevision: workspace().loadRevision,
         selections: ids.map((id: string): MatchApprovalSelection => row(id).approvalSelection!) });
     assert.equal(row(first).status, 'reliable');
     assert.equal((await approve(first, second)).error, null);
@@ -167,7 +167,7 @@ test('keeps approvals through reanalysis and distinguishes corrected data from a
     assert.equal(row(first).status, 'uncertain');
     assert.deepEqual(row(first).approval, firstApproval);
     assert.deepEqual(row(second).approval, secondApproval);
-    const correctDate: (document: StoredSupportingDocument, value: string) => Promise<WorkspaceState> = (document: typeof approvedInvoice, value: string): Promise<WorkspaceState> => {
+    const correctDate: (document: StoredSupportingDocument, value: string) => Promise<IWorkspaceState> = (document: typeof approvedInvoice, value: string): Promise<IWorkspaceState> => {
         const { sectionId, dates }: DocumentSection = document.result.sections[0];
         return session.dispatch({ type: 'correct-document-field', revision: workspace().matchRevision, documentId: document.id, sectionId, fieldId: dates[0].id,
             change: { kind: 'date', value } });

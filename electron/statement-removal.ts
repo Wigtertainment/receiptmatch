@@ -3,9 +3,9 @@ import { activeStatements } from '../src/shared/source-replacements.js';
 import { excludeDuplicateTransactions, secondaryDuplicateId, type DuplicateDecision } from '../src/shared/transaction-duplicates.js';
 import type { DocumentFileResult, StoredDocumentImport } from '../src/shared/workspace-documents.js';
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
-import type { SavedWorkspace } from './store.js';
+import type { ISavedWorkspace } from './store.js';
 
-type ReviewState = Pick<SavedWorkspace, 'matchDecisions' | 'reviewApprovals' | 'duplicateDecisions' | 'sourceReplacements' | 'archivedSourceReviews'>;
+type ReviewState = Pick<ISavedWorkspace, 'matchDecisions' | 'reviewApprovals' | 'duplicateDecisions' | 'sourceReplacements' | 'archivedSourceReviews'>;
 
 function remainingArchivedReviews(
   current: ReviewState['archivedSourceReviews'], replacements: ReadonlyMap<string, string>, removedRows: ReadonlySet<string>
@@ -82,7 +82,7 @@ function archiveReview(archives: ReviewState['archivedSourceReviews'], sourceId:
 
 export function prepareStatementRemoval(
   sourceId: string, removedRows: ReadonlySet<string>, remaining: StoredBankImport[], documents: readonly StoredDocumentImport[], state: ReviewState
-): ReviewState & { active: StoredBankImport[] } {
+): ReviewState & Record<'active', StoredBankImport[]> {
   const sourceReplacements: Map<string, string> = new Map(state.sourceReplacements);
   const predecessor: string | undefined = [...sourceReplacements].find(([, target]: [string, string]): boolean => target === sourceId)?.[0];
   const successor: string | undefined = sourceReplacements.get(sourceId);

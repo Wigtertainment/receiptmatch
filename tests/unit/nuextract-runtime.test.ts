@@ -4,22 +4,22 @@ import type { RequestOptions } from "node:http";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
-import { listNuExtractVulkanDevices, NuExtractRuntime, type NuExtractRuntimeFiles } from "../../electron/extraction/nuextract-runtime.js";
+import { listNuExtractVulkanDevices, NuExtractRuntime, type INuExtractRuntimeFiles } from "../../electron/extraction/nuextract-runtime.js";
 
-type FakeChild = EventEmitter & { stdout: PassThrough; stderr: PassThrough };
-type FakeResponse = PassThrough & { statusCode: number };
-type FakeRequest = EventEmitter & { end: (body?: string) => void };
+type FakeChild = EventEmitter & Record<'stdout' | 'stderr', PassThrough>;
+type FakeResponse = PassThrough & Record<'statusCode', number>;
+type FakeRequest = EventEmitter & Record<'end', (body?: string) => void>;
 
-interface RuntimeMocks {
+interface IRuntimeMocks {
 	spawn: (executable: string, args: string[], options: SpawnOptionsWithoutStdio) => FakeChild;
 	request: (options: RequestOptions, receive: (response: FakeResponse) => void) => FakeRequest;
 }
 
-const mocks: RuntimeMocks = vi.hoisted((): RuntimeMocks => ({ spawn: vi.fn(), request: vi.fn() }));
+const mocks: IRuntimeMocks = vi.hoisted((): IRuntimeMocks => ({ spawn: vi.fn(), request: vi.fn() }));
 vi.mock("node:child_process", (): object => ({ spawn: mocks.spawn }));
 vi.mock("node:http", (): object => ({ request: mocks.request }));
 
-const files: NuExtractRuntimeFiles = { executable: path.resolve("llama-server"), model: path.resolve("model.gguf"), projector: path.resolve("mmproj.gguf") };
+const files: INuExtractRuntimeFiles = { executable: path.resolve("llama-server"), model: path.resolve("model.gguf"), projector: path.resolve("mmproj.gguf") };
 const png: Buffer = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1x8AAAAASUVORK5CYII=", "base64");
 
 function mockChild(log: string): FakeChild {

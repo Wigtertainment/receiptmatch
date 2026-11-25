@@ -5,46 +5,48 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test, type TestContext } from 'vitest';
 import { StatementImportService } from '../../electron/import/service.js';
-import { createWorkspace, loadWorkspace, newMetadata, type SavedWorkspace } from '../../electron/store.js';
+import { createWorkspace, loadWorkspace, newMetadata, type ISavedWorkspace } from '../../electron/store.js';
 import { WorkspaceSession } from '../../electron/workspace-session.js';
 import type { BankImportInput } from '../../src/shared/bank-import.js';
 import type { BankCorrection } from '../../src/shared/bank-corrections.js';
 import { approvalSelectionFor, type ReviewApprovalState } from '../../src/shared/match-approvals.js';
 import { PDF_EXTRACTION_VERSION, type ExtractionResult } from '../../src/shared/pdf-extraction.js';
-import type { WorkspaceState, WorkspaceView } from '../../src/shared/protocol.js';
+import type { IWorkspaceState, IWorkspaceView } from '../../src/shared/protocol.js';
 import { duplicatePairKey, type DuplicateDecision } from '../../src/shared/transaction-duplicates.js';
 import type { StoredDocumentImport, StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
-import type { MatchSummary } from '../../src/shared/workspace-matching.js';
+import type { IMatchSummary } from '../../src/shared/workspace-matching.js';
 import { statement } from './bank-fixtures.js';
 import { documentRun, retainedBank, retainedDocument } from './document-fixtures.js';
 
-async function fixture(context: TestContext): Promise<{ root: string; file: string }> {
+interface IStatementRemovalFixture { root: string; file: string }
+
+async function fixture(context: TestContext): Promise<IStatementRemovalFixture> {
     const root: string = await mkdtemp(path.join(tmpdir(), 'receiptmatch-statement-removal-'));
     context.onTestFinished((): Promise<void> => rm(root, { recursive: true, force: true }));
     return { root, file: path.join(root, 'test.receiptmatch') };
 }
 
-function createSession(file: string, service?: StatementImportService): WorkspaceSession {
+function createSession(file: string, statementImportService?: StatementImportService): WorkspaceSession {
     return new WorkspaceSession({
         open: (): Promise<string> => Promise.resolve(file),
         save: (): Promise<string> => Promise.resolve(file),
         unsaved: (): Promise<'discard'> => Promise.resolve('discard')
-    }, undefined, service);
+    }, undefined, statementImportService);
 }
 
-function workspace(session: WorkspaceSession): WorkspaceView {
-    const result: WorkspaceView | null = session.state().workspace;
+function workspace(session: WorkspaceSession): IWorkspaceView {
+    const result: IWorkspaceView | null = session.state().workspace;
     assert.ok(result);
     return result;
 }
 
-function remove(session: WorkspaceSession, importId: string, revision: number = workspace(session).matchRevision): Promise<WorkspaceState> {
+function remove(session: WorkspaceSession, importId: string, revision: number = workspace(session).matchRevision): Promise<IWorkspaceState> {
     return session.dispatch({ type: 'remove-statement', importId, revision });
 }
 
-function summary(session: WorkspaceSession, transactionId: string): MatchSummary | undefined {
-    return session.matchSummaries(workspace(session).matchRevision)?.find((row: MatchSummary): boolean => row.transactionId === transactionId);
+function summary(session: WorkspaceSession, transactionId: string): IMatchSummary | undefined {
+    return session.matchSummaries(workspace(session).matchRevision)?.find((row: IMatchSummary): boolean => row.transactionId === transactionId);
 }
 
 function approved(transactionId: string, documentId: string, transactionRevision: number = 1): ReviewApprovalState {
@@ -88,14 +90,14 @@ test('removes only the current statement selection and permits reimport before s
         new Map([[removedId, approved(removedId, receipt.id, 2)]]), undefined, undefined, undefined, undefined, new Set([ignoredId]));
     const session: WorkspaceSession = createSession(file, statementService(removed.filePath));
     assert.equal((await session.dispatch({ type: 'open' })).error, null);
-    const before: WorkspaceView = workspace(session);
+    const before: IWorkspaceView = workspace(session);
     const savedBytes: Buffer = await readFile(file);
     assert.ok((await remove(session, removed.id, before.matchRevision - 1)).error);
     assert.ok((await remove(session, randomUUID())).error);
     assert.deepEqual(workspace(session), before);
 
     assert.equal((await remove(session, removed.id)).error, null);
-    const changed: WorkspaceView = workspace(session);
+    const changed: IWorkspaceView = workspace(session);
     assert.equal(changed.dirty, true);
     assert.ok(changed.loadRevision > before.loadRevision);
     assert.ok(changed.matchRevision > before.matchRevision);
@@ -117,7 +119,7 @@ test('removes only the current statement selection and permits reimport before s
     assert.notEqual(reimported.id, removed.id);
     assert.equal(reimported.result.sourceProvenance?.sha256, provenance.sha256);
     assert.equal((await session.dispatch({ type: 'save' })).error, null);
-    const saved: SavedWorkspace = await loadWorkspace(file);
+    const saved: ISavedWorkspace = await loadWorkspace(file);
     assert.deepEqual(saved.imports, [kept, reimported]);
     assert.deepEqual(saved.documentImports[0].files, [{ status: 'imported', record: receipt }]);
     assert.equal(saved.matchDecisions.size, 0);
@@ -202,7 +204,7 @@ test('reconnects remaining replacement versions and reactivates the predecessor 
     const originalId: string = original.transactions[0].transactionId, latestId: string = latest.transactions[0].transactionId;
     const receipt: StoredSupportingDocument = retainedDocument(root);
     const replacements: Map<string, string> = new Map([[originalSource, middleSource], [middleSource, latestSource]]);
-    const archives: SavedWorkspace['archivedSourceReviews'] = new Map([[originalSource, new Map([[originalId, receipt.id]])]]);
+    const archives: ISavedWorkspace['archivedSourceReviews'] = new Map([[originalSource, new Map([[originalId, receipt.id]])]]);
     await createWorkspace(file, newMetadata(), [original, middle, latest], [documentRun(root, [receipt])], new Map([[latestId, receipt.id]]), undefined, undefined,
         new Map([[latestId, approved(latestId, receipt.id)]]), undefined, undefined, replacements, archives);
     const session: WorkspaceSession = createSession(file);

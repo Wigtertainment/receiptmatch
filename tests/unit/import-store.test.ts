@@ -1,4 +1,4 @@
-import type { BankImportInput, BankImportResult, PositionedSpan, SourceEvidence, TransactionCandidate, UnresolvedDraft } from "../../src/shared/bank-import.js";
+import type { BankImportInput, BankImportResult, PositionedSpan, TransactionCandidate, UnresolvedDraft } from "../../src/shared/bank-import.js";
 import { test, vi, type Mock, type MockInstance, type TestContext } from 'vitest';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
@@ -7,7 +7,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { createWorkspace, fingerprint, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERSION, type SavedWorkspace } from '../../electron/store.js';
+import { createWorkspace, fingerprint, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERSION, type ISavedWorkspace, type WorkspaceMetadata } from '../../electron/store.js';
 import { parseBankStatement } from '../../electron/import/registry.js';
 import type { BankCorrection } from '../../src/shared/bank-corrections.js';
 import { advanceReviewRevision, approvalSelectionFor, type ReviewApprovalState } from '../../src/shared/match-approvals.js';
@@ -16,6 +16,8 @@ import type { StoredDocumentImport, StoredSupportingDocument } from '../../src/s
 import { storedBankImportSchema, type StoredBankImport } from '../../src/shared/workspace-import.js';
 import { row, statement } from './bank-fixtures.js';
 import { documentRun, retainedDocument } from './document-fixtures.js';
+
+interface ILegacyWorkspace { file: string; legacyAccountId: ReturnType<typeof randomUUID>; saved: ISavedWorkspace }
 
 async function directory(): Promise<string> {
   await mkdir('artifacts', { recursive: true }); return mkdtemp(path.resolve('artifacts/import-store-'));
@@ -33,13 +35,15 @@ function record(root: string, partial: boolean = false): StoredBankImport {
   assert.equal(result.status, partial ? 'partial' : 'complete');
   return storedBankImportSchema.parse({
     id, importedAt: '2032-03-01T12:00:00.000Z', filePath: path.join(root, `${id}.pdf`), result,
-    accounts: result.accountSections.map((value: { sectionId: string; currency: { value: string; evidence: SourceEvidence[]; }; accountReference: { label: string; value: string; evidence: SourceEvidence[]; } | null; evidence: SourceEvidence[]; }): { sectionId: string; accountId: `${string}-${string}-${string}-${string}-${string}`; statementId: `${string}-${string}-${string}-${string}-${string}`; } => ({ sectionId: value.sectionId, accountId: randomUUID(), statementId: randomUUID() })),
-    transactions: result.transactions.map((value: TransactionCandidate): { rowId: string; transactionId: `${string}-${string}-${string}-${string}-${string}`; } => ({ rowId: value.rowId, transactionId: randomUUID() })),
-    drafts: result.unresolvedDrafts.map((value: UnresolvedDraft): { rowId: string; draftId: `${string}-${string}-${string}-${string}-${string}`; } => ({ rowId: value.rowId, draftId: randomUUID() }))
+    accounts: result.accountSections.map((value: BankImportResult['accountSections'][number]): StoredBankImport['accounts'][number] => ({
+      sectionId: value.sectionId, accountId: randomUUID(), statementId: randomUUID()
+    })),
+    transactions: result.transactions.map((value: TransactionCandidate): StoredBankImport['transactions'][number] => ({ rowId: value.rowId, transactionId: randomUUID() })),
+    drafts: result.unresolvedDrafts.map((value: UnresolvedDraft): StoredBankImport['drafts'][number] => ({ rowId: value.rowId, draftId: randomUUID() }))
   });
 }
 
-async function legacy(root: string): Promise<{ file: string; legacyAccountId: `${string}-${string}-${string}-${string}-${string}`; saved: SavedWorkspace; }> {
+async function legacy(root: string): Promise<ILegacyWorkspace> {
   const file: string = path.join(root, 'legacy.receiptmatch'); await createWorkspace(file, newMetadata());
   const legacyAccountId: `${string}-${string}-${string}-${string}-${string}` = randomUUID();
   const db: Database.Database = new Database(file); db.pragma('foreign_keys=ON');
@@ -63,10 +67,11 @@ function baseRows(file: string): Record<string, unknown[]> {
 }
 
 test('version 1 opens without writes; its first explicit metadata-only save atomically upgrades without changing financial records', async (): Promise<void> => {
-  const root: string = await directory(); const { file, saved }: { file: string; legacyAccountId: `${string}-${string}-${string}-${string}-${string}`; saved: SavedWorkspace; } = await legacy(root); const before: NonSharedBuffer = await readFile(file); const financial: Record<string, unknown[]> = baseRows(file);
+  const root: string = await directory(); const { file, saved }: ILegacyWorkspace = await legacy(root);
+  const before: NonSharedBuffer = await readFile(file); const financial: Record<string, unknown[]> = baseRows(file);
   assert.equal(saved.schemaVersion, 1); assert.deepEqual(saved.imports, []);
-  const opened: SavedWorkspace = await loadWorkspace(file); assert.deepEqual(await readFile(file), before); assert.equal(opened.schemaVersion, 1);
-  const upgraded: SavedWorkspace = await saveWorkspace(opened, { ...opened.metadata, name: 'Explicitly upgraded' });
+  const opened: ISavedWorkspace = await loadWorkspace(file); assert.deepEqual(await readFile(file), before); assert.equal(opened.schemaVersion, 1);
+  const upgraded: ISavedWorkspace = await saveWorkspace(opened, { ...opened.metadata, name: 'Explicitly upgraded' });
   assert.equal(upgraded.schemaVersion, SCHEMA_VERSION); assert.deepEqual(upgraded.imports, []);
   assert.equal((await loadWorkspace(file)).metadata.name, 'Explicitly upgraded'); assert.deepEqual(baseRows(file), financial);
   const db: Database.Database = new Database(file, { readonly: true });
@@ -79,7 +84,7 @@ test('version 1 opens without writes; its first explicit metadata-only save atom
 
 test('partial imports preserve drafts, field evidence, adapter versions, stable identities and exact projected money across reopening', async (): Promise<void> => {
   const root: string = await directory(); const file: string = path.join(root, 'partial.receiptmatch'); const retained: StoredBankImport = record(root, true);
-  const created: SavedWorkspace = await createWorkspace(file, newMetadata(), [retained]); const loaded: SavedWorkspace = await loadWorkspace(file);
+  const created: ISavedWorkspace = await createWorkspace(file, newMetadata(), [retained]); const loaded: ISavedWorkspace = await loadWorkspace(file);
   assert.equal(created.schemaVersion, SCHEMA_VERSION); assert.deepEqual(loaded.imports, [retained]);
   const db: Database.Database = new Database(file, { readonly: true });
   try {
@@ -87,7 +92,7 @@ test('partial imports preserve drafts, field evidence, adapter versions, stable 
     assert.deepEqual(projected, { coefficient: '-9007199254740993', currency: 'EUR', scale: 2, statement_id: retained.accounts[0].statementId });
     const source: unknown = db.prepare('SELECT path,fingerprint FROM sources WHERE id=?').get(retained.result.sourceProvenance!.sourceId);
     assert.deepEqual(source, { path: retained.filePath, fingerprint: retained.result.sourceProvenance!.sha256 });
-    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, retained.result.transactions.length);
+    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as Record<'count', number>).count, retained.result.transactions.length);
   } finally {
     db.close();
   }
@@ -97,8 +102,9 @@ test('partial imports preserve drafts, field evidence, adapter versions, stable 
 });
 
 test('explicit append to a version 1 file preserves every legacy transaction, document and manual approval', async (): Promise<void> => {
-  const root: string = await directory(); const { file, saved }: { file: string; legacyAccountId: `${string}-${string}-${string}-${string}-${string}`; saved: SavedWorkspace; } = await legacy(root); const before: Record<string, unknown[]> = baseRows(file); const retained: StoredBankImport = record(root, true);
-  const appended: SavedWorkspace = await saveWorkspace(saved, { ...saved.metadata, name: 'With imports' }, [retained]);
+  const root: string = await directory(); const { file, saved }: ILegacyWorkspace = await legacy(root);
+  const before: Record<string, unknown[]> = baseRows(file); const retained: StoredBankImport = record(root, true);
+  const appended: ISavedWorkspace = await saveWorkspace(saved, { ...saved.metadata, name: 'With imports' }, [retained]);
   assert.equal(appended.schemaVersion, SCHEMA_VERSION); assert.deepEqual((await loadWorkspace(file)).imports, [retained]);
   const after: Record<string, unknown[]> = baseRows(file);
   for (const table of ['sources', 'accounts', 'statements', 'transactions', 'documents', 'associations']) {
@@ -111,26 +117,26 @@ test('explicit append to a version 1 file preserves every legacy transaction, do
 
 test('default two-argument saves preserve imports and repeated appends never duplicate projected records', async (): Promise<void> => {
   const root: string = await directory(); const file: string = path.join(root, 'append.receiptmatch'); const first: StoredBankImport = record(root); const second: StoredBankImport = record(root, true);
-  const saved: SavedWorkspace = await createWorkspace(file, newMetadata(), [first]);
-  const renamed: SavedWorkspace = await saveWorkspace(saved, { ...saved.metadata, name: 'Renamed with imports' }); assert.deepEqual(renamed.imports, [first]);
-  const appended: SavedWorkspace = await saveWorkspace(renamed, renamed.metadata, [first, second]);
-  const repeated: SavedWorkspace = await saveWorkspace(appended, appended.metadata, [first, second]);
+  const saved: ISavedWorkspace = await createWorkspace(file, newMetadata(), [first]);
+  const renamed: ISavedWorkspace = await saveWorkspace(saved, { ...saved.metadata, name: 'Renamed with imports' }); assert.deepEqual(renamed.imports, [first]);
+  const appended: ISavedWorkspace = await saveWorkspace(renamed, renamed.metadata, [first, second]);
+  const repeated: ISavedWorkspace = await saveWorkspace(appended, appended.metadata, [first, second]);
   assert.deepEqual((await loadWorkspace(file)).imports, [first, second]); assert.deepEqual(repeated.imports, [first, second]);
   const db: Database.Database = new Database(file, { readonly: true });
   try {
-    assert.equal((db.prepare('SELECT count(*) AS count FROM bank_imports').get() as { count: number }).count, 2);
-    assert.equal((db.prepare('SELECT count(*) AS count FROM sources').get() as { count: number }).count, 2);
-    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, first.transactions.length + second.transactions.length);
+    assert.equal((db.prepare('SELECT count(*) AS count FROM bank_imports').get() as Record<'count', number>).count, 2);
+    assert.equal((db.prepare('SELECT count(*) AS count FROM sources').get() as Record<'count', number>).count, 2);
+    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as Record<'count', number>).count, first.transactions.length + second.transactions.length);
   } finally {
     db.close();
   }
   for (const requested of [[], [second, first], [first, { ...second, filePath: path.join(root, 'rewritten.pdf') }]]) {
-    const before: NonSharedBuffer = await readFile(file); await assert.rejects((): Promise<SavedWorkspace> => saveWorkspace(repeated, repeated.metadata, requested), /cannot be removed|rewritten/);
+    const before: NonSharedBuffer = await readFile(file); await assert.rejects((): Promise<ISavedWorkspace> => saveWorkspace(repeated, repeated.metadata, requested), /cannot be removed|rewritten/);
     assert.deepEqual(await readFile(file), before);
   }
 });
 
-function saveBankRemoval(current: SavedWorkspace, imports: StoredBankImport[], removed: ReadonlySet<string>): Promise<SavedWorkspace> {
+function saveBankRemoval(current: ISavedWorkspace, imports: StoredBankImport[], removed: ReadonlySet<string>): Promise<ISavedWorkspace> {
   return saveWorkspace(current, current.metadata, imports, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
     undefined, undefined, removed);
 }
@@ -165,17 +171,17 @@ test('an explicitly removed bank import loses its stored dependencies and can be
   }]]);
   const remainingRelocations: Map<string, string> = new Map([[first.result.sourceProvenance!.sourceId, path.join(root, 'first-relocated.pdf')]]);
   const relocations: Map<string, string> = new Map(remainingRelocations).set(provenance.sourceId, path.join(root, 'removed-relocated.pdf'));
-  const saved: SavedWorkspace = await createWorkspace(file, newMetadata(), [first, removed, last], [report], new Map([[removedTx, receipt.id]]),
+  const saved: ISavedWorkspace = await createWorkspace(file, newMetadata(), [first, removed, last], [report], new Map([[removedTx, receipt.id]]),
     corrections, undefined, approvals, duplicates, relocations, undefined, undefined, new Set([firstTx, promotedDraft]));
-  assert.ok(saved.matches.some((match: SavedWorkspace['matches'][number]): boolean => match.transactionId === promotedDraft), 'The corrected draft is projected as a transaction.');
+  assert.ok(saved.matches.some((match: ISavedWorkspace['matches'][number]): boolean => match.transactionId === promotedDraft), 'The corrected draft is projected as a transaction.');
 
   await saveWorkspace(saved, saved.metadata, [first, last], [report], new Map(), remainingCorrections, undefined, undefined, new Map(), remainingRelocations,
     undefined, undefined, new Set([firstTx]), undefined, new Set([removed.id]));
-  const reopened: SavedWorkspace = await loadWorkspace(file);
+  const reopened: ISavedWorkspace = await loadWorkspace(file);
   assert.deepEqual(reopened.imports, [first, last]);
   assert.deepEqual(reopened.documentImports, [{ ...report, files: [report.files[0], report.files[2]] }]);
-  assert.equal(reopened.sources.some((source: SavedWorkspace['sources'][number]): boolean => source.id === provenance.sourceId), false);
-  assert.equal(reopened.matches.some((match: SavedWorkspace['matches'][number]): boolean => match.transactionId === removedTx || match.transactionId === promotedDraft), false);
+  assert.equal(reopened.sources.some((source: ISavedWorkspace['sources'][number]): boolean => source.id === provenance.sourceId), false);
+  assert.equal(reopened.matches.some((match: ISavedWorkspace['matches'][number]): boolean => match.transactionId === removedTx || match.transactionId === promotedDraft), false);
   assert.deepEqual(reopened.matchDecisions, new Map());
   assert.deepEqual(reopened.reviewApprovals, new Map());
   assert.deepEqual(reopened.duplicateDecisions, new Map());
@@ -199,7 +205,7 @@ test('a save can replace a removed import with the same PDF hash while retaining
   const root: string = await directory();
   context.onTestFinished((): Promise<void> => rm(root, { recursive: true, force: true }));
   const first: StoredBankImport = record(root), removed: StoredBankImport = record(root), last: StoredBankImport = record(root);
-  const saved: SavedWorkspace = await createWorkspace(path.join(root, 'reimport.receiptmatch'), newMetadata(), [first, removed, last]);
+  const saved: ISavedWorkspace = await createWorkspace(path.join(root, 'reimport.receiptmatch'), newMetadata(), [first, removed, last]);
   const reimport: StoredBankImport = record(root);
   reimport.filePath = removed.filePath;
   reimport.result.sourceProvenance!.sha256 = removed.result.sourceProvenance!.sha256;
@@ -225,17 +231,17 @@ test('removing individual versions of a replacement chain persists the remaining
   const approvals: Map<string, ReviewApprovalState> = new Map([[lastTx, {
     associationRevision: 1, approval: { ...approvalSelectionFor(lastTx, receipt.id), batchId: randomUUID(), approvedAt: '2032-03-01T12:00:00.000Z' }
   }]]);
-  const remainingArchive: SavedWorkspace['archivedSourceReviews'] = new Map([[firstSource, new Map([[firstTx, receipt.id]])]]);
-  const archives: SavedWorkspace['archivedSourceReviews'] = new Map(remainingArchive).set(middleSource, new Map([[middle.transactions[0].transactionId, receipt.id]]));
+  const remainingArchive: ISavedWorkspace['archivedSourceReviews'] = new Map([[firstSource, new Map([[firstTx, receipt.id]])]]);
+  const archives: ISavedWorkspace['archivedSourceReviews'] = new Map(remainingArchive).set(middleSource, new Map([[middle.transactions[0].transactionId, receipt.id]]));
   const replacements: Map<string, string> = new Map([[firstSource, middleSource], [middleSource, lastSource]]);
   const file: string = path.join(root, 'remove-replacement.receiptmatch');
-  const saved: SavedWorkspace = await createWorkspace(file, newMetadata(), [first, middle, last], [documentRun(root, [receipt])], decisions,
+  const saved: ISavedWorkspace = await createWorkspace(file, newMetadata(), [first, middle, last], [documentRun(root, [receipt])], decisions,
     undefined, undefined, approvals, undefined, undefined, replacements, archives);
 
   const bridged: Map<string, string> = new Map([[firstSource, lastSource]]);
   await saveWorkspace(saved, saved.metadata, [first, last], undefined, decisions, undefined, undefined, approvals, undefined, undefined,
     bridged, remainingArchive, undefined, undefined, new Set([middle.id]));
-  const reopened: SavedWorkspace = await loadWorkspace(file);
+  const reopened: ISavedWorkspace = await loadWorkspace(file);
   assert.deepEqual(reopened.imports, [first, last]);
   assert.deepEqual(reopened.sourceReplacements, bridged);
   assert.deepEqual(reopened.archivedSourceReviews, remainingArchive);
@@ -245,7 +251,7 @@ test('removing individual versions of a replacement chain persists the remaining
   const restoredApprovals: Map<string, ReviewApprovalState> = new Map([[firstTx, advanceReviewRevision()]]);
   await saveWorkspace(reopened, reopened.metadata, [first], undefined, restored, undefined, undefined, restoredApprovals, undefined, undefined,
     new Map(), new Map(), undefined, undefined, new Set([last.id]));
-  const final: SavedWorkspace = await loadWorkspace(file);
+  const final: ISavedWorkspace = await loadWorkspace(file);
   assert.deepEqual(final.imports, [first]);
   assert.deepEqual(final.sourceReplacements, new Map());
   assert.deepEqual(final.archivedSourceReviews, new Map());
@@ -258,7 +264,7 @@ test('a failure deleting the bank import manifest rolls back the removal', async
   const root: string = await directory();
   context.onTestFinished((): Promise<void> => rm(root, { recursive: true, force: true }));
   const removed: StoredBankImport = record(root);
-  const saved: SavedWorkspace = await createWorkspace(path.join(root, 'remove-rollback.receiptmatch'), newMetadata(), [removed]);
+  const saved: ISavedWorkspace = await createWorkspace(path.join(root, 'remove-rollback.receiptmatch'), newMetadata(), [removed]);
   const before: NonSharedBuffer = await readFile(saved.filePath);
   const prepare: (db: Database.Database, sql: string) => Database.Statement =
     Function.prototype.call.bind(Reflect.get(Database.prototype, 'prepare')) as (db: Database.Database, sql: string) => Database.Statement;
@@ -285,7 +291,7 @@ test('a failure deleting the bank import manifest rolls back the removal', async
 });
 
 test('duplicate content and global identities are rejected against legacy rows, the workspace and other new imports without writes', async (): Promise<void> => {
-  const root: string = await directory(); const { file, saved, legacyAccountId }: { file: string; legacyAccountId: `${string}-${string}-${string}-${string}-${string}`; saved: SavedWorkspace; } = await legacy(root);
+  const root: string = await directory(); const { file, saved, legacyAccountId }: ILegacyWorkspace = await legacy(root);
   const variants: StoredBankImport[][] = [];
   const legacyCollision: StoredBankImport = record(root); legacyCollision.transactions[0].transactionId = legacyAccountId; variants.push([legacyCollision]);
   const workspaceCollision: StoredBankImport = record(root, true); workspaceCollision.drafts[0].draftId = saved.metadata.id; variants.push([workspaceCollision]);
@@ -293,24 +299,24 @@ test('duplicate content and global identities are rejected against legacy rows, 
   const first: StoredBankImport = record(root); const sameHash: StoredBankImport = record(root); sameHash.result.sourceProvenance!.sha256 = first.result.sourceProvenance!.sha256; variants.push([first, sameHash]);
   const sameIdentity: StoredBankImport = record(root, true); sameIdentity.drafts[0].draftId = first.transactions[0].transactionId.toUpperCase(); variants.push([first, sameIdentity]);
   for (const imports of variants) {
-    const before: NonSharedBuffer = await readFile(file); await assert.rejects((): Promise<SavedWorkspace> => saveWorkspace(saved, saved.metadata, imports), /identity|content/);
+    const before: NonSharedBuffer = await readFile(file); await assert.rejects((): Promise<ISavedWorkspace> => saveWorkspace(saved, saved.metadata, imports), /identity|content/);
     assert.deepEqual(await readFile(file), before); assert.equal((await loadWorkspace(file)).schemaVersion, 1);
   }
 });
 
 test('invalid mappings reject before writes and failed creation does not leave a workspace', async (): Promise<void> => {
-  const root: string = await directory(); const { file, saved }: { file: string; legacyAccountId: `${string}-${string}-${string}-${string}-${string}`; saved: SavedWorkspace; } = await legacy(root); const invalid: StoredBankImport = record(root); invalid.transactions.pop();
-  const before: NonSharedBuffer = await readFile(file); await assert.rejects((): Promise<SavedWorkspace> => saveWorkspace(saved, saved.metadata, [invalid])); assert.deepEqual(await readFile(file), before);
-  const target: string = path.join(root, 'invalid.receiptmatch'); await assert.rejects((): Promise<SavedWorkspace> => createWorkspace(target, newMetadata(), [invalid]));
+  const root: string = await directory(); const { file, saved }: ILegacyWorkspace = await legacy(root); const invalid: StoredBankImport = record(root); invalid.transactions.pop();
+  const before: NonSharedBuffer = await readFile(file); await assert.rejects((): Promise<ISavedWorkspace> => saveWorkspace(saved, saved.metadata, [invalid])); assert.deepEqual(await readFile(file), before);
+  const target: string = path.join(root, 'invalid.receiptmatch'); await assert.rejects((): Promise<ISavedWorkspace> => createWorkspace(target, newMetadata(), [invalid]));
   await assert.rejects((): Promise<NonSharedBuffer> => readFile(target), { code: 'ENOENT' });
-  const metadata: { id: string; name: string; createdAt: string; savedAt: string | null; } = newMetadata(); const collision: StoredBankImport = record(root); collision.id = metadata.id;
-  await assert.rejects((): Promise<SavedWorkspace> => createWorkspace(target, metadata, [collision]), /identity/);
+  const metadata: WorkspaceMetadata = newMetadata(); const collision: StoredBankImport = record(root); collision.id = metadata.id;
+  await assert.rejects((): Promise<ISavedWorkspace> => createWorkspace(target, metadata, [collision]), /identity/);
   await assert.rejects((): Promise<NonSharedBuffer> => readFile(target), { code: 'ENOENT' });
 });
 
 test('external changes block stale saves in both version 1 and imported version 2 files without changing the newer bytes', async (): Promise<void> => {
-  const root: string = await directory(); const old: { file: string; legacyAccountId: `${string}-${string}-${string}-${string}-${string}`; saved: SavedWorkspace; } = await legacy(root);
-  const current: SavedWorkspace = await createWorkspace(path.join(root, 'current.receiptmatch'), newMetadata(), [record(root, true)]);
+  const root: string = await directory(); const old: ILegacyWorkspace = await legacy(root);
+  const current: ISavedWorkspace = await createWorkspace(path.join(root, 'current.receiptmatch'), newMetadata(), [record(root, true)]);
   for (const saved of [old.saved, current]) {
     const db: Database.Database = new Database(saved.filePath); try {
       db.prepare('UPDATE workspace SET name=?').run('External revision');
@@ -318,7 +324,7 @@ test('external changes block stale saves in both version 1 and imported version 
       db.close();
     }
     const before: NonSharedBuffer = await readFile(saved.filePath);
-    await assert.rejects((): Promise<SavedWorkspace> => saveWorkspace(saved, { ...saved.metadata, name: 'Stale overwrite' }), /changed outside/);
+    await assert.rejects((): Promise<ISavedWorkspace> => saveWorkspace(saved, { ...saved.metadata, name: 'Stale overwrite' }), /changed outside/);
     assert.deepEqual(await readFile(saved.filePath), before);
     assert.equal((await loadWorkspace(saved.filePath)).metadata.name, 'External revision');
   }
@@ -363,12 +369,14 @@ test('broken manifests and mismatched normalized source, account, statement and 
     } finally {
       db.close();
     }
-    const before: NonSharedBuffer = await readFile(file); await assert.rejects((): Promise<SavedWorkspace> => loadWorkspace(file)); assert.deepEqual(await readFile(file), before);
+    const before: NonSharedBuffer = await readFile(file); await assert.rejects((): Promise<ISavedWorkspace> => loadWorkspace(file)); assert.deepEqual(await readFile(file), before);
   }
 });
 
 test('an actual append failure rolls back migration, projections and metadata together', async (): Promise<void> => {
-  const root: string = await directory(); const { file, saved }: { file: string; legacyAccountId: `${string}-${string}-${string}-${string}-${string}`; saved: SavedWorkspace; } = await legacy(root); const before: NonSharedBuffer = await readFile(file); const original: (db: Database.Database, sql: string) => Database.Statement = Function.prototype.call.bind(Reflect.get(Database.prototype, 'prepare')) as (db: Database.Database, sql: string) => Database.Statement;
+  const root: string = await directory(); const { file, saved }: ILegacyWorkspace = await legacy(root); const before: NonSharedBuffer = await readFile(file);
+  const original: (db: Database.Database, sql: string) => Database.Statement =
+    Function.prototype.call.bind(Reflect.get(Database.prototype, 'prepare')) as (db: Database.Database, sql: string) => Database.Statement;
   const probe: import("vitest").MockInstance<typeof Database.prototype.prepare> = vi.spyOn(Database.prototype, 'prepare').mockImplementation(function(this: Database.Database, sql: string): Database.Statement<unknown[], unknown> {
     const query: Database.Statement<unknown[], unknown> = original(this, sql);
     if (sql.startsWith('INSERT INTO bank_imports')) {
@@ -379,28 +387,28 @@ test('an actual append failure rolls back migration, projections and metadata to
     return query;
   });
   try {
-    await assert.rejects((): Promise<SavedWorkspace> => saveWorkspace(saved, { ...saved.metadata, name: 'Must roll back' }, [record(root)]), /Controlled manifest write failure/);
+    await assert.rejects((): Promise<ISavedWorkspace> => saveWorkspace(saved, { ...saved.metadata, name: 'Must roll back' }, [record(root)]), /Controlled manifest write failure/);
   } finally {
     probe.mockRestore();
   }
   assert.deepEqual(await readFile(file), before);
-  const reopened: SavedWorkspace = await loadWorkspace(file); assert.equal(reopened.schemaVersion, 1); assert.deepEqual(reopened.imports, []); assert.deepEqual(reopened.metadata, saved.metadata);
+  const reopened: ISavedWorkspace = await loadWorkspace(file); assert.equal(reopened.schemaVersion, 1); assert.deepEqual(reopened.imports, []); assert.deepEqual(reopened.metadata, saved.metadata);
 });
 
 test('concurrent append saves cannot merge or overwrite one another silently', async (): Promise<void> => {
-  const root: string = await directory(); const file: string = path.join(root, 'concurrent.receiptmatch'); const saved: SavedWorkspace = await createWorkspace(file, newMetadata());
+  const root: string = await directory(); const file: string = path.join(root, 'concurrent.receiptmatch'); const saved: ISavedWorkspace = await createWorkspace(file, newMetadata());
   const first: StoredBankImport = record(root); const second: StoredBankImport = record(root);
-  const results: [PromiseSettledResult<SavedWorkspace>, PromiseSettledResult<SavedWorkspace>] = await Promise.allSettled([saveWorkspace(saved, { ...saved.metadata, name: 'First' }, [first]), saveWorkspace(saved, { ...saved.metadata, name: 'Second' }, [second])]);
-  assert.equal(results.filter((value: PromiseSettledResult<SavedWorkspace>): value is PromiseFulfilledResult<SavedWorkspace> => value.status === 'fulfilled').length, 1); assert.equal(results.filter((value: PromiseSettledResult<SavedWorkspace>): value is PromiseRejectedResult => value.status === 'rejected').length, 1);
-  const reopened: SavedWorkspace = await loadWorkspace(file); assert.equal(reopened.imports.length, 1);
+  const results: [PromiseSettledResult<ISavedWorkspace>, PromiseSettledResult<ISavedWorkspace>] = await Promise.allSettled([saveWorkspace(saved, { ...saved.metadata, name: 'First' }, [first]), saveWorkspace(saved, { ...saved.metadata, name: 'Second' }, [second])]);
+  assert.equal(results.filter((value: PromiseSettledResult<ISavedWorkspace>): value is PromiseFulfilledResult<ISavedWorkspace> => value.status === 'fulfilled').length, 1); assert.equal(results.filter((value: PromiseSettledResult<ISavedWorkspace>): value is PromiseRejectedResult => value.status === 'rejected').length, 1);
+  const reopened: ISavedWorkspace = await loadWorkspace(file); assert.equal(reopened.imports.length, 1);
   assert.deepEqual(reopened.imports[0], reopened.metadata.name === 'First' ? first : second);
 });
 
 for (const operation of ['load', 'save', 'create'] as const) {
   test(`${operation} rejects an atomic pathname replacement between the protected descriptor and SQLite open`, async (): Promise<void> => {
   const root: string = await directory(); const file: string = path.join(root, 'selected.receiptmatch'); const replacement: string = path.join(root, 'replacement.receiptmatch');
-  const parked: string = path.join(root, 'original-inode.receiptmatch'); const metadata: { id: string; name: string; createdAt: string; savedAt: string | null; } = newMetadata();
-  const current: SavedWorkspace | null = operation === 'create' ? null : await createWorkspace(file, { ...metadata, name: 'Original revision' });
+  const parked: string = path.join(root, 'original-inode.receiptmatch'); const metadata: WorkspaceMetadata = newMetadata();
+  const current: ISavedWorkspace | null = operation === 'create' ? null : await createWorkspace(file, { ...metadata, name: 'Original revision' });
   if (operation === 'create') {
     const foreign: Database.Database = new Database(replacement); foreign.exec("CREATE TABLE untouched(value TEXT); INSERT INTO untouched VALUES('external original');"); foreign.close();
   } else {
@@ -419,11 +427,11 @@ for (const operation of ['load', 'save', 'create'] as const) {
   syncBuiltinESMExports();
   try {
     if (operation === 'load') {
-      await assert.rejects((): Promise<SavedWorkspace> => loadWorkspace(file), /replaced or linked/);
+      await assert.rejects((): Promise<ISavedWorkspace> => loadWorkspace(file), /replaced or linked/);
     } else if (operation === 'save') {
-      await assert.rejects((): Promise<SavedWorkspace> => saveWorkspace(current!, { ...current!.metadata, name: 'Must never overwrite replacement' }, [record(root)]), /replaced or linked/);
+      await assert.rejects((): Promise<ISavedWorkspace> => saveWorkspace(current!, { ...current!.metadata, name: 'Must never overwrite replacement' }, [record(root)]), /replaced or linked/);
     } else {
-      await assert.rejects((): Promise<SavedWorkspace> => createWorkspace(file, metadata, [record(root)]), /replaced or linked/);
+      await assert.rejects((): Promise<ISavedWorkspace> => createWorkspace(file, metadata, [record(root)]), /replaced or linked/);
     }
   } finally {
     probe.mockRestore(); syncBuiltinESMExports();

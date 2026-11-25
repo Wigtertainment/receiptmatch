@@ -1,15 +1,18 @@
 import type { StoredBankImport } from "../../src/shared/workspace-import.js";
 import type { StoredSupportingDocument } from "../../src/shared/workspace-documents.js";
-import type { BankImportInput, SourceEvidence } from "../../src/shared/bank-import.js";
+import type { BankImportInput, PositionedSpan } from "../../src/shared/bank-import.js";
 import type { DocumentSection } from "../../src/shared/supporting-document.js";
-import type { WorkspaceState } from "../../src/shared/protocol.js";
-import type { DocumentSnapshot } from "../../src/shared/protocol.js";
+import type { IWorkspaceState } from "../../src/shared/protocol.js";
+import type { IDocumentSnapshot } from "../../src/shared/protocol.js";
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { expect, test, type Locator, type Page, type ElectronApplication, type TestInfo, type PlaywrightWorkerOptions, type PlaywrightWorkerArgs, type PlaywrightTestOptions, type PlaywrightTestArgs } from '@playwright/test';
 import { interpretSupportingDocument } from '../../electron/documents/interpret.js';
 import { createWorkspace, newMetadata } from '../../electron/store.js';
 import { documentRun, retainedBank, retainedDocument } from '../unit/document-fixtures.js';
+
+type LocalOcrSpan = Pick<PositionedSpan, 'text' | 'region'> & Record<'method', 'local-ocr'>;
+type DocumentAmount = DocumentSection['amounts'][number];
 
 test('shows the same current receipt total in Sources and Match suggestions', async ({ playwright }: PlaywrightTestArgs & PlaywrightTestOptions & PlaywrightWorkerArgs & PlaywrightWorkerOptions, testInfo: TestInfo): Promise<void> => {
 	const root: string = testInfo.outputPath('document-workspace');
@@ -19,7 +22,8 @@ test('shows the same current receipt total in Sources and Match suggestions', as
 	bank.result.transactions[0].accountAmount.value.coefficient = '-11890';
 	const receipt: StoredSupportingDocument = retainedDocument(root, 'Orchard-Workshop.pdf');
 	const input: BankImportInput = receipt.result.input!;
-	const ocr: (text: string, x: number, y: number, width?: number) => { text: string; region: { x: number; y: number; width: number; height: number; }; method: "local-ocr"; } = (text: string, x: number, y: number, width: number = 30): { text: string; region: { x: number; y: number; width: number; height: number; }; method: "local-ocr"; } => ({ text, region: { x, y, width, height: 16 }, method: 'local-ocr' as const });
+	const ocr: (text: string, x: number, y: number, width?: number) => LocalOcrSpan =
+		(text: string, x: number, y: number, width: number = 30): LocalOcrSpan => ({ text, region: { x, y, width, height: 16 }, method: 'local-ocr' as const });
 	input.pages[0].spans = [
 		ocr('Receipt', 40, 40),
 		ocr('2', 35, 104), ocr('Lunch', 75, 103, 75), ocr('29.50', 400, 105, 46),
@@ -30,7 +34,7 @@ test('shows the same current receipt total in Sources and Match suggestions', as
 	];
 	receipt.result = interpretSupportingDocument(input);
 	const section: DocumentSection = receipt.result.sections[0];
-	const total: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; } = section.amounts.find((field: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; candidates: { coefficient: string; scale: number; currency: string | null; }[]; id: string; label: string; evidence: SourceEvidence[]; }): boolean => field.role === 'billed-total')!;
+	const total: DocumentAmount = section.amounts.find((field: DocumentAmount): boolean => field.role === 'billed-total')!;
 	total.candidates = [{ coefficient: '820', currency: null, scale: 2 }];
 	receipt.result.issues = [{ code: 'missing-currency', severity: 'warning', message: 'Missing currency', sectionId: section.sectionId,
 		fieldId: total.id, field: total.role, evidence: total.evidence }];
@@ -48,8 +52,8 @@ test('shows the same current receipt total in Sources and Match suggestions', as
 	try {
 		await app.evaluate(({ dialog, BrowserWindow }: typeof Electron.CrossProcessExports, workspace: string): void => {
 			BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
-			dialog.showOpenDialog = async (): Promise<{ canceled: false; filePaths: string[]; }> => Promise.resolve(({ canceled: false, filePaths: [workspace] }));
-			dialog.showMessageBox = async (): Promise<{ response: number; checkboxChecked: false; }> => Promise.resolve(({ response: 1, checkboxChecked: false }));
+			dialog.showOpenDialog = async (): Promise<Electron.OpenDialogReturnValue> => Promise.resolve(({ canceled: false, filePaths: [workspace] }));
+			dialog.showMessageBox = async (): Promise<Electron.MessageBoxReturnValue> => Promise.resolve(({ response: 1, checkboxChecked: false }));
 		}, file);
 		const page: Page = await app.firstWindow();
 		await page.getByRole('button', { name: 'Open workspace', exact: true }).click();
@@ -98,8 +102,8 @@ test('shows the same current receipt total in Sources and Match suggestions', as
 		await expect(sourceRow).toContainText(/118[.,]90/);
 		await nav.getByRole('button', { name: 'Match suggestions' }).click();
 		await expect(matches.getByText(/Document total.*118[.,]90/)).toBeVisible();
-		const stale: DocumentSnapshot | null = await page.evaluate(async (): Promise<DocumentSnapshot | null> => {
-			const { workspace }: WorkspaceState = await window.receiptmatch.command({ type: 'get-state' });
+		const stale: IDocumentSnapshot | null = await page.evaluate(async (): Promise<IDocumentSnapshot | null> => {
+			const { workspace }: IWorkspaceState = await window.receiptmatch.command({ type: 'get-state' });
 			return window.receiptmatch.documentSnapshot({ loadRevision: workspace!.loadRevision, revision: workspace!.matchRevision - 1 });
 		});
 		expect(stale).toBeNull();

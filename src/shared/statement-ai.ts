@@ -2,25 +2,38 @@ import { z } from 'zod';
 import type { BankImportResult, TransactionCandidate, UnresolvedDraft } from './bank-import.js';
 import { originalAdoptionRequestSchema, type OriginalAdoptionRequest } from './original-preview.js';
 
-export const statementAiRequestSchema: z.ZodObject<{ importId: z.ZodUUID; loadRevision: z.ZodNumber }, z.core.$strict> = z.strictObject({
+interface IStatementAiRequestShape {
+    importId: z.ZodUUID;
+    loadRevision: z.ZodNumber;
+}
+
+export const statementAiRequestSchema: z.ZodObject<z.core.util.Flatten<IStatementAiRequestShape>, z.core.$strict> = z.strictObject({
     importId: z.uuid(), loadRevision: z.number().int().nonnegative()
 });
 export type StatementAiRequest = z.infer<typeof statementAiRequestSchema>;
-export const statementAiDiscardRequestSchema: z.ZodObject<{ token: z.ZodUUID; loadRevision: z.ZodNumber }, z.core.$strict> = z.strictObject({
+export const statementAiDiscardRequestSchema: z.ZodObject<Pick<typeof originalAdoptionRequestSchema.shape, 'token' | 'loadRevision'>, z.core.$strict> = z.strictObject({
     token: z.uuid(), loadRevision: z.number().int().nonnegative()
 });
 export type StatementAiDiscardRequest = z.infer<typeof statementAiDiscardRequestSchema>;
 export const statementAiAcceptRequestSchema: typeof originalAdoptionRequestSchema = originalAdoptionRequestSchema;
 export type StatementAiAcceptRequest = OriginalAdoptionRequest;
 
-export interface StatementAiRow { id: string; kind: 'transaction' | 'draft'; row: TransactionCandidate | UnresolvedDraft }
-export interface StatementAiChange { kind: 'unchanged' | 'added' | 'removed' | 'changed' | 'promoted' | 'demoted'; before: StatementAiRow | null; after: StatementAiRow | null }
-export interface StatementAiSummary {
+export interface IStatementAiRow { id: string; kind: 'transaction' | 'draft'; row: TransactionCandidate | UnresolvedDraft }
+export interface IStatementAiChange { kind: 'unchanged' | 'added' | 'removed' | 'changed' | 'promoted' | 'demoted'; before: IStatementAiRow | null; after: IStatementAiRow | null }
+export interface IStatementAiSummary {
     unchanged: number; added: number; removed: number; changed: number; promoted: number; demoted: number;
     beforeTransactions: number; beforeDrafts: number; afterTransactions: number; afterDrafts: number;
 }
-export type StatementAiResult = { status: 'ready'; model: 'nuextract3'; result: BankImportResult } |
-    { status: 'cancelled' } | { status: 'failed' | 'unavailable'; error: string };
-export type StatementAiPreviewResult = (Extract<StatementAiResult, { status: 'ready' }> & {
-    token: string; previous: BankImportResult; changes: StatementAiChange[]; summary: StatementAiSummary; conflicts: string[]; blockingConflict?: string
-}) | Exclude<StatementAiResult, { status: 'ready' }>;
+interface IStatementAiReady { status: 'ready'; model: 'nuextract3'; result: BankImportResult }
+interface IStatementAiFailure { status: 'failed' | 'unavailable'; error: string }
+interface IStatementAiPreview extends IStatementAiReady {
+    token: string;
+    previous: BankImportResult;
+    changes: IStatementAiChange[];
+    summary: IStatementAiSummary;
+    conflicts: string[];
+    blockingConflict?: string;
+}
+type IncompleteStatementAiResult = Record<'status', 'cancelled'> | IStatementAiFailure;
+export type StatementAiResult = IStatementAiReady | IncompleteStatementAiResult;
+export type StatementAiPreviewResult = IStatementAiPreview | IncompleteStatementAiResult;

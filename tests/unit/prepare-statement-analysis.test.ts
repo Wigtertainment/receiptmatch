@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'vitest';
-import { prepareStatementAnalysis, type StatementAnalysisPlan } from '../../electron/import/prepare-statement-analysis.js';
+import { prepareStatementAnalysis, type IStatementAnalysisPlan } from '../../electron/import/prepare-statement-analysis.js';
 import type { BankImportResult, TransactionCandidate } from '../../src/shared/bank-import.js';
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
 import { retainedBank } from './document-fixtures.js';
@@ -20,7 +20,7 @@ test('unchanged rows and normalized warnings block metadata-only adoption while 
     proposed.sourceProvenance!.extractionRunId = randomUUID();
     proposed.transactions[0].rowId = 'new-local-row';
     proposed.issues[0].rowId = 'new-local-row';
-    const plan: StatementAnalysisPlan = prepareStatementAnalysis(original, original, proposed);
+    const plan: IStatementAnalysisPlan = prepareStatementAnalysis(original, original, proposed);
     assert.match(plan.blockingConflict!, /no verified changes/);
     assert.equal(plan.summary.unchanged, 2);
     assert.deepEqual(plan.conflicts, []);
@@ -28,7 +28,7 @@ test('unchanged rows and normalized warnings block metadata-only adoption while 
     assert.deepEqual(plan.changes[0].before!.row.evidence, before.result.transactions[0].evidence);
     assert.deepEqual(original, before);
     proposed.issues[0].rowId = proposed.transactions[1].rowId;
-    const moved: StatementAnalysisPlan = prepareStatementAnalysis(original, original, proposed);
+    const moved: IStatementAnalysisPlan = prepareStatementAnalysis(original, original, proposed);
     assert.equal(moved.blockingConflict, undefined);
     assert.equal(moved.conflicts.length, 1);
 });
@@ -37,7 +37,7 @@ test('source-supported changed values, promotions and demotions are explicit wit
     const original: StoredBankImport = retainedBank(process.cwd());
     const changed: BankImportResult = proposal(original);
     changed.transactions[0].bookingDate.value = '2032-02-26';
-    const plan: StatementAnalysisPlan = prepareStatementAnalysis(original, original, changed);
+    const plan: IStatementAnalysisPlan = prepareStatementAnalysis(original, original, changed);
     assert.equal(plan.summary.changed, 1);
     assert.equal(plan.summary.unchanged, 1);
     assert.equal(plan.changes[0].before!.id, original.transactions[0].transactionId);
@@ -49,10 +49,10 @@ test('source-supported changed values, promotions and demotions are explicit wit
         pageId: 'page-1', rowId: row.rowId, evidence: row.evidence }];
     demoted.unresolvedDrafts = [{ ...row, bookingDate: null, issues }];
     demoted.issues = issues;
-    const demotion: StatementAnalysisPlan = prepareStatementAnalysis(original, original, demoted);
+    const demotion: IStatementAnalysisPlan = prepareStatementAnalysis(original, original, demoted);
     assert.equal(demotion.summary.demoted, 1);
     assert.equal(demotion.summary.afterDrafts, 1);
-    const promotion: StatementAnalysisPlan = prepareStatementAnalysis(original, demotion.version.record, proposal(original));
+    const promotion: IStatementAnalysisPlan = prepareStatementAnalysis(original, demotion.version.record, proposal(original));
     assert.equal(promotion.summary.promoted, 1);
     assert.equal(promotion.summary.afterDrafts, 0);
     assert.notEqual(promotion.version.record.transactions[0].transactionId, demotion.version.record.drafts[0].draftId);
@@ -65,7 +65,7 @@ test('ambiguous evidence and matching array positions never imply a changed-row 
     proposed.transactions.forEach((row: TransactionCandidate): void => {
         row.bookingDate.value = '2032-02-26';
     });
-    const ambiguous: StatementAnalysisPlan = prepareStatementAnalysis(original, original, proposed);
+    const ambiguous: IStatementAnalysisPlan = prepareStatementAnalysis(original, original, proposed);
     assert.equal(ambiguous.summary.changed, 0);
     assert.equal(ambiguous.summary.removed, 2);
     assert.equal(ambiguous.summary.added, 2);
@@ -75,7 +75,7 @@ test('ambiguous evidence and matching array positions never imply a changed-row 
     ungrounded.transactions[0].evidence.forEach((evidence: TransactionCandidate['evidence'][number]): void => {
         evidence.rawText = 'Unrelated source text';
     });
-    const unpaired: StatementAnalysisPlan = prepareStatementAnalysis(separate, separate, ungrounded);
+    const unpaired: IStatementAnalysisPlan = prepareStatementAnalysis(separate, separate, ungrounded);
     assert.equal(unpaired.summary.changed, 0);
     assert.equal(unpaired.summary.removed, 1);
     assert.equal(unpaired.summary.added, 1);
@@ -92,7 +92,7 @@ test('only unambiguous source-corroborated transaction references support pairin
     });
     assert.equal(prepareStatementAnalysis(original, original, proposed).summary.changed, 1);
     proposed.transactions[0].references.at(-1)!.evidence[0].rawText = 'Uncorroborated reference';
-    const unpaired: StatementAnalysisPlan = prepareStatementAnalysis(original, original, proposed);
+    const unpaired: IStatementAnalysisPlan = prepareStatementAnalysis(original, original, proposed);
     assert.equal(unpaired.summary.changed, 0);
     assert.equal(unpaired.summary.removed, 1);
     assert.equal(unpaired.summary.added, 1);
@@ -102,13 +102,13 @@ test('protected identities block changed and removed rows while unrelated unchan
     const original: StoredBankImport = retainedBank(process.cwd());
     const proposed: BankImportResult = proposal(original);
     proposed.transactions[0].bookingDate.value = '2032-02-26';
-    const changed: StatementAnalysisPlan = prepareStatementAnalysis(original, original, proposed, new Set([original.transactions[0].transactionId]));
+    const changed: IStatementAnalysisPlan = prepareStatementAnalysis(original, original, proposed, new Set([original.transactions[0].transactionId]));
     assert.match(changed.blockingConflict!, /protected bank rows/);
     assert.equal(changed.summary.changed, 1);
-    const allowed: StatementAnalysisPlan = prepareStatementAnalysis(original, original, proposed, new Set([original.transactions[1].transactionId]));
+    const allowed: IStatementAnalysisPlan = prepareStatementAnalysis(original, original, proposed, new Set([original.transactions[1].transactionId]));
     assert.equal(allowed.blockingConflict, undefined);
     proposed.transactions.shift();
-    const removed: StatementAnalysisPlan = prepareStatementAnalysis(original, original, proposed, new Set([original.transactions[0].transactionId]));
+    const removed: IStatementAnalysisPlan = prepareStatementAnalysis(original, original, proposed, new Set([original.transactions[0].transactionId]));
     assert.match(removed.blockingConflict!, /protected bank rows/);
     assert.equal(removed.summary.removed, 1);
 });

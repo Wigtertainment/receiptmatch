@@ -9,8 +9,11 @@ import {
 } from '@playwright/test';
 import { NUEXTRACT_ASSETS } from '../../electron/local-ocr-assets.js';
 import type { LocalOcrStatus } from '../../src/shared/local-ocr-settings.js';
-import type { WorkspaceState } from '../../src/shared/protocol.js';
+import type { IWorkspaceState } from '../../src/shared/protocol.js';
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
+
+interface IApplicationWindow { application: ElectronApplication; page: Page }
+interface IWorkspaceDialogSelection { open: string | undefined; save: string | undefined }
 
 const bookings: readonly (readonly string[])[] = [
 	['2026-02-02', 'Juniper Supplies', '-118.05', '1,681.95'],
@@ -66,9 +69,7 @@ async function stageModel(assets: string, profile: string): Promise<void> {
 	}
 }
 
-async function launch(playwright: PlaywrightWorkerArgs['playwright'], profile: string): Promise<{
-	application: ElectronApplication; page: Page;
-}> {
+async function launch(playwright: PlaywrightWorkerArgs['playwright'], profile: string): Promise<IApplicationWindow> {
 	const executablePath: string = path.resolve(process.platform === 'win32' ? 'release/win-unpacked/ReceiptMatch.exe' : 'release/linux-unpacked/receiptmatch');
 	const application: ElectronApplication = await playwright._electron.launch({
 		executablePath,
@@ -88,19 +89,19 @@ async function launch(playwright: PlaywrightWorkerArgs['playwright'], profile: s
 }
 
 async function dialogs(application: ElectronApplication, open?: string, save?: string): Promise<void> {
-	await application.evaluate(({ dialog }: typeof Electron.CrossProcessExports, plan: { open: string | undefined; save: string | undefined }): void => {
-		dialog.showOpenDialog = (): Promise<{ canceled: boolean; filePaths: string[] }> => {
+	await application.evaluate(({ dialog }: typeof Electron.CrossProcessExports, plan: IWorkspaceDialogSelection): void => {
+		dialog.showOpenDialog = (): Promise<Electron.OpenDialogReturnValue> => {
 			const selected: string | undefined = plan.open;
 			plan.open = undefined;
 			return Promise.resolve({ canceled: !selected, filePaths: selected ? [selected] : [] });
 		};
-		dialog.showSaveDialog = (): Promise<{ canceled: boolean; filePath: string }> => Promise.resolve({ canceled: !plan.save, filePath: plan.save ?? '' });
-		dialog.showMessageBox = (): Promise<{ response: number; checkboxChecked: boolean }> => Promise.resolve({ response: 1, checkboxChecked: false });
+		dialog.showSaveDialog = (): Promise<Electron.SaveDialogReturnValue> => Promise.resolve({ canceled: !plan.save, filePath: plan.save ?? '' });
+		dialog.showMessageBox = (): Promise<Electron.MessageBoxReturnValue> => Promise.resolve({ response: 1, checkboxChecked: false });
 	}, { open, save });
 }
 
-async function state(page: Page): Promise<WorkspaceState> {
-	return page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'get-state' }));
+async function state(page: Page): Promise<IWorkspaceState> {
+	return page.evaluate((): Promise<IWorkspaceState> => window.receiptmatch.command({ type: 'get-state' }));
 }
 
 async function reports(page: Page): Promise<StoredBankImport[]> {

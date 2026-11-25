@@ -17,7 +17,7 @@ export class DocumentSourcePage {
     readonly spans: Signal<PositionedSpan[]> = computed((): PositionedSpan[] => this.page().spans.slice(0, this.limit()));
     readonly remaining: Signal<number> = computed((): number => this.page().spans.length - this.spans().length);
     readonly nextCount: Signal<number> = computed((): number => Math.min(this.remaining(), 100));
-    readonly extractionLabels: { 'embedded-text': string; 'local-ocr': string; } = extractionLabels;
+    readonly extractionLabels: typeof extractionLabels = extractionLabels;
     readonly regionText: ({ x, y, width, height }: PositionedSpan["region"]) => string = regionText;
     toggle(event: Event): void {
         this.opened.set((event.target as HTMLDetailsElement).open);

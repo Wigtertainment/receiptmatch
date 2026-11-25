@@ -6,7 +6,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { test, type TestContext } from 'vitest';
 import { prepareStatementAnalysisVersion, projectCorrectedStatementAnalyses } from '../../electron/import/statement-analyses.js';
-import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERSION, type SavedWorkspace } from '../../electron/store.js';
+import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERSION, type ISavedWorkspace } from '../../electron/store.js';
 import type { BankImportResult } from '../../src/shared/bank-import.js';
 import type { BankCorrection } from '../../src/shared/bank-corrections.js';
 import type { StatementAnalysisVersion } from '../../src/shared/statement-analysis.js';
@@ -35,7 +35,7 @@ function version(original: StoredBankImport, current: StoredBankImport = origina
     return prepareStatementAnalysisVersion(original, current, proposed);
 }
 
-function saveHistory(current: SavedWorkspace, versions: StatementAnalysisVersion[]): Promise<SavedWorkspace> {
+function saveHistory(current: ISavedWorkspace, versions: StatementAnalysisVersion[]): Promise<ISavedWorkspace> {
     return saveWorkspace(current, current.metadata, current.imports, current.documentImports, current.matchDecisions, current.bankCorrections,
         current.documentCorrections, current.reviewApprovals, current.duplicateDecisions, current.sourceRelocations, current.sourceReplacements,
         current.archivedSourceReviews, current.ignoredTransactions, current.receiptAnalysisVersions, new Set(), current.documentFieldReviews, versions);
@@ -47,15 +47,15 @@ test('statement versions round-trip unchanged originals, retain historical SQL r
     const file: string = path.join(root, 'workspace.receiptmatch');
     const first: StatementAnalysisVersion = version(original);
     const second: StatementAnalysisVersion = version(original, first.record, '2032-02-25');
-    const saved: SavedWorkspace = await saveHistory(await createWorkspace(file, newMetadata(), [original]), [first, second]);
-    const reopened: SavedWorkspace = await loadWorkspace(file);
+    const saved: ISavedWorkspace = await saveHistory(await createWorkspace(file, newMetadata(), [original]), [first, second]);
+    const reopened: ISavedWorkspace = await loadWorkspace(file);
     assert.deepEqual(reopened.imports, [original]);
     assert.deepEqual(reopened.statementAnalysisVersions, [first, second]);
     const active: StoredBankImport = projectCorrectedStatementAnalyses(reopened.imports, reopened.statementAnalysisVersions, reopened.bankCorrections)[0];
     assert.deepEqual(active, second.record);
     assert.equal(reopened.matches.length, active.transactions.length);
     const db: Database.Database = new Database(file);
-    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, 4);
+    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as Record<'count', number>).count, 4);
     db.prepare('INSERT INTO transactions(id,statement_id,coefficient,currency,scale) VALUES(?,?,?,?,?)').run(randomUUID(), original.accounts[0].statementId, '99', 'EUR', 2);
     db.close();
     await assert.rejects(loadWorkspace(file), /unexpected projected records/);
@@ -67,14 +67,14 @@ test('saved history is append-only and invalid UUID/source edits roll back atomi
     const original: StoredBankImport = retainedBank(root);
     const file: string = path.join(root, 'workspace.receiptmatch');
     const document: ReturnType<typeof retainedDocument> = retainedDocument(root);
-    const saved: SavedWorkspace = await createWorkspace(file, newMetadata(), [original], [documentRun(root, [document])]);
+    const saved: ISavedWorkspace = await createWorkspace(file, newMetadata(), [original], [documentRun(root, [document])]);
     const collision: StatementAnalysisVersion = version(original);
     collision.record.transactions[0].transactionId = document.id;
     const bytes: NonSharedBuffer = await readFile(file);
     await assert.rejects(saveHistory(saved, [collision]), /workspace identity/);
     assert.deepEqual(await readFile(file), bytes);
     const first: StatementAnalysisVersion = version(original);
-    const updated: SavedWorkspace = await saveHistory(saved, [first]);
+    const updated: ISavedWorkspace = await saveHistory(saved, [first]);
     const committed: NonSharedBuffer = await readFile(file);
     await assert.rejects(saveHistory(updated, []), /cannot be removed/);
     const rewrite: StatementAnalysisVersion = structuredClone(first);
@@ -97,7 +97,7 @@ test('new analysis cannot discard corrected, assigned, approved, ignored or dupl
         const other: StoredBankImport = retainedBank(root);
         const pair: string[] = [id, other.transactions[0].transactionId].sort();
         const duplicate: DuplicateDecision = { firstId: pair[0], secondId: pair[1], primaryId: null, archivedReview: null };
-        const saved: SavedWorkspace = await createWorkspace(path.join(root, protection + '.receiptmatch'), newMetadata(), protection === 'duplicate' ? [original, other] : [original], [documentRun(root, [document])],
+        const saved: ISavedWorkspace = await createWorkspace(path.join(root, protection + '.receiptmatch'), newMetadata(), protection === 'duplicate' ? [original, other] : [original], [documentRun(root, [document])],
             protection === 'decision' || protection === 'approval' ? new Map([[id, document.id]]) : new Map(), protection === 'correction' ? new Map([[id, correction]]) : new Map(), undefined,
             protection === 'approval' ? new Map([[id, approved]]) : new Map(), protection === 'duplicate' ? new Map([[duplicatePairKey(pair[0], pair[1]), duplicate]]) : new Map(), undefined, undefined, undefined,
             protection === 'ignore' ? new Set([id]) : new Set());
@@ -110,12 +110,12 @@ test('new analysis cannot discard corrected, assigned, approved, ignored or dupl
 test('archived corrections validate and project their historical SQL row without affecting latest bookings', async (context: TestContext): Promise<void> => {
     const root: string = await directory(context);
     const original: StoredBankImport = retainedBank(root);
-    const initial: SavedWorkspace = await createWorkspace(path.join(root, 'workspace.receiptmatch'), newMetadata(), [original]);
-    const saved: SavedWorkspace = await saveHistory(initial, [version(original)]);
+    const initial: ISavedWorkspace = await createWorkspace(path.join(root, 'workspace.receiptmatch'), newMetadata(), [original]);
+    const saved: ISavedWorkspace = await saveHistory(initial, [version(original)]);
     const id: string = original.transactions[0].transactionId;
     const corrections: Map<string, BankCorrection> = new Map([[id, { rowId: id, revision: 2, bookingDate: '2032-02-20' }]]);
-    const edited: SavedWorkspace = await saveWorkspace(saved, saved.metadata, undefined, undefined, undefined, corrections);
-    const reopened: SavedWorkspace = await loadWorkspace(edited.filePath);
+    const edited: ISavedWorkspace = await saveWorkspace(saved, saved.metadata, undefined, undefined, undefined, corrections);
+    const reopened: ISavedWorkspace = await loadWorkspace(edited.filePath);
     assert.equal(reopened.bankCorrections.get(id)!.bookingDate, '2032-02-20');
     assert.equal(projectCorrectedStatementAnalyses(reopened.imports, reopened.statementAnalysisVersions, reopened.bankCorrections)[0].result.transactions[0].bookingDate.value, '2032-02-26');
 });
@@ -128,11 +128,11 @@ test('old workspaces stay byte-identical on open and gain the history table only
     db.exec('DROP TABLE statement_analysis_versions; DROP TABLE document_field_reviews; PRAGMA user_version=13;');
     db.close();
     const bytes: NonSharedBuffer = await readFile(file);
-    const previous: SavedWorkspace = await loadWorkspace(file);
+    const previous: ISavedWorkspace = await loadWorkspace(file);
     assert.equal(previous.schemaVersion, 13);
     assert.deepEqual(previous.statementAnalysisVersions, []);
     assert.deepEqual(await readFile(file), bytes);
-    const saved: SavedWorkspace = await saveHistory(previous, [version(previous.imports[0])]);
+    const saved: ISavedWorkspace = await saveHistory(previous, [version(previous.imports[0])]);
     assert.equal(saved.schemaVersion, SCHEMA_VERSION);
     assert.equal((await loadWorkspace(file)).statementAnalysisVersions.length, 1);
 });
@@ -140,15 +140,15 @@ test('old workspaces stay byte-identical on open and gain the history table only
 test('removing a statement deletes every retained analysis and historical transaction identity', async (context: TestContext): Promise<void> => {
     const root: string = await directory(context);
     const original: StoredBankImport = retainedBank(root);
-    const initial: SavedWorkspace = await createWorkspace(path.join(root, 'workspace.receiptmatch'), newMetadata(), [original]);
-    const saved: SavedWorkspace = await saveHistory(initial, [version(original)]);
-    const removed: SavedWorkspace = await saveWorkspace(saved, saved.metadata, [], [], new Map(), new Map(), undefined, new Map(), new Map(), undefined,
+    const initial: ISavedWorkspace = await createWorkspace(path.join(root, 'workspace.receiptmatch'), newMetadata(), [original]);
+    const saved: ISavedWorkspace = await saveHistory(initial, [version(original)]);
+    const removed: ISavedWorkspace = await saveWorkspace(saved, saved.metadata, [], [], new Map(), new Map(), undefined, new Map(), new Map(), undefined,
         undefined, undefined, new Set(), undefined, new Set([original.id]), undefined, []);
     assert.deepEqual(removed.imports, []);
     assert.deepEqual((await loadWorkspace(removed.filePath)).statementAnalysisVersions, []);
     const db: Database.Database = new Database(removed.filePath);
-    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, 0);
-    assert.equal((db.prepare('SELECT count(*) AS count FROM statements').get() as { count: number }).count, 0);
+    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as Record<'count', number>).count, 0);
+    assert.equal((db.prepare('SELECT count(*) AS count FROM statements').get() as Record<'count', number>).count, 0);
     db.close();
 });
 
@@ -159,15 +159,15 @@ test('the historical SQL union includes correction-promoted drafts without trans
     const original: StoredBankImport = retainedBank(root, input);
     const id: string = original.drafts[0].draftId;
     const corrections: Map<string, BankCorrection> = new Map([[id, { rowId: id, revision: 2, bookingDate: '2032-02-28' }]]);
-    const initial: SavedWorkspace = await createWorkspace(path.join(root, 'workspace.receiptmatch'), newMetadata(), [original], [], undefined, corrections);
+    const initial: ISavedWorkspace = await createWorkspace(path.join(root, 'workspace.receiptmatch'), newMetadata(), [original], [], undefined, corrections);
     const next: StatementAnalysisVersion = version(original);
-    const saved: SavedWorkspace = await saveHistory(initial, [next]);
-    const reopened: SavedWorkspace = await loadWorkspace(saved.filePath);
+    const saved: ISavedWorkspace = await saveHistory(initial, [next]);
+    const reopened: ISavedWorkspace = await loadWorkspace(saved.filePath);
     const active: StoredBankImport = projectCorrectedStatementAnalyses(reopened.imports, reopened.statementAnalysisVersions, reopened.bankCorrections)[0];
     assert.equal(active.transactions.some((row: StoredBankImport['transactions'][number]): boolean => row.transactionId === id), true);
     const db: Database.Database = new Database(saved.filePath);
-    assert.equal((db.prepare('SELECT revision FROM transactions WHERE id=?').get(id) as { revision: number }).revision, 2);
-    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as { count: number }).count, 3);
+    assert.equal((db.prepare('SELECT revision FROM transactions WHERE id=?').get(id) as Record<'revision', number>).revision, 2);
+    assert.equal((db.prepare('SELECT count(*) AS count FROM transactions').get() as Record<'count', number>).count, 3);
     db.close();
 });
 
@@ -178,10 +178,10 @@ test('unchanged duplicate-reviewed rows retain their decisions across a local an
     const pair: string[] = [original.transactions[0].transactionId, other.transactions[0].transactionId].sort();
     const duplicate: DuplicateDecision = { firstId: pair[0], secondId: pair[1], primaryId: null, archivedReview: null };
     const decisions: Map<string, DuplicateDecision> = new Map([[duplicatePairKey(pair[0], pair[1]), duplicate]]);
-    const saved: SavedWorkspace = await createWorkspace(path.join(root, 'workspace.receiptmatch'), newMetadata(), [original, other], [], undefined, undefined, undefined, undefined, decisions);
+    const saved: ISavedWorkspace = await createWorkspace(path.join(root, 'workspace.receiptmatch'), newMetadata(), [original, other], [], undefined, undefined, undefined, undefined, decisions);
     const proposed: BankImportResult = { ...structuredClone(original.result), adapter: null, localRecognition: { model: 'nuextract3', parserVersion: '1' } };
     await saveHistory(saved, [prepareStatementAnalysisVersion(original, original, proposed)]);
-    const reopened: SavedWorkspace = await loadWorkspace(saved.filePath);
+    const reopened: ISavedWorkspace = await loadWorkspace(saved.filePath);
     assert.deepEqual(reopened.duplicateDecisions, decisions);
     assert.equal(reopened.statementAnalysisVersions[0].record.result.adapter, null);
 });

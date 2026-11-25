@@ -1,10 +1,12 @@
 import { test } from "vitest";
 import assert from "node:assert/strict";
 import { imageInputDimensions, assertImageDimensions, ImageInputError, IMAGE_MIME_TYPES } from "../../electron/extraction/image-input.js";
-import { extractionJobSchema, PDF_EXTRACTION_LIMITS } from "../../src/shared/pdf-extraction.js";
+import { extractionJobSchema, PDF_EXTRACTION_LIMITS, type ExtractionJob } from "../../src/shared/pdf-extraction.js";
+
+type ImageDimensions = ReturnType<typeof imageInputDimensions>;
 
 // Header-only fixtures exercise preflight, not successful raster decoding.
-function pngHeader(width: number, height: number): Uint8Array {
+function pngHeader(width: number, height: number): Buffer<ArrayBuffer> {
 	const bytes: Buffer<ArrayBuffer> = Buffer.alloc(33);
 	bytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
 	bytes.writeUInt32BE(13, 8);
@@ -75,12 +77,12 @@ test("JPEG dimensions also work when the frame is the first segment after SOI", 
 });
 
 test("format mismatch and unsupported signatures are rejected before decoding", (): void => {
-	fails("image-format", (): { width: number; height: number; } => imageInputDimensions(pngHeader(10, 20), "jpeg"));
-	fails("image-format", (): { width: number; height: number; } => imageInputDimensions(jpegHeader(10, 20), "png"));
-	fails("image-format", (): { width: number; height: number; } => imageInputDimensions(new TextEncoder().encode('<svg width="10" height="20"/>'), "png"));
+	fails("image-format", (): ImageDimensions => imageInputDimensions(pngHeader(10, 20), "jpeg"));
+	fails("image-format", (): ImageDimensions => imageInputDimensions(jpegHeader(10, 20), "png"));
+	fails("image-format", (): ImageDimensions => imageInputDimensions(new TextEncoder().encode('<svg width="10" height="20"/>'), "png"));
 	const damagedSignature: Uint8Array<ArrayBufferLike> = pngHeader(10, 20);
 	damagedSignature[0] = 0;
-	fails("image-format", (): { width: number; height: number; } => imageInputDimensions(damagedSignature, "png"));
+	fails("image-format", (): ImageDimensions => imageInputDimensions(damagedSignature, "png"));
 });
 
 test("truncated or malformed image metadata returns controlled errors", (): void => {
@@ -88,17 +90,17 @@ test("truncated or malformed image metadata returns controlled errors", (): void
 		["png", pngHeader(20, 30).subarray(0, 18)],
 		["jpeg", Uint8Array.from([255, 216, 255, 224, 255, 255])],
 	] as const) {
-		fails("image-invalid", (): { width: number; height: number; } => imageInputDimensions(bytes, format));
+		fails("image-invalid", (): ImageDimensions => imageInputDimensions(bytes, format));
 	}
-	fails("invalid-input", (): { width: number; height: number; } => imageInputDimensions(new Uint8Array(), "png"));
-	fails("invalid-input", (): { width: number; height: number; } => imageInputDimensions(new Uint8Array(PDF_EXTRACTION_LIMITS.bytes + 1), "png"));
+	fails("invalid-input", (): ImageDimensions => imageInputDimensions(new Uint8Array(), "png"));
+	fails("invalid-input", (): ImageDimensions => imageInputDimensions(new Uint8Array(PDF_EXTRACTION_LIMITS.bytes + 1), "png"));
 });
 
 test("oversized headers and invalid dimensions are refused before a raster allocation", (): void => {
 	for (const bytes of [pngHeader(4001, 4000), pngHeader(20001, 1), pngHeader(0xffffffff, 0xffffffff), pngHeader(0, 100)]) {
-		assert.throws((): { width: number; height: number; } => imageInputDimensions(bytes, "png"), ImageInputError);
+		assert.throws((): ImageDimensions => imageInputDimensions(bytes, "png"), ImageInputError);
 	}
-	fails("pixel-limit", (): { width: number; height: number; } => imageInputDimensions(jpegHeader(5000, 5000), "jpeg"));
+	fails("pixel-limit", (): ImageDimensions => imageInputDimensions(jpegHeader(5000, 5000), "jpeg"));
 	assertImageDimensions(4000, 4000);
 	for (const [width, height] of [
 		[0, 1],
@@ -114,7 +116,7 @@ test("oversized headers and invalid dimensions are refused before a raster alloc
 });
 
 test("the extraction job authorizes only the explicit PDF, PNG and JPEG format tags", (): void => {
-	const value: { jobId: string; sourceId: string; sha256: string; bytes: Uint8Array<ArrayBufferLike>; } = { jobId: "00000000-0000-4000-8000-000000000001", sourceId: "synthetic-image", sha256: "a".repeat(64), bytes: pngHeader(10, 20) };
+	const value: Omit<ExtractionJob, 'format'> = { jobId: "00000000-0000-4000-8000-000000000001", sourceId: "synthetic-image", sha256: "a".repeat(64), bytes: pngHeader(10, 20) };
 	for (const format of ["pdf", "png", "jpeg"]) {
 		assert.equal(extractionJobSchema.safeParse({ ...value, format }).success, true);
 	}

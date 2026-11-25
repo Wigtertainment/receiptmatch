@@ -1,13 +1,14 @@
 import { applyBankCorrections, type BankCorrection } from '../src/shared/bank-corrections.js';
 import { applyDocumentCorrections, documentCorrectionKey, type DocumentCorrection } from '../src/shared/document-corrections.js';
 import { advanceReviewRevision, type MatchApproval, type ReviewApprovalState } from '../src/shared/match-approvals.js';
-import type { OriginalAnalysisComparison } from '../src/shared/original-preview.js';
+import type { IOriginalAnalysisComparison } from '../src/shared/original-preview.js';
 import { excludedDuplicateIds, type DuplicateDecision } from '../src/shared/transaction-duplicates.js';
 import type { StoredDocumentImport } from '../src/shared/workspace-documents.js';
+import type { StoredBankImport } from '../src/shared/workspace-import.js';
 import type { AnalyzedSource } from './source-analysis.js';
 import { compareDocuments, compareStatements } from './source-comparison.js';
 
-interface AdoptionContext {
+interface IAdoptionContext {
     reviews: ReadonlyMap<string, string | null>;
     approvals: ReadonlyMap<string, ReviewApprovalState>;
     currentApprovals: ReadonlyMap<string, MatchApproval>;
@@ -17,10 +18,10 @@ interface AdoptionContext {
     ignoredTransactions: ReadonlySet<string>;
 }
 
-type StatementSource = Extract<AnalyzedSource, { kind: 'statement' }>;
-type DocumentSource = Extract<AnalyzedSource, { kind: 'document' }>;
-interface AdoptionPlan {
-    changes: OriginalAnalysisComparison['changes'];
+type StatementSource = Extract<AnalyzedSource, Record<'kind', 'statement'>>;
+type DocumentSource = Extract<AnalyzedSource, Record<'kind', 'document'>>;
+interface IAdoptionPlan {
+    changes: IOriginalAnalysisComparison['changes'];
     conflicts: string[];
     blockingConflict: string | undefined;
     preserved: number;
@@ -33,7 +34,7 @@ interface AdoptionPlan {
     ignoredTransactions: Set<string>;
 }
 
-function transferBankCorrection(state: AdoptionPlan, replacement: StatementSource, label: string, edit?: BankCorrection, unchanged?: string): void {
+function transferBankCorrection(state: IAdoptionPlan, replacement: StatementSource, label: string, edit?: BankCorrection, unchanged?: string): void {
     if (edit && unchanged) {
         const correction: BankCorrection = { ...edit, rowId: unchanged };
         try {
@@ -47,7 +48,7 @@ function transferBankCorrection(state: AdoptionPlan, replacement: StatementSourc
     }
 }
 
-function transferIgnoreDecision(state: AdoptionPlan, id: string, next: string | undefined, label: string, canTransfer: boolean): void {
+function transferIgnoreDecision(state: IAdoptionPlan, id: string, next: string | undefined, label: string, canTransfer: boolean): void {
     if (!state.ignoredTransactions.delete(id)) {
         return;
     }
@@ -58,7 +59,7 @@ function transferIgnoreDecision(state: AdoptionPlan, id: string, next: string | 
     }
 }
 
-function transferBankReview(state: AdoptionPlan, id: string, next: string | undefined, label: string, canTransfer: boolean, excluded: boolean, changed: boolean): boolean {
+function transferBankReview(state: IAdoptionPlan, id: string, next: string | undefined, label: string, canTransfer: boolean, excluded: boolean, changed: boolean): boolean {
     const review: string | null | undefined = state.reviews.get(id);
     if (review === undefined) {
         return false;
@@ -79,7 +80,7 @@ function transferBankReview(state: AdoptionPlan, id: string, next: string | unde
     return true;
 }
 
-function transferBankApproval(state: AdoptionPlan, approval: MatchApproval | undefined, edit: BankCorrection | undefined, unchanged: string | undefined): void {
+function transferBankApproval(state: IAdoptionPlan, approval: MatchApproval | undefined, edit: BankCorrection | undefined, unchanged: string | undefined): void {
     if (!approval) {
         return;
     }
@@ -92,14 +93,17 @@ function transferBankApproval(state: AdoptionPlan, approval: MatchApproval | und
     }
 }
 
-function prepareStatementAdoption(original: StatementSource, replacement: StatementSource, context: AdoptionContext, state: AdoptionPlan): void {
+function prepareStatementAdoption(original: StatementSource, replacement: StatementSource, context: IAdoptionContext, state: IAdoptionPlan): void {
     const comparison: ReturnType<typeof compareStatements> = compareStatements(original.record, replacement.record);
     if (!comparison.compatible) {
         throw new Error('The selected statement belongs to a different bank or account.');
     }
     state.changes = comparison.changes;
     state.conflicts.push(...comparison.conflicts);
-    const oldRows: string[] = [...original.record.transactions.map((row: { rowId: string; transactionId: string; }): string => row.transactionId), ...original.record.drafts.map((row: { rowId: string; draftId: string; }): string => row.draftId)];
+    const oldRows: string[] = [
+        ...original.record.transactions.map((row: StoredBankImport['transactions'][number]): string => row.transactionId),
+        ...original.record.drafts.map((row: StoredBankImport['drafts'][number]): string => row.draftId)
+    ];
     const oldIds: Set<string> = new Set(oldRows);
     state.blockingConflict = [...context.duplicates.values()].some((decision: DuplicateDecision): boolean | "" | null => decision.primaryId && oldIds.has(decision.primaryId)) ?
         'This statement contains a leading booking. Undo its duplicate exclusion before replacing the statement so the other booking can be reviewed.' : undefined;
@@ -126,7 +130,7 @@ function prepareStatementAdoption(original: StatementSource, replacement: Statem
     }
 }
 
-function transferDocumentCorrections(original: DocumentSource, replacement: DocumentSource, corrections: ReadonlyMap<string, DocumentCorrection>, comparison: ReturnType<typeof compareDocuments>, state: AdoptionPlan): void {
+function transferDocumentCorrections(original: DocumentSource, replacement: DocumentSource, corrections: ReadonlyMap<string, DocumentCorrection>, comparison: ReturnType<typeof compareDocuments>, state: IAdoptionPlan): void {
     for (const edit of corrections.values()) {
         if (edit.documentId !== original.record.id) {
             continue;
@@ -149,7 +153,7 @@ function transferDocumentCorrections(original: DocumentSource, replacement: Docu
     }
 }
 
-function prepareDocumentAdoption(original: DocumentSource, replacement: DocumentSource, context: AdoptionContext, state: AdoptionPlan): void {
+function prepareDocumentAdoption(original: DocumentSource, replacement: DocumentSource, context: IAdoptionContext, state: IAdoptionPlan): void {
     const comparison: ReturnType<typeof compareDocuments> = compareDocuments(original.record, replacement.record);
     state.changes = comparison.changes;
     state.conflicts.push(...comparison.conflicts);
@@ -174,8 +178,8 @@ function prepareDocumentAdoption(original: DocumentSource, replacement: Document
     transferDocumentCorrections(original, replacement, context.documentCorrections, comparison, state);
 }
 
-export function prepareAdoption(original: AnalyzedSource, replacement: AnalyzedSource, context: AdoptionContext): AdoptionPlan {
-    const state: AdoptionPlan = {
+export function prepareAdoption(original: AnalyzedSource, replacement: AnalyzedSource, context: IAdoptionContext): IAdoptionPlan {
+    const state: IAdoptionPlan = {
         changes: [], conflicts: [], blockingConflict: undefined, preserved: 0, revoked: 0, archive: new Map(),
         reviews: new Map(context.reviews), approvals: new Map(context.approvals), bankCorrections: new Map(context.bankCorrections),
         documentCorrections: new Map(context.documentCorrections), ignoredTransactions: new Set(context.ignoredTransactions),
@@ -194,7 +198,7 @@ export function prepareAdoption(original: AnalyzedSource, replacement: AnalyzedS
     return { ...state, conflicts: uniqueConflicts };
 }
 
-export function supportingDocumentSource(imports: StoredDocumentImport[], id: string): Extract<AnalyzedSource, { kind: 'document' }> | null {
+export function supportingDocumentSource(imports: StoredDocumentImport[], id: string): DocumentSource | null {
     for (const run of imports) {
         for (const file of run.files) {
         if (file.status === 'imported' && file.record.id === id) {

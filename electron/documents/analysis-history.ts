@@ -4,9 +4,16 @@ import { NUEXTRACT_RECEIPT_VERSION } from '../../src/shared/receipt-ai.js';
 import { hasManualDocumentFields, supportingDocumentSchema } from '../../src/shared/supporting-document.js';
 import type { DocumentFileResult, StoredDocumentImport, StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
 
-export const receiptAnalysisVersionSchema: z.ZodObject<{
-  documentId: z.ZodUUID; acceptedAt: z.ZodISODateTime; analysis: typeof supportingDocumentSchema;
-}, z.core.$strict> = z.strictObject({ documentId: z.uuid(), acceptedAt: z.iso.datetime(), analysis: supportingDocumentSchema }).refine((version: { analysis: typeof supportingDocumentSchema._output }): boolean => !hasManualDocumentFields(version.analysis), 'Receipt analysis versions cannot contain manual correction markers.');
+interface IReceiptAnalysisVersionShape {
+  documentId: z.ZodUUID;
+  acceptedAt: z.ZodISODateTime;
+  analysis: typeof supportingDocumentSchema;
+}
+
+export const receiptAnalysisVersionSchema: z.ZodObject<z.core.util.Flatten<IReceiptAnalysisVersionShape>, z.core.$strict> = z.strictObject({
+  documentId: z.uuid(), acceptedAt: z.iso.datetime(), analysis: supportingDocumentSchema
+}).refine((version: Pick<ReceiptAnalysisVersion, 'analysis'>): boolean => !hasManualDocumentFields(version.analysis),
+  'Receipt analysis versions cannot contain manual correction markers.');
 export type ReceiptAnalysisVersion = z.infer<typeof receiptAnalysisVersionSchema>;
 
 const modelVersions: ReadonlySet<string> = new Set([
@@ -15,7 +22,9 @@ const modelVersions: ReadonlySet<string> = new Set([
   NUEXTRACT_RECEIPT_VERSION
 ]);
 
-function collectOriginalAnalyses(imports: StoredDocumentImport[]): { originals: Map<string, StoredSupportingDocument>; runIds: Set<string> } {
+interface IOriginalAnalyses { originals: Map<string, StoredSupportingDocument>; runIds: Set<string> }
+
+function collectOriginalAnalyses(imports: StoredDocumentImport[]): IOriginalAnalyses {
   const originals: Map<string, StoredSupportingDocument> = new Map();
   const runIds: Set<string> = new Set();
   for (const report of imports) {

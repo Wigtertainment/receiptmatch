@@ -2,16 +2,16 @@ import type { MatchApprovalSelection } from "./match-approvals.js";
 import { z } from 'zod';
 import type { LocalOcrRequest, LocalOcrStatus } from './local-ocr-settings.js';
 import type { ExtractionProgress } from './pdf-extraction.js';
-import type { BankImportSummary, StoredBankImport } from './workspace-import.js';
+import type { IBankImportSummary, StoredBankImport } from './workspace-import.js';
 import type { BankImportResult, ImportIssue } from './bank-import.js';
-import type { DocumentImportProgress, StoredDocumentImport } from './workspace-documents.js';
+import type { IDocumentImportProgress, StoredDocumentImport } from './workspace-documents.js';
 import type { SupportingDocument } from './supporting-document.js';
-import { matchReviewSchema, type MatchDetails, type MatchReviewCounts, type MatchSummary } from './workspace-matching.js';
+import { matchReviewSchema, type IMatchDetails, type MatchReviewCounts, type IMatchSummary } from './workspace-matching.js';
 import { bankCorrectionChangesSchema, type BankCorrection } from './bank-corrections.js';
 import { documentFieldDispositionSchema, documentFieldReviewTarget, type DocumentFieldReview } from './document-field-reviews.js';
 import { documentCorrectionTarget, documentCorrectionValueSchema, type DocumentCorrection } from './document-corrections.js';
 import { matchApprovalSelectionSchema } from './match-approvals.js';
-import type { OriginalAdoptionRequest, OriginalAdoptionResult, OriginalAnalysisResult, OriginalPreviewRequest, OriginalPreviewResult, OriginalRelinkResult } from './original-preview.js';
+import type { OriginalAdoptionRequest, OriginalAdoptionResult, OriginalAnalysisResult, OriginalPreviewRequest, IOriginalPreviewResult, OriginalRelinkResult } from './original-preview.js';
 import { exportFilenamePatternLimit } from './export-filename.js';
 import type { DocumentExportResponse } from './document-export.js';
 import type { DuplicateDecision } from './transaction-duplicates.js';
@@ -19,11 +19,60 @@ import type { ReceiptAiAcceptRequest, ReceiptAiDiscardRequest, ReceiptAiPreviewR
 import type { StatementAiAcceptRequest, StatementAiDiscardRequest, StatementAiPreviewResult, StatementAiRequest } from './statement-ai.js';
 
 export const workspaceName: z.ZodString = z.string().max(120);
-type StatementAiCommandSchema<T extends string> = z.ZodObject<{ type: z.ZodLiteral<T>; token: z.ZodUUID }, z.core.$strict>;
-type RemoveStatementCommandSchema = z.ZodObject<{ type: z.ZodLiteral<"remove-statement">; importId: z.ZodUUID; revision: z.ZodNumber; }, z.core.$strict>;
-type SetDocumentFieldConfirmedSchema = z.ZodObject<{ type: z.ZodLiteral<"set-document-field-confirmed">; revision: z.ZodNumber; documentId: z.ZodUUID; sectionId: z.ZodString; fieldId: z.ZodString; confirmed: z.ZodBoolean }, z.core.$strict>;
-type SetDocumentFieldDispositionSchema = z.ZodObject<{ type: z.ZodLiteral<"set-document-field-disposition">; revision: z.ZodNumber; documentId: z.ZodUUID; sectionId: z.ZodString; fieldId: z.ZodString; disposition: z.ZodNullable<typeof documentFieldDispositionSchema> }, z.core.$strict>;
-export const commandSchema: z.ZodDiscriminatedUnion<[SetDocumentFieldDispositionSchema, SetDocumentFieldConfirmedSchema, StatementAiCommandSchema<"try-statement-ai">, StatementAiCommandSchema<"confirm-statement-ai">, StatementAiCommandSchema<"discard-statement-ai">, RemoveStatementCommandSchema, z.ZodObject<{ type: z.ZodLiteral<"get-state">; }, z.core.$strict>, z.ZodObject<{ type: z.ZodLiteral<"new">; }, z.core.$strict>, z.ZodObject<{ type: z.ZodLiteral<"open">; }, z.core.$strict>, z.ZodObject<{ type: z.ZodLiteral<"save">; }, z.core.$strict>, z.ZodObject<{ type: z.ZodLiteral<"import-statement">; }, z.core.$strict>, z.ZodObject<{ type: z.ZodLiteral<"import-documents">; }, z.core.$strict>, z.ZodObject<{ type: z.ZodLiteral<"cancel-import">; }, z.core.$strict>, z.ZodObject<{ type: z.ZodLiteral<"rename">; name: z.ZodString; }, z.core.$strict>, z.ZodObject<{ type: z.ZodLiteral<"set-transaction-ignored">; revision: z.ZodNumber; transactionId: z.ZodUUID; ignored: z.ZodBoolean; remember: z.ZodOptional<z.ZodLiteral<true>>; }, z.core.$strict>, z.ZodObject<{ type: z.ZodLiteral<"review-match">; revision: z.ZodNumber; transactionId: z.ZodUUID; review: z.ZodDiscriminatedUnion<[z.ZodObject<{ status: z.ZodLiteral<"open">; }, z.core.$strict>, z.ZodObject<{ status: z.ZodLiteral<"assigned">; documentId: z.ZodUUID; }, z.core.$strict>, z.ZodObject<{ status: z.ZodLiteral<"completed-without-document">; }, z.core.$strict>], "status">; }, z.core.$strict>, z.ZodObject<{ type: z.ZodLiteral<"set-duplicate-decision">; revision: z.ZodNumber; transactionId: z.ZodUUID; otherTransactionId: z.ZodUUID; decision: z.ZodEnum<{ separate: "separate"; "keep-first": "keep-first"; "keep-second": "keep-second"; clear: "clear"; }>; }, z.core.$strict>, z.ZodObject<{ type: z.ZodLiteral<"correct-bank-row">; revision: z.ZodNumber; rowId: z.ZodUUID; changes: z.ZodObject<{ bookingDate: z.ZodOptional<z.ZodISODate>; accountAmount: z.ZodOptional<z.ZodObject<{ coefficient: z.ZodString; currency: z.ZodString; scale: z.ZodNumber; }, z.core.$strict>>; }, z.core.$strict>; }, z.core.$strict>, z.ZodObject<{ change: typeof documentCorrectionValueSchema; documentId: z.ZodUUID; sectionId: z.ZodString; fieldId: z.ZodNullable<z.ZodString>; type: z.ZodLiteral<"correct-document-field">; revision: z.ZodNumber; }, z.core.$strict>, z.ZodObject<{ type: z.ZodLiteral<"approve-matches">; loadRevision: z.ZodNumber; selections: z.ZodArray<z.ZodObject<{ transactionId: z.ZodUUID; documentId: z.ZodUUID; transactionRevision: z.ZodNumber; documentRevision: z.ZodNumber; associationRevision: z.ZodNumber; }, z.core.$strict>>; }, z.core.$strict>], "type"> = z.discriminatedUnion('type', [
+interface ICommandShape<K extends string> { type: z.ZodLiteral<K> }
+interface IRevisionedCommandShape<K extends string> extends ICommandShape<K> { revision: z.ZodNumber }
+interface IStatementAiCommandShape<K extends string> extends ICommandShape<K> { token: z.ZodUUID }
+interface IRemoveStatementCommandShape extends IRevisionedCommandShape<'remove-statement'> { importId: z.ZodUUID }
+type DocumentFieldReviewShape = typeof documentFieldReviewTarget;
+interface ISetDocumentFieldConfirmedShape extends IRevisionedCommandShape<'set-document-field-confirmed'>, DocumentFieldReviewShape { confirmed: z.ZodBoolean }
+interface ISetDocumentFieldDispositionShape extends IRevisionedCommandShape<'set-document-field-disposition'>, DocumentFieldReviewShape {
+  disposition: z.ZodNullable<typeof documentFieldDispositionSchema>;
+}
+interface IRenameCommandShape extends ICommandShape<'rename'> { name: z.ZodString }
+interface ISetTransactionIgnoredCommandShape extends IRevisionedCommandShape<'set-transaction-ignored'> {
+  transactionId: z.ZodUUID;
+  ignored: z.ZodBoolean;
+  remember: z.ZodOptional<z.ZodLiteral<true>>;
+}
+interface IReviewMatchCommandShape extends IRevisionedCommandShape<'review-match'> { transactionId: z.ZodUUID; review: typeof matchReviewSchema }
+interface ISetDuplicateDecisionCommandShape extends IRevisionedCommandShape<'set-duplicate-decision'> {
+  transactionId: z.ZodUUID;
+  otherTransactionId: z.ZodUUID;
+  decision: z.ZodEnum<z.core.util.ToEnum<'separate' | 'keep-first' | 'keep-second' | 'clear'>>;
+}
+interface ICorrectBankRowCommandShape extends IRevisionedCommandShape<'correct-bank-row'> { rowId: z.ZodUUID; changes: typeof bankCorrectionChangesSchema }
+type DocumentCorrectionShape = typeof documentCorrectionTarget;
+interface ICorrectDocumentFieldCommandShape extends IRevisionedCommandShape<'correct-document-field'>, DocumentCorrectionShape {
+  change: typeof documentCorrectionValueSchema;
+}
+interface IApproveMatchesCommandShape extends ICommandShape<'approve-matches'> { loadRevision: z.ZodNumber; selections: z.ZodArray<typeof matchApprovalSelectionSchema> }
+
+type CommandSchema<Shape extends Record<keyof Shape, z.core.$ZodType>> = z.ZodObject<z.core.util.Flatten<Shape>, z.core.$strict>;
+type SimpleCommandSchema<K extends string> = CommandSchema<ICommandShape<K>>;
+type WorkspaceCommandSchemas = [
+  CommandSchema<ISetDocumentFieldDispositionShape>,
+  CommandSchema<ISetDocumentFieldConfirmedShape>,
+  CommandSchema<IStatementAiCommandShape<'try-statement-ai'>>,
+  CommandSchema<IStatementAiCommandShape<'confirm-statement-ai'>>,
+  CommandSchema<IStatementAiCommandShape<'discard-statement-ai'>>,
+  CommandSchema<IRemoveStatementCommandShape>,
+  SimpleCommandSchema<'get-state'>,
+  SimpleCommandSchema<'new'>,
+  SimpleCommandSchema<'open'>,
+  SimpleCommandSchema<'save'>,
+  SimpleCommandSchema<'import-statement'>,
+  SimpleCommandSchema<'import-documents'>,
+  SimpleCommandSchema<'cancel-import'>,
+  CommandSchema<IRenameCommandShape>,
+  CommandSchema<ISetTransactionIgnoredCommandShape>,
+  CommandSchema<IReviewMatchCommandShape>,
+  CommandSchema<ISetDuplicateDecisionCommandShape>,
+  CommandSchema<ICorrectBankRowCommandShape>,
+  CommandSchema<ICorrectDocumentFieldCommandShape>,
+  CommandSchema<IApproveMatchesCommandShape>,
+];
+
+export const commandSchema: z.ZodDiscriminatedUnion<WorkspaceCommandSchemas, 'type'> = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('set-document-field-disposition'), revision: z.number().int().nonnegative(), ...documentFieldReviewTarget, disposition: documentFieldDispositionSchema.nullable() }),
   z.strictObject({ type: z.literal('set-document-field-confirmed'), revision: z.number().int().nonnegative(), ...documentFieldReviewTarget, confirmed: z.boolean() }),
   z.strictObject({ type: z.literal('try-statement-ai'), token: z.uuid() }),
@@ -48,52 +97,67 @@ export const commandSchema: z.ZodDiscriminatedUnion<[SetDocumentFieldDisposition
     .refine((rows: MatchApprovalSelection[]): boolean => new Set(rows.map((row: MatchApprovalSelection): string => row.transactionId.toLowerCase())).size === rows.length) })
 ]);
 export type WorkspaceCommand = z.infer<typeof commandSchema>;
-export const exportSettingsRequestSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{ type: z.ZodLiteral<"read">; }, z.core.$strict>, z.ZodObject<{ type: z.ZodLiteral<"save">; pattern: z.ZodString; }, z.core.$strict>], "type"> = z.discriminatedUnion('type', [
+interface IExportSettingsSaveShape extends ICommandShape<'save'> { pattern: z.ZodString }
+type ExportSettingsRequestSchemas = [SimpleCommandSchema<'read'>, CommandSchema<IExportSettingsSaveShape>];
+export const exportSettingsRequestSchema: z.ZodDiscriminatedUnion<ExportSettingsRequestSchemas, 'type'> = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('read') }),
   z.strictObject({ type: z.literal('save'), pattern: z.string().max(exportFilenamePatternLimit) }),
 ]);
 export type ExportSettingsRequest = z.infer<typeof exportSettingsRequestSchema>;
-export const matchRequestSchema: z.ZodObject<{ revision: z.ZodNumber; transactionId: z.ZodOptional<z.ZodUUID>; }, z.core.$strict> = z.strictObject({ revision: z.number().int().nonnegative(), transactionId: z.uuid().optional() });
-export const documentSnapshotRequestSchema: z.ZodObject<{ loadRevision: z.ZodNumber; revision: z.ZodNumber; }, z.core.$strict> = z.strictObject({ loadRevision: z.number().int().nonnegative(), revision: z.number().int().nonnegative() });
+interface IMatchRequestShape { revision: z.ZodNumber; transactionId: z.ZodOptional<z.ZodUUID> }
+interface IDocumentSnapshotRequestShape { loadRevision: z.ZodNumber; revision: z.ZodNumber }
+export const matchRequestSchema: z.ZodObject<z.core.util.Flatten<IMatchRequestShape>, z.core.$strict> =
+  z.strictObject({ revision: z.number().int().nonnegative(), transactionId: z.uuid().optional() });
+export const documentSnapshotRequestSchema: z.ZodObject<z.core.util.Flatten<IDocumentSnapshotRequestShape>, z.core.$strict> =
+  z.strictObject({ loadRevision: z.number().int().nonnegative(), revision: z.number().int().nonnegative() });
 export type DocumentSnapshotRequest = z.infer<typeof documentSnapshotRequestSchema>;
 export type OriginalDocumentFields = Pick<SupportingDocument, 'sections' | 'issues'>;
-export interface DocumentSnapshot extends DocumentSnapshotRequest {
+export interface IDocumentSnapshot extends DocumentSnapshotRequest {
   reviewBases?: Record<string, OriginalDocumentFields>;
   reports: StoredDocumentImport[];
   originals: Record<string, OriginalDocumentFields>;
 }
-export const documentExportRequestSchema: z.ZodObject<{ loadRevision: z.ZodNumber; includeCsv: z.ZodDefault<z.ZodBoolean>; }, z.core.$strict> = z.strictObject({ loadRevision: z.number().int().nonnegative(), includeCsv: z.boolean().default(false) });
-export interface DocumentImportSummary { id: string; folderPath: string; status: 'finished' | 'cancelled'; imported: number; skipped: number; failed: number; unsupported: number; directoryIssues: number; }
-export interface WorkspaceView {
+interface IDocumentExportRequestShape { loadRevision: z.ZodNumber; includeCsv: z.ZodDefault<z.ZodBoolean> }
+export const documentExportRequestSchema: z.ZodObject<z.core.util.Flatten<IDocumentExportRequestShape>, z.core.$strict> =
+  z.strictObject({ loadRevision: z.number().int().nonnegative(), includeCsv: z.boolean().default(false) });
+export interface IDocumentImportSummary { id: string; folderPath: string; status: 'finished' | 'cancelled'; imported: number; skipped: number; failed: number; unsupported: number; directoryIssues: number; }
+export interface IWorkspaceView {
   id: string; loadRevision: number; matchRevision: number; name: string; filePath: string | null; dirty: boolean; savedAt: string | null;
-  imports: BankImportSummary[]; documentImports: DocumentImportSummary[]; matchReviewCounts: MatchReviewCounts; bankCorrections: BankCorrection[];
+  imports: IBankImportSummary[]; documentImports: IDocumentImportSummary[]; matchReviewCounts: MatchReviewCounts; bankCorrections: BankCorrection[];
   documentFieldReviews?: DocumentFieldReview[]; documentCorrections: DocumentCorrection[]; approvedDocumentCount: number;
   duplicateDecisions: DuplicateDecision[];
   supersededStatements: string[];
   supersededDocuments: string[];
 }
-export interface ImportOutcome { status: 'imported' | 'skipped' | 'cancelled' | 'failed' | 'unsupported'; importId: string | null; issues: ImportIssue[]; }
-export type StatementFallbackState = { stage: 'offer'; token: string; fileName: string } | { stage: 'review'; token: string; fileName: string; result: BankImportResult };
-export interface WorkspaceState {
-  workspace: WorkspaceView | null;
+export interface IImportOutcome { status: 'imported' | 'skipped' | 'cancelled' | 'failed' | 'unsupported'; importId: string | null; issues: ImportIssue[]; }
+interface IStatementFallbackOffer { stage: 'offer'; token: string; fileName: string }
+interface IStatementFallbackReview { stage: 'review'; token: string; fileName: string; result: BankImportResult }
+export type StatementFallbackState = IStatementFallbackOffer | IStatementFallbackReview;
+
+interface IWorkspaceApprovalIssue { transactionId: string; reason: 'selection-changed' | 'not-assigned' | 'document-unavailable' }
+interface IWorkspaceImportProgress<T> { cancelling: boolean; progress: T | null; localAi?: true }
+interface IWorkspaceDocumentOutcome { status: 'finished' | 'cancelled' | 'failed'; importId: string | null; issues: ImportIssue[] }
+
+export interface IWorkspaceState {
+  workspace: IWorkspaceView | null;
   busy: boolean;
   error: string | null;
-  approvalIssue?: { transactionId: string; reason: 'selection-changed' | 'not-assigned' | 'document-unavailable' };
-  statementImport: { cancelling: boolean; progress: ExtractionProgress | null; localAi?: true } | null;
+  approvalIssue?: IWorkspaceApprovalIssue;
+  statementImport: IWorkspaceImportProgress<ExtractionProgress> | null;
   statementFallback?: StatementFallbackState;
-  importOutcome: ImportOutcome | null;
-  documentImport: { cancelling: boolean; progress: DocumentImportProgress | null; localAi?: true } | null;
-  documentOutcome: { status: 'finished' | 'cancelled' | 'failed'; importId: string | null; issues: ImportIssue[] } | null;
+  importOutcome: IImportOutcome | null;
+  documentImport: IWorkspaceImportProgress<IDocumentImportProgress> | null;
+  documentOutcome: IWorkspaceDocumentOutcome | null;
 }
-export interface WorkspaceBridge {
+export interface IWorkspaceBridge {
   appVersion(): Promise<string>;
-  command(value: WorkspaceCommand): Promise<WorkspaceState>;
+  command(value: WorkspaceCommand): Promise<IWorkspaceState>;
   bankImports(): Promise<StoredBankImport[]>;
   documentImports(): Promise<StoredDocumentImport[]>;
-  documentSnapshot(request: DocumentSnapshotRequest): Promise<DocumentSnapshot | null>;
-  matchSummaries(revision: number): Promise<MatchSummary[] | null>;
-  matchDetails(revision: number, transactionId: string): Promise<MatchDetails | null>;
-  openOriginal(request: OriginalPreviewRequest): Promise<OriginalPreviewResult>;
+  documentSnapshot(request: DocumentSnapshotRequest): Promise<IDocumentSnapshot | null>;
+  matchSummaries(revision: number): Promise<IMatchSummary[] | null>;
+  matchDetails(revision: number, transactionId: string): Promise<IMatchDetails | null>;
+  openOriginal(request: OriginalPreviewRequest): Promise<IOriginalPreviewResult>;
   relinkOriginal(request: OriginalPreviewRequest): Promise<OriginalRelinkResult>;
   analyzeOriginal(request: OriginalPreviewRequest): Promise<OriginalAnalysisResult>;
   reanalyzeReceipt(request: ReceiptAiRequest): Promise<ReceiptAiPreviewResult>;
@@ -107,5 +171,5 @@ export interface WorkspaceBridge {
   localOcr(request: LocalOcrRequest): Promise<LocalOcrStatus>;
   exportDocuments(loadRevision: number): Promise<DocumentExportResponse>;
   exportReconciliation(loadRevision: number): Promise<DocumentExportResponse>;
-  subscribe(listener: (state: WorkspaceState) => void): () => void;
+  subscribe(listener: (state: IWorkspaceState) => void): () => void;
 }

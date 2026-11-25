@@ -5,15 +5,15 @@ import { bankImportResultSchema, sourceProvenance, type BankImportInput, type Ba
 import { extractionProgressSchema, extractionResultSchema, PDF_EXTRACTION_VERSION, type ExtractionProgress, type ExtractionResult } from '../../src/shared/pdf-extraction.js';
 import type { StatementAiResult } from '../../src/shared/statement-ai.js';
 import { storedBankImportSchema, type StoredBankImport } from '../../src/shared/workspace-import.js';
-import type { ExtractionOptions } from '../extraction/host.js';
+import type { IExtractionOptions } from '../extraction/host.js';
 import type { StatementProposalExtraction } from './nuextract-statement.js';
 import { assertSourceNotCancelled, readSourceSnapshot, SourceReadError } from './source.js';
 
-export interface StatementAiSource { filePath: string; original: StoredBankImport }
-export interface StatementAiService { analyze(source: StatementAiSource, options?: ExtractionOptions): Promise<StatementAiResult> }
-export interface StatementReanalysisDependencies {
-    extract(bytes: Uint8Array, sourceId: string, options: ExtractionOptions): Promise<ExtractionResult>;
-    propose(bytes: Uint8Array, input: BankImportInput, options: ExtractionOptions): Promise<StatementProposalExtraction>;
+export interface IStatementAiSource { filePath: string; original: StoredBankImport }
+export interface IStatementAiService { analyze(source: IStatementAiSource, options?: IExtractionOptions): Promise<StatementAiResult> }
+export interface IStatementReanalysisDependencies {
+    extract(bytes: Uint8Array, sourceId: string, options: IExtractionOptions): Promise<ExtractionResult>;
+    propose(bytes: Uint8Array, input: BankImportInput, options: IExtractionOptions): Promise<StatementProposalExtraction>;
 }
 
 async function originalBytes(filePath: string, sha256: string, signal?: AbortSignal): Promise<Uint8Array> {
@@ -47,12 +47,12 @@ function checkedProposal(attempt: StatementProposalExtraction, input: BankImport
     return { status: 'ready', model: 'nuextract3', result };
 }
 
-export class StatementReanalysisService implements StatementAiService {
-    constructor(private readonly dependencies: StatementReanalysisDependencies) {}
+export class StatementReanalysisService implements IStatementAiService {
+    constructor(private readonly dependencies: IStatementReanalysisDependencies) {}
 
-    async analyze(source: StatementAiSource, options: ExtractionOptions = {}): Promise<StatementAiResult> {
+    async analyze(source: IStatementAiSource, options: IExtractionOptions = {}): Promise<StatementAiResult> {
         let active: boolean = true, invalidProgress: boolean = false;
-        const progress: ExtractionOptions = { ...options, onProgress: (value: ExtractionProgress): void => {
+        const progress: IExtractionOptions = { ...options, onProgress: (value: ExtractionProgress): void => {
             if (!active || options.signal?.aborted) {
                 return;
             }

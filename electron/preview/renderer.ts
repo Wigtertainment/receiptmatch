@@ -2,14 +2,12 @@ import { Component, computed, signal, type Signal, type WritableSignal } from '@
 import { bootstrapApplication } from '@angular/platform-browser';
 import { WigButtonComponent, WigDropdownComponent } from '@wigtertainment-ltd/comp-lib';
 import { getDocument, GlobalWorkerOptions, type PageViewport, type PDFDocumentProxy, type PDFPageProxy, type RenderTask } from 'pdfjs-dist';
-import type { OriginalPreviewData } from '../../src/shared/original-preview.js';
+import type { IOriginalPreviewData } from '../../src/shared/original-preview.js';
 import { PDF_EXTRACTION_LIMITS } from '../../src/shared/pdf-extraction.js';
 
-declare global {
-    interface Window {
-        receiptmatchOriginal: { read(): Promise<OriginalPreviewData> };
-    }
-}
+interface IOriginalPreviewBridge { read(): Promise<IOriginalPreviewData> }
+type OriginalPreviewWindow = typeof window & Record<'receiptmatchOriginal', IOriginalPreviewBridge>;
+interface IZoomOption { value: string; label: string }
 
 const name: HTMLHeadingElement = document.querySelector<HTMLHeadingElement>('#document-name')!;
 const loading: HTMLParagraphElement = document.querySelector<HTMLParagraphElement>('#loading')!;
@@ -44,10 +42,10 @@ class PreviewControls {
     readonly pageCount: WritableSignal<number> = pageCount;
     readonly ready: WritableSignal<boolean> = ready;
     readonly zoom: WritableSignal<string> = zoom;
-    readonly zoomOptions: Signal<{ value: string; label: string; }[]> = computed((): { value: string; label: string; }[] => {
+    readonly zoomOptions: Signal<IZoomOption[]> = computed((): IZoomOption[] => {
         const current: string = zoom();
         const percentages: number[] = current === 'fit' ? zoomPresets : [...new Set([...zoomPresets, Math.round(Number(current) * 100)])].sort((a: number, b: number): number => a - b);
-        return [{ value: 'fit', label: 'Fit to window' }, ...percentages.map((percent: number): { value: string; label: string; } => ({ value: String(percent / 100), label: `${percent}%` }))];
+        return [{ value: 'fit', label: 'Fit to window' }, ...percentages.map((percent: number): IZoomOption => ({ value: String(percent / 100), label: `${percent}%` }))];
     });
 
     movePage(offset: number): void {
@@ -182,7 +180,7 @@ function resizeImage(): void {
 }
 
 async function openDocument(): Promise<void> {
-    const source: OriginalPreviewData = await window.receiptmatchOriginal.read();
+    const source: IOriginalPreviewData = await (window as OriginalPreviewWindow).receiptmatchOriginal.read();
     name.textContent = source.name;
     document.title = `${source.name} — ReceiptMatch`;
     if (source.format === 'pdf') {
