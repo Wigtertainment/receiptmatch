@@ -1,13 +1,12 @@
 import { Component, computed, DestroyRef, inject, signal, viewChild, type Signal, type WritableSignal } from '@angular/core';
-import { bootstrapApplication } from '@angular/platform-browser';
 import { WigAlertComponent, WigButtonComponent, WigInputComponent } from '@wigtertainment-ltd/comp-lib';
-import { DocumentImports } from './app/document-imports.js';
-import { ExportSettings } from './app/export-settings.js';
-import { LocalOcrSettings } from './app/local-ocr-settings.js';
-import { InputLength } from './app/input-length.js';
-import { MatchSuggestions } from './app/match-suggestions.js';
-import type { WorkspaceBridge, WorkspaceCommand, WorkspaceState, WorkspaceView } from './shared/protocol.js';
-import { StatementImports } from './statement-imports.js';
+import { DocumentImports } from '../documents/document-imports.component.js';
+import { ExportSettings } from '../settings/export-settings.component.js';
+import { LocalOcrSettings } from '../settings/local-ocr-settings.component.js';
+import { InputLength } from '../shared/input-length.directive.js';
+import { MatchSuggestions } from '../matching/match-suggestions.component.js';
+import type { WorkspaceBridge, WorkspaceCommand, WorkspaceState, WorkspaceView } from '../../shared/protocol.js';
+import { StatementImports } from '../statements/statement-imports.component.js';
 
 declare global {
   interface Window { receiptmatch: WorkspaceBridge; }
@@ -18,9 +17,9 @@ type WorkspaceSection = 'sources' | 'matches' | 'export-settings' | 'settings';
 @Component({
   selector: 'app-root', standalone: true,
   imports: [StatementImports, DocumentImports, MatchSuggestions, ExportSettings, LocalOcrSettings, WigAlertComponent, WigButtonComponent, WigInputComponent, InputLength],
-  templateUrl: './app/workspace-shell.html'
+  templateUrl: './workspace-shell.component.html'
 })
-class ReceiptMatchApp {
+export class WorkspaceShell {
   readonly version: WritableSignal<string | null> = signal<string | null>(null);
   readonly state: WritableSignal<WorkspaceState> = signal<WorkspaceState>({ workspace: null, busy: true, error: null, statementImport: null, importOutcome: null, documentImport: null, documentOutcome: null });
   readonly commandError: WritableSignal<string | null> = signal<string | null>(null);
@@ -112,5 +111,3 @@ class ReceiptMatchApp {
     void this.run({ type: 'rename', name });
   }
 }
-
-void bootstrapApplication(ReceiptMatchApp);

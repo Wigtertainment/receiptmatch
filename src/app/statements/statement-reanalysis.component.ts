@@ -1,62 +1,21 @@
 import { Component, DestroyRef, ElementRef, Injector, afterNextRender, computed, effect, inject, input, output, signal, untracked, viewChild,
     type InputSignal, type OutputEmitterRef, type Signal, type WritableSignal } from '@angular/core';
 import { WigButtonComponent, WigIconButtonComponent } from '@wigtertainment-ltd/comp-lib';
-import type { BankImportResult } from '../shared/bank-import.js';
-import { formatCalendarDate, formatMoney } from '../shared/display.js';
-import type { LocalOcrStatus } from '../shared/local-ocr-settings.js';
-import type { OriginalAdoptionResult } from '../shared/original-preview.js';
-import type { WorkspaceState, WorkspaceView } from '../shared/protocol.js';
-import type { StatementAiChange, StatementAiPreviewResult, StatementAiRequest, StatementAiRow } from '../shared/statement-ai.js';
-import type { StoredBankImport } from '../shared/workspace-import.js';
-import { LocalAiIcon } from './local-ai-icon.js';
-import { OriginalPreviewButton } from './original-preview-button.js';
+import type { LocalOcrStatus } from '../../shared/local-ocr-settings.js';
+import type { OriginalAdoptionResult } from '../../shared/original-preview.js';
+import type { WorkspaceState, WorkspaceView } from '../../shared/protocol.js';
+import type { StatementAiChange, StatementAiPreviewResult, StatementAiRequest } from '../../shared/statement-ai.js';
+import type { StoredBankImport } from '../../shared/workspace-import.js';
+import { LocalAiIcon } from '../shared/local-ai-icon.component.js';
+import { OriginalPreviewButton } from '../shared/original-preview-button.component.js';
+import { AnalysisBooking } from './analysis-booking.component.js';
 
 type Preview = Extract<StatementAiPreviewResult, { status: 'ready' }>;
 interface AnalysisContext { request: StatementAiRequest; revision: number; workspaceId: string; name: string }
 interface AnalysisReview { context: AnalysisContext; result: Preview }
 
-@Component({ selector: 'app-analysis-booking', standalone: true, template: `
-    @if (item(); as item) {
-        <p class="analysis-description">{{ item.row.description?.value || 'Unknown description' }}</p>
-        <dl class="analysis-values">
-            <div><dt>Booking date</dt><dd>{{ date(item.row.bookingDate?.value ?? null) }}</dd></div>
-            <div><dt>Account amount</dt><dd>{{ money(item.row.accountAmount?.value ?? null) }}</dd></div>
-            <div><dt>Row type</dt><dd>{{ item.kind === 'transaction' ? 'Transaction' : 'Unresolved draft' }}</dd></div>
-        </dl>
-        @if ('issues' in item.row) {
-            <ul class="row-issues">@for (issue of item.row.issues; track $index) { <li>{{ issue.message }}</li> }</ul>
-        }
-        <details class="analysis-evidence">
-            <summary>Details and source evidence</summary>
-            <dl class="analysis-values">
-                <div><dt>Printed date basis</dt><dd>{{ item.row.bookingDate?.basisLabel || 'Unknown' }}</dd></div>
-                <div><dt>Value date</dt><dd>{{ date(item.row.valueDate?.value ?? null) }}</dd></div>
-                <div><dt>Direction</dt><dd>{{ item.row.direction || 'Unknown' }}</dd></div>
-                <div><dt>Original amount</dt><dd>{{ money(item.row.reportedOriginalAmount?.value ?? null) }}</dd></div>
-                <div><dt>Counterparty</dt><dd>{{ item.row.counterpartyCandidate?.value || 'Unknown' }}</dd></div>
-                @for (reference of item.row.references; track $index) { <div><dt>{{ reference.label }}</dt><dd>{{ reference.value }}</dd></div> }
-            </dl>
-            @for (evidence of item.row.evidence; track $index) {
-                <p class="evidence-origin">Page {{ pageNumber(evidence.pageId) }} · {{ evidence.method === 'embedded-text' ? 'Embedded text' : 'Local OCR' }}</p>
-                <p class="raw-text">{{ evidence.rawText }}</p>
-                <p class="evidence-region">PDF region: x {{ evidence.region.x }}, y {{ evidence.region.y }}, width {{ evidence.region.width }}, height {{ evidence.region.height }}</p>
-            }
-        </details>
-    } @else { <p class="muted">Not present in this analysis.</p> }
-` })
-class AnalysisBooking {
-    readonly item: InputSignal<StatementAiRow | null> = input.required<StatementAiRow | null>();
-    readonly result: InputSignal<BankImportResult> = input.required<BankImportResult>();
-    readonly date: typeof formatCalendarDate = formatCalendarDate;
-    readonly money: typeof formatMoney = formatMoney;
-
-    pageNumber(id: string): number | string {
-        return this.result().sourceProvenance?.pages.find((page: NonNullable<BankImportResult['sourceProvenance']>['pages'][number]): boolean => page.pageId === id)?.pageNumber ?? 'Unknown';
-    }
-}
-
 @Component({ selector: 'app-statement-reanalysis', standalone: true, imports: [WigButtonComponent, WigIconButtonComponent, LocalAiIcon, OriginalPreviewButton, AnalysisBooking],
-    templateUrl: './statement-reanalysis.html' })
+    templateUrl: './statement-reanalysis.component.html' })
 export class StatementReanalysis {
     readonly state: InputSignal<WorkspaceState> = input.required<WorkspaceState>();
     readonly record: InputSignal<StoredBankImport> = input.required<StoredBankImport>();

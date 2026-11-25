@@ -1,7 +1,7 @@
 import { NgTemplateOutlet } from '@angular/common';
 import { Component, DestroyRef, ElementRef, TemplateRef, computed, inject, input, signal, viewChild, type Signal, type WritableSignal, type InputSignal } from '@angular/core';
 import { WigButtonComponent, WigCheckboxComponent, WigIconButtonComponent } from '@wigtertainment-ltd/comp-lib';
-import type { OriginalAdoptionResult, OriginalAnalysisComparison, OriginalAnalysisResult, OriginalPreviewRequest, OriginalPreviewResult, OriginalRelinkResult } from '../shared/original-preview.js';
+import type { OriginalAdoptionResult, OriginalAnalysisComparison, OriginalAnalysisResult, OriginalPreviewRequest, OriginalPreviewResult, OriginalRelinkResult } from '../../shared/original-preview.js';
 
 interface PreviewFeedback extends OriginalPreviewResult {
     source: OriginalPreviewRequest;
@@ -28,84 +28,7 @@ interface PreviewFeedback extends OriginalPreviewResult {
       .analysis-conflicts { padding: .65rem; background: var(--workspace-background); }
       .analysis-conflicts h4 { margin-top: 0; }
     `],
-    template: `
-      @let current = feedback();
-      @let canRelink = current?.status === 'missing' || current?.status === 'changed';
-      @if (sourceId()) {
-      @if (iconTooltip(); as tooltip) {
-        <wig-icon-button #openButton [iconName]="kind() === 'statement' ? 'search' : undefined" [iconTemplate]="kind() === 'document' ? externalIcon : undefined"
-          [text]="true" [ariaLabel]="'Open original ' + sourceName()"
-          [tooltip]="tooltip" tooltipPosition="top" [loading]="current?.pending === 'open'" [disabled]="!!current?.pending || loadRevision() === undefined" (click)="open()" />
-      } @else {
-      <wig-button #openButton [buttonStyle]="iconOnly() ? iconButtonStyle : undefined" [label]="iconOnly() ? '' : current?.pending === 'open' ? 'Opening…' : 'Open original'"
-        [iconTemplate]="iconOnly() ? externalIcon : undefined" [text]="iconOnly()" [severity]="iconOnly() ? 'primary' : 'secondary'"
-        [ariaLabel]="'Open original ' + sourceName()" [buttonTitle]="iconOnly() ? 'Open original' : undefined"
-        [loading]="current?.pending === 'open'" [disabled]="!!current?.pending || loadRevision() === undefined" (click)="open()" />
-      }
-      <ng-template #externalIcon>
-        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M13 5h6v6m0-6-9 9M10 5H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3" />
-        </svg>
-      </ng-template>
-      <ng-template #feedbackContent>
-      @if (current?.error; as error) {
-        <p class="original-preview-error" role="alert">
-          {{ error }}
-          @if (canRelink) { Relink an identical copy or analyze a changed file. }
-          @if (!current?.comparison) { {{ current?.actionError }} }
-        </p>
-      }
-      @if (canRelink) {
-        <wig-button severity="secondary" [label]="current?.pending === 'relink' ? 'Relinking…' : 'Relink original'" [ariaLabel]="'Relink original ' + sourceName()"
-          [loading]="current?.pending === 'relink'" [disabled]="!!current?.pending" (click)="relink()" />
-        <wig-button severity="secondary" [label]="current?.pending === 'analyze' ? 'Analyzing…' : 'Analyze changed file'" [ariaLabel]="'Analyze changed file for ' + sourceName()"
-          [loading]="current?.pending === 'analyze'" [disabled]="!!current?.pending" (click)="analyze()" />
-      }
-      @if (current?.notice; as notice) {
-        <p class="muted" role="status">{{ notice }}</p>
-      }
-      </ng-template>
-      @if (!iconOnly() || iconTooltip()) {
-        <ng-container [ngTemplateOutlet]="feedbackContent" />
-      }
-      @if (current?.comparison; as comparison) {
-        <dialog #analysisDialog class="analysis-dialog" aria-label="Review analyzed file" (cancel)="closeAnalysis(analysisDialog, $event)" (close)="dismissAnalysis()">
-          <h3 tabindex="-1" autofocus>Review analyzed file</h3>
-          <dl class="analysis-paths">
-            <dt>Previous source</dt><dd>{{ comparison.oldPath }}</dd>
-            <dt>Analyzed file</dt><dd>{{ comparison.newPath }}</dd>
-          </dl>
-          <p>{{ comparison.preserved }} existing review decisions retained · {{ comparison.revoked }} approvals revoked</p>
-          @if (comparison.changes.length) {
-            <table class="analysis-table" aria-label="Extracted changes">
-              <thead><tr><th scope="col">Detail</th><th scope="col">Before</th><th scope="col">After</th></tr></thead>
-              <tbody>
-                @for (change of comparison.changes; track $index) {
-                  <tr><th scope="row">{{ change.label }}</th><td>{{ change.before ?? '—' }}</td><td>{{ change.after ?? '—' }}</td></tr>
-                }
-              </tbody>
-            </table>
-          } @else {
-            <p>No changes to extracted details were found.</p>
-          }
-          @if (comparison.conflicts.length) {
-            <div class="analysis-conflicts">
-              <h4>Conflicts requiring review</h4>
-              <ul>@for (conflict of comparison.conflicts; track $index) { <li>{{ conflict }}</li> }</ul>
-              <wig-checkbox label="I understand that ambiguous items stay in the previous analysis and newly extracted items need review."
-                [checked]="acknowledgeConflicts()" [disabled]="current?.pending === 'adopt'" (checkedChange)="acknowledgeConflicts.set($event)" />
-            </div>
-          }
-          @if (current?.actionError; as error) { <p class="original-preview-error" role="alert">{{ error }}</p> }
-          <div class="analysis-actions">
-            <wig-button [label]="current?.pending === 'adopt' ? 'Applying…' : 'Apply analyzed file'" [loading]="current?.pending === 'adopt'"
-              [disabled]="!!current?.pending || (comparison.conflicts.length > 0 && !acknowledgeConflicts())" (click)="applyAnalysis(analysisDialog)" />
-            <wig-button label="Cancel" severity="secondary" [disabled]="current?.pending === 'adopt'" (click)="closeAnalysis(analysisDialog)" />
-          </div>
-        </dialog>
-      }
-      }
-    `
+    templateUrl: './original-preview-button.component.html'
 })
 export class OriginalPreviewButton {
     readonly kind: InputSignal<"statement" | "document"> = input.required<'statement' | 'document'>();

@@ -32,7 +32,8 @@ test('packaged execution ignores the start environment variable and cannot enabl
 
 test('development allows canonical HTTP assets and WS hot reload on only the fixed loopback origin', (): void => {
     const selected: ReturnType<typeof resolveRendererUrl> = resolveRendererUrl(false, development);
-    for (const value of [development, `${development}@vite/client`, `${development}main.js?v=123`, `${development}src/app.ts?ngcomp=component`, 'ws://127.0.0.1:4310/', 'ws://127.0.0.1:4310/?token=synthetic-hmr']) {
+    const componentHmrUrl: string = `${development}src/app/workspace/workspace-shell.component.ts?ngcomp=component`;
+    for (const value of [development, `${development}@vite/client`, `${development}main.js?v=123`, componentHmrUrl, 'ws://127.0.0.1:4310/', 'ws://127.0.0.1:4310/?token=synthetic-hmr']) {
         assert.equal(isRendererRequestAllowed(selected, value), true, value);
     }
 });

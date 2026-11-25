@@ -1,5 +1,5 @@
 import { Component, DestroyRef, computed, effect, inject, input, signal, type EffectCleanupRegisterFn, type WritableSignal, type InputSignal, type Signal } from '@angular/core';
-import type { LocalOcrRequest, LocalOcrStatus } from '../shared/local-ocr-settings.js';
+import type { LocalOcrRequest, LocalOcrStatus } from '../../shared/local-ocr-settings.js';
 
 type SettingsChange = Exclude<LocalOcrRequest, { type: 'status' | 'cancel-nuextract' }>;
 
@@ -20,7 +20,7 @@ const gpuMessages: Record<LocalOcrStatus['gpu'], string> = {
 };
 
 @Component({
-	selector: 'app-local-ocr-settings', standalone: true, templateUrl: './local-ocr-settings.html',
+	selector: 'app-local-ocr-settings', standalone: true, templateUrl: './local-ocr-settings.component.html',
 })
 export class LocalOcrSettings {
 	readonly active: InputSignal<boolean> = input.required<boolean>();
