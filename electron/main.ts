@@ -14,9 +14,11 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { randomBytes } from 'node:crypto';
-import { commandSchema, documentExportRequestSchema, documentSnapshotRequestSchema, exportSettingsRequestSchema, matchRequestSchema, type WorkspaceCommand, type IWorkspaceState } from '../src/shared/protocol.js';
+import { commandSchema, documentExportRequestSchema, documentSnapshotRequestSchema, exportSettingsRequestSchema, matchRequestSchema,
+  type DocumentSnapshotRequest, type ExportSettingsRequest, type WorkspaceCommand, type IWorkspaceState } from '../src/shared/protocol.js';
 import type { DocumentExportResponse } from '../src/shared/document-export.js';
-import { originalAdoptionRequestSchema, originalPreviewRequestSchema, originalSourceExtensions } from '../src/shared/original-preview.js';
+import { originalAdoptionRequestSchema, originalPreviewRequestSchema, originalSourceExtensions,
+  type OriginalAdoptionRequest, type OriginalPreviewRequest } from '../src/shared/original-preview.js';
 import { WorkspaceSession } from './workspace-session.js';
 import { offerStartupUpdate } from './desktop-update.js';
 import type { BaseUpdater } from 'electron-updater';
@@ -25,19 +27,22 @@ import { proposeNuExtractStatement, type StatementProposalExtraction } from './i
 import type { BankImportInput } from '../src/shared/bank-import.js';
 import { FolderDocumentImportService } from './documents/service.js';
 import { isRendererRequestAllowed, resolveRendererUrl } from './runtime-policy.js';
-import { OriginalPreviewWindows, type OriginalSource } from './original-preview.js';
+import { OriginalPreviewWindows, type IOriginalSource } from './original-preview.js';
 import { readExportFilenamePattern, saveExportFilenamePattern } from './export-settings.js';
 import { ExportDestinationError } from './document-export.js';
 import { NuExtractSettings } from './nuextract-settings.js';
 import { localOcrRequestSchema } from '../src/shared/local-ocr-settings.js';
-import type { ZodSafeParseResult } from 'zod';
-import type { ExtractionOptions } from './extraction/host.js';
-import type { NuExtractRuntimeFiles } from './extraction/nuextract-runtime.js';
-import { reanalyzeNuExtractReceipt, type NuExtractReceiptDependencies, type ReceiptAiSource } from './documents/nuextract-receipt.js';
+import type { output, ZodSafeParseResult } from 'zod';
+import type { IExtractionOptions } from './extraction/host.js';
+import type { INuExtractRuntimeFiles } from './extraction/nuextract-runtime.js';
+import { reanalyzeNuExtractReceipt, type INuExtractReceiptDependencies, type IReceiptAiSource } from './documents/nuextract-receipt.js';
 import { receiptAiAcceptRequestSchema, receiptAiDiscardRequestSchema, receiptAiRequestSchema,
   type ReceiptAiPreviewResult, type ReceiptAiRequest, type ReceiptAiResult } from '../src/shared/receipt-ai.js';
 import { statementAiAcceptRequestSchema, statementAiDiscardRequestSchema, statementAiRequestSchema, type StatementAiPreviewResult } from '../src/shared/statement-ai.js';
 import { StatementReanalysisService } from './import/reanalyze-statement.js';
+
+type MatchRequest = output<typeof matchRequestSchema>;
+type DocumentExportRequest = output<typeof documentExportRequestSchema>;
 
 // Load the same module instance as other main-process consumers of the extraction API.
 const { extractPdfBytes, extractDocumentBytes, renderDocumentImages }: Pick<typeof import("./extraction/host.js"), "extractPdfBytes" | "extractDocumentBytes" | "renderDocumentImages"> = createRequire(__filename)('./extraction-host.cjs') as Pick<typeof import('./extraction/host.js'), 'extractPdfBytes' | 'extractDocumentBytes' | 'renderDocumentImages'>;
@@ -100,9 +105,9 @@ async function launch(): Promise<void> {
     path.join(runtimes, 'llama', process.platform === 'win32' ? 'llama-server.exe' : 'llama-server'),
     path.join(__dirname, 'extraction', 'nuextract-probe.png'));
   await nuExtract.resetLegacySelection().catch((): undefined => undefined);
-  const localRecognition: NuExtractReceiptDependencies = {
+  const localRecognition: INuExtractReceiptDependencies = {
     runtimeFiles: (signal?: AbortSignal): ReturnType<NuExtractSettings['runtimeFiles']> => nuExtract.runtimeFiles(signal),
-    start: (files: NuExtractRuntimeFiles, signal?: AbortSignal): ReturnType<NuExtractSettings['startRuntime']> => nuExtract.startRuntime(files, signal),
+    start: (files: INuExtractRuntimeFiles, signal?: AbortSignal): ReturnType<NuExtractSettings['startRuntime']> => nuExtract.startRuntime(files, signal),
     render: renderDocumentImages
   };
   const previews: OriginalPreviewWindows = new OriginalPreviewWindows(process.argv.includes('--hidden'), windowIcon);
@@ -128,12 +133,12 @@ async function launch(): Promise<void> {
       const selected: Electron.SaveDialogReturnValue = await dialog.showSaveDialog(window, { title: 'Save workspace', defaultPath: `${safeName}.receiptmatch`, filters: [{ name: 'ReceiptMatch workspace', extensions: ['receiptmatch'] }], properties: ['showOverwriteConfirmation'] });
       return selected.canceled ? null : selected.filePath ?? null;
     },
-    relinkOriginal: async (source: OriginalSource): Promise<string | null> => {
+    relinkOriginal: async (source: IOriginalSource): Promise<string | null> => {
       const selected: Electron.OpenDialogReturnValue = await dialog.showOpenDialog(window, { title: 'Locate the original file', defaultPath: path.dirname(source.filePath),
         properties: ['openFile'], filters: [{ name: 'Original document', extensions: originalSourceExtensions[source.format].map((extension: ".pdf" | ".png" | ".jpg" | ".jpeg"): string => extension.slice(1)) }] });
       return selected.canceled ? null : selected.filePaths[0] ?? null;
     },
-    analyzeOriginal: async (source: OriginalSource): Promise<string | null> => {
+    analyzeOriginal: async (source: IOriginalSource): Promise<string | null> => {
       const selected: Electron.OpenDialogReturnValue = await dialog.showOpenDialog(window, { title: 'Choose a changed source to analyze', defaultPath: path.dirname(source.filePath),
         properties: ['openFile'], filters: [{ name: 'Original document', extensions: originalSourceExtensions[source.format].map((extension: ".pdf" | ".png" | ".jpg" | ".jpeg"): string => extension.slice(1)) }] });
       return selected.canceled ? null : selected.filePaths[0] ?? null;
@@ -148,7 +153,7 @@ async function launch(): Promise<void> {
       return selected.canceled ? null : selected.filePaths[0] ?? null;
     },
     extract: extractPdfBytes,
-    propose: (bytes: Uint8Array, input: BankImportInput, options: ExtractionOptions): Promise<StatementProposalExtraction> =>
+    propose: (bytes: Uint8Array, input: BankImportInput, options: IExtractionOptions): Promise<StatementProposalExtraction> =>
       proposeNuExtractStatement(bytes, input, localRecognition, options)
   }), new FolderDocumentImportService({
     choose: async (): Promise<string | null> => {
@@ -157,10 +162,10 @@ async function launch(): Promise<void> {
     },
     extract: extractDocumentBytes
   }), extractDocumentBytes, path.join(userData, 'transaction-ignore-rules'), {
-    analyze: (source: ReceiptAiSource, options?: ExtractionOptions): Promise<ReceiptAiResult> => reanalyzeNuExtractReceipt(source, localRecognition, options)
+    analyze: (source: IReceiptAiSource, options?: IExtractionOptions): Promise<ReceiptAiResult> => reanalyzeNuExtractReceipt(source, localRecognition, options)
   }, new StatementReanalysisService({
     extract: extractPdfBytes,
-    propose: (bytes: Uint8Array, input: BankImportInput, options: ExtractionOptions): Promise<StatementProposalExtraction> =>
+    propose: (bytes: Uint8Array, input: BankImportInput, options: IExtractionOptions): Promise<StatementProposalExtraction> =>
       proposeNuExtractStatement(bytes, input, localRecognition, options)
   }));
   const authorized: (event: Electron.IpcMainInvokeEvent) => boolean = (event: Electron.IpcMainInvokeEvent): boolean => event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && event.senderFrame.url === appUrl;
@@ -220,7 +225,7 @@ async function launch(): Promise<void> {
     if (!authorized(event) || payload.length !== 1 || closeRequested) {
       throw new Error('Export settings request denied.');
     }
-    const request: ZodSafeParseResult<{ type: "read"; } | { type: "save"; pattern: string; }> = exportSettingsRequestSchema.safeParse(payload[0]);
+    const request: ZodSafeParseResult<ExportSettingsRequest> = exportSettingsRequestSchema.safeParse(payload[0]);
     if (!request.success) {
       throw new Error('Export settings request denied.');
     }
@@ -229,7 +234,7 @@ async function launch(): Promise<void> {
         await exportSettingsWrite?.catch((): null => null);
         return await readExportFilenamePattern(exportSettingsFile);
       }
-      const { pattern }: { type: "save"; pattern: string; } = request.data;
+      const { pattern }: Extract<ExportSettingsRequest, Record<'type', 'save'>> = request.data;
       const write: Promise<string> = Promise.resolve(exportSettingsWrite).catch((): null => null).then((): Promise<string> => saveExportFilenamePattern(exportSettingsFile, pattern));
       exportSettingsWrite = write;
       try {
@@ -280,7 +285,7 @@ async function launch(): Promise<void> {
     if (!authorized(event) || payload.length !== 1) {
       throw new Error('Workspace request denied.');
     }
-    const request: ZodSafeParseResult<{ loadRevision: number; revision: number; }> = documentSnapshotRequestSchema.safeParse(payload[0]);
+    const request: ZodSafeParseResult<DocumentSnapshotRequest> = documentSnapshotRequestSchema.safeParse(payload[0]);
     if (!request.success) {
       throw new Error('Workspace request denied.');
     }
@@ -291,23 +296,23 @@ async function launch(): Promise<void> {
     if (!authorized(event) || payload.length !== 1) {
       throw new Error('Workspace request denied.');
     }
-    const request: ZodSafeParseResult<{ revision: number; transactionId?: string | undefined; }> = matchRequestSchema.safeParse(payload[0]);
+    const request: ZodSafeParseResult<MatchRequest> = matchRequestSchema.safeParse(payload[0]);
     if (!request.success) {
       throw new Error('Workspace request denied.');
     }
-    const { revision, transactionId }: { revision: number; transactionId?: string | undefined; } = request.data;
+    const { revision, transactionId }: MatchRequest = request.data;
     return transactionId ? workspace.matchDetails(revision, transactionId) : workspace.matchSummaries(revision);
   });
 
-  ipcMain.handle('workspace:open-original', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<IOriginalPreviewResult> | { error: string; } => {
+  ipcMain.handle('workspace:open-original', (event: Electron.IpcMainInvokeEvent, ...payload: unknown[]): Promise<IOriginalPreviewResult> | Record<'error', string> => {
     if (!authorized(event) || payload.length !== 1) {
       throw new Error('Workspace request denied.');
     }
-    const request: ZodSafeParseResult<{ kind: "document" | "statement"; id: string; loadRevision: number; }> = originalPreviewRequestSchema.safeParse(payload[0]);
+    const request: ZodSafeParseResult<OriginalPreviewRequest> = originalPreviewRequestSchema.safeParse(payload[0]);
     if (!request.success) {
       return { error: 'This preview request is not supported.' };
     }
-    const source: OriginalSource | null = workspace.originalSource(request.data);
+    const source: IOriginalSource | null = workspace.originalSource(request.data);
     return source ? previews.open(JSON.stringify([request.data.kind, request.data.id, source.filePath]), source) : { error: 'The original is not available in this workspace.' };
   });
 
@@ -315,7 +320,7 @@ async function launch(): Promise<void> {
     if (!authorized(event) || payload.length !== 1 || closeRequested) {
       throw new Error('Workspace request denied.');
     }
-    const request: ZodSafeParseResult<{ kind: "document" | "statement"; id: string; loadRevision: number; }> = originalPreviewRequestSchema.safeParse(payload[0]);
+    const request: ZodSafeParseResult<OriginalPreviewRequest> = originalPreviewRequestSchema.safeParse(payload[0]);
     if (!request.success) {
       throw new Error('Workspace request denied.');
     }
@@ -326,7 +331,7 @@ async function launch(): Promise<void> {
     if (!authorized(event) || payload.length !== 1 || closeRequested) {
       throw new Error('Workspace request denied.');
     }
-    const request: ZodSafeParseResult<{ kind: "document" | "statement"; id: string; loadRevision: number; }> = originalPreviewRequestSchema.safeParse(payload[0]);
+    const request: ZodSafeParseResult<OriginalPreviewRequest> = originalPreviewRequestSchema.safeParse(payload[0]);
     if (!request.success) {
       throw new Error('Workspace request denied.');
     }
@@ -383,7 +388,7 @@ async function launch(): Promise<void> {
     if (!authorized(event) || payload.length !== 1 || closeRequested) {
       throw new Error('Workspace request denied.');
     }
-    const request: ZodSafeParseResult<{ token: string; loadRevision: number; acknowledgeConflicts: boolean; }> = originalAdoptionRequestSchema.safeParse(payload[0]);
+    const request: ZodSafeParseResult<OriginalAdoptionRequest> = originalAdoptionRequestSchema.safeParse(payload[0]);
     if (!request.success) {
       throw new Error('Workspace request denied.');
     }
@@ -435,14 +440,14 @@ async function launch(): Promise<void> {
     if (!authorized(event) || payload.length !== 1) {
       throw new Error('Document export request denied.');
     }
-    const request: ZodSafeParseResult<{ loadRevision: number; includeCsv: boolean; }> = documentExportRequestSchema.safeParse(payload[0]);
+    const request: ZodSafeParseResult<DocumentExportRequest> = documentExportRequestSchema.safeParse(payload[0]);
     if (!request.success) {
       throw new Error('Document export request denied.');
     }
     if (closeRequested) {
       return { status: 'cancelled' };
     }
-    const { loadRevision, includeCsv }: { loadRevision: number; includeCsv: boolean } = request.data;
+    const { loadRevision, includeCsv }: DocumentExportRequest = request.data;
     const initial: IWorkspaceState = workspace.state();
     if (initial.workspace?.loadRevision !== loadRevision) {
       return { status: 'failed', message: 'The workspace has changed. Open Export and try again.' };
@@ -467,10 +472,10 @@ async function launch(): Promise<void> {
     }
   });
   window.webContents.on('will-navigate', (event: Electron.Event<Electron.WebContentsWillNavigateEventParams>): void => event.preventDefault());
-  window.webContents.setWindowOpenHandler((): { action: "deny"; } => ({ action: 'deny' }));
+  window.webContents.setWindowOpenHandler((): Record<'action', 'deny'> => ({ action: 'deny' }));
   let closing: boolean = false;
   window.once('closed', (): void => previews.closeAll());
-  window.on('close', (event: { preventDefault: () => void; readonly defaultPrevented: boolean; }): void => {
+  window.on('close', (event: Pick<Electron.Event, 'preventDefault' | 'defaultPrevented'>): void => {
     if (closing) {
       return;
     }

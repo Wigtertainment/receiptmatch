@@ -4,14 +4,14 @@ import { originalSourceExtensions } from '../../src/shared/original-preview.js';
 import { NUEXTRACT_RECEIPT_VERSION, type IReceiptAiChange, type ReceiptAiField, type IReceiptAiProposal, type ReceiptAiResult } from '../../src/shared/receipt-ai.js';
 import { supportingDocumentSchema, type DocumentSection, type SupportingDocument } from '../../src/shared/supporting-document.js';
 import type { DocumentFormat } from '../../src/shared/workspace-documents.js';
-import type { DocumentImagesResult, ExtractionOptions } from '../extraction/host.js';
-import { NuExtractGpuCheckCancelledError, NuExtractGpuUnavailableError, NuExtractRuntime, type NuExtractRequest, type NuExtractRuntimeFiles } from '../extraction/nuextract-runtime.js';
+import type { DocumentImagesResult, IExtractionOptions } from '../extraction/host.js';
+import { NuExtractGpuCheckCancelledError, NuExtractGpuUnavailableError, NuExtractRuntime, type INuExtractRequest, type INuExtractRuntimeFiles } from '../extraction/nuextract-runtime.js';
 import { assertSourceNotCancelled, readSourceSnapshot, SourceReadError } from '../import/source.js';
 import { normalizeReference } from '../matching.js';
 import { compareDocuments } from '../source-comparison.js';
 import { dateCandidates, hasFullDocumentReference, numberCandidates, positionedLineEvidence, positionedLines, printedCurrencies } from './interpret.js';
 
-export interface ReceiptAiSource {
+export interface IReceiptAiSource {
     filePath: string;
     format: DocumentFormat;
     sha256: string;
@@ -19,15 +19,15 @@ export interface ReceiptAiSource {
     previous: SupportingDocument | null;
 }
 
-interface ReceiptRuntime {
-    extract(input: NuExtractRequest, signal?: AbortSignal): Promise<Record<string, unknown>>;
+interface IReceiptRuntime {
+    extract(input: INuExtractRequest, signal?: AbortSignal): Promise<Record<string, unknown>>;
     close(): Promise<void>;
 }
 
-export interface NuExtractReceiptDependencies {
-    runtimeFiles(signal?: AbortSignal): Promise<NuExtractRuntimeFiles | undefined>;
-    render(bytes: Uint8Array, sourceId: string, format: DocumentFormat, options?: ExtractionOptions): Promise<DocumentImagesResult>;
-    start?: (files: NuExtractRuntimeFiles, signal?: AbortSignal) => Promise<ReceiptRuntime>;
+export interface INuExtractReceiptDependencies {
+    start?: (files: INuExtractRuntimeFiles, signal?: AbortSignal) => Promise<IReceiptRuntime>;
+    runtimeFiles(signal?: AbortSignal): Promise<INuExtractRuntimeFiles | undefined>;
+    render(bytes: Uint8Array, sourceId: string, format: DocumentFormat, options?: IExtractionOptions): Promise<DocumentImagesResult>;
 }
 
 const template: Record<string, string> = {
@@ -47,8 +47,10 @@ type CurrencyField = DocumentSection['currencies'][number];
 type CandidateAmount = AmountField['candidates'][number];
 type DecimalAmount = Pick<CandidateAmount, 'coefficient' | 'scale'>;
 type FieldState = 'verified' | 'unverified' | 'absent';
-interface AnchoredValue<T> { label: string; value: T; evidence: SourceEvidence[] }
-interface EvidencedField<T> { id: string; candidates: T[]; evidence: SourceEvidence[] }
+interface IAnchoredValue<T> { label: string; value: T; evidence: SourceEvidence[] }
+interface IEvidencedField<T> { id: string; candidates: T[]; evidence: SourceEvidence[] }
+interface IModelField { field: ReceiptAiField; label: string; key: string }
+interface IReceiptFieldReview { pending: IReceiptAiChange[]; proposals: IReceiptAiProposal[] }
 
 const referenceLine: RegExp = /^(invoice\s*(?:number|no\.?|#)|rechnung(?:snummer|snr\.?)|receipt\s*(?:number|no\.?|#)|belegnummer|check\s*(?:number|no\.?|#)|chk)(?:\s*[:#]\s*|\s+|$)(\S.*)?$/i;
 const issueLine: RegExp = /^(invoice date|issued on|issue date|date of issue|receipt date|document date|rechnungsdatum|ausstellungsdatum|belegdatum)(?:\s*:\s*|\s+|$)(\S.*)?$/i;
@@ -70,12 +72,12 @@ function sectionLines(input: BankImportInput, analysis: SupportingDocument, sect
         .flatMap(positionedLines);
 }
 
-function verifyCurrent<T>(analysis: SupportingDocument, fields: EvidencedField<T>[], match: (value: T) => boolean,
-    resolve?: (field: EvidencedField<T>) => boolean): FieldState {
+function verifyCurrent<T>(analysis: SupportingDocument, fields: IEvidencedField<T>[], match: (value: T) => boolean,
+    resolve?: (field: IEvidencedField<T>) => boolean): FieldState {
     if (!fields.length) {
         return 'absent';
     }
-    if (fields.every((field: { candidates: T[] }): boolean => field.candidates.length === 1 && match(field.candidates[0]))) {
+    if (fields.every((field: Record<'candidates', T[]>): boolean => field.candidates.length === 1 && match(field.candidates[0]))) {
         return 'verified';
     }
     if (fields.length !== 1 || !resolve?.(fields[0])) {
@@ -99,8 +101,8 @@ function labelContinuation(label: Line, next: Line | undefined): Line | undefine
     return distance >= first.height / 2 && distance <= first.height * 2.5 && Math.abs(first.x - second.x) <= 10 ? next : undefined;
 }
 
-function anchoredValue<T>(lines: Line[], pattern: RegExp, convert: (printed: string) => T | undefined): AnchoredValue<T> | undefined {
-    let found: AnchoredValue<T> | undefined;
+function anchoredValue<T>(lines: Line[], pattern: RegExp, convert: (printed: string) => T | undefined): IAnchoredValue<T> | undefined {
+    let found: IAnchoredValue<T> | undefined;
     for (const [index, line] of lines.entries()) {
         const match: RegExpExecArray | null = pattern.exec(line.text);
         if (!match) {
@@ -143,7 +145,7 @@ function verifyReference(analysis: SupportingDocument, section: DocumentSection,
         ['account', 'customer', 'order', 'table', 'payment', 'related-invoice'].includes(field.role) && field.candidates.some(matches))) {
         return false;
     }
-    const anchor: AnchoredValue<string> | undefined = anchoredValue(lines, referenceLine, (printed: string): string | undefined => matches(printed) ? printed : undefined);
+    const anchor: IAnchoredValue<string> | undefined = anchoredValue(lines, referenceLine, (printed: string): string | undefined => matches(printed) ? printed : undefined);
     if (!anchor) {
         return false;
     }
@@ -164,7 +166,7 @@ function verifyReference(analysis: SupportingDocument, section: DocumentSection,
     return true;
 }
 
-function matchesGermanIssueDate(field: EvidencedField<string>, date: string): boolean {
+function matchesGermanIssueDate(field: IEvidencedField<string>, date: string): boolean {
     const printedDates: Set<string> = new Set(field.evidence.flatMap((evidence: SourceEvidence): string[] => {
         const printed: RegExpExecArray | null = germanIssueDateLine.exec(evidence.rawText.trim());
         return printed ? [[printed[3], printed[2].padStart(2, '0'), printed[1].padStart(2, '0')].join('-')] : [];
@@ -178,11 +180,11 @@ function verifyDate(analysis: SupportingDocument, section: DocumentSection, line
         return false;
     }
     const state: FieldState = verifyCurrent(analysis, section.dates.filter((field: DocumentSection['dates'][number]): boolean => field.role === 'issue'),
-        (candidate: string): boolean => candidate === parsed.data, (field: EvidencedField<string>): boolean => matchesGermanIssueDate(field, parsed.data));
+        (candidate: string): boolean => candidate === parsed.data, (field: IEvidencedField<string>): boolean => matchesGermanIssueDate(field, parsed.data));
     if (state !== 'absent') {
         return state === 'verified';
     }
-    const anchor: AnchoredValue<string> | undefined = anchoredValue(lines, issueLine, (printed: string): string | undefined => {
+    const anchor: IAnchoredValue<string> | undefined = anchoredValue(lines, issueLine, (printed: string): string | undefined => {
         const options: string[] = dateCandidates(printed);
         return options.length === 1 && options[0] === parsed.data ? options[0] : undefined;
     });
@@ -231,7 +233,7 @@ function verifyTotal(analysis: SupportingDocument, section: DocumentSection, lin
     if (state !== 'absent') {
         return state === 'verified';
     }
-    const anchor: AnchoredValue<CandidateAmount> | undefined = anchoredValue(lines, totalLine, (printed: string): CandidateAmount | undefined => printedAmount(printed, section, amount));
+    const anchor: IAnchoredValue<CandidateAmount> | undefined = anchoredValue(lines, totalLine, (printed: string): CandidateAmount | undefined => printedAmount(printed, section, amount));
     if (!anchor) {
         return false;
     }
@@ -248,7 +250,7 @@ function unrecognized(label: string, value: unknown): IReceiptAiChange[] {
     return [{ label, before: null, after: display || 'Invalid model value', unrecognized: true }];
 }
 
-const modelFields: readonly { field: ReceiptAiField; label: string; key: string }[] = [
+const modelFields: readonly IModelField[] = [
     { field: 'reference', label: 'Invoice or receipt number', key: 'invoice_or_receipt_number' },
     { field: 'issue-date', label: 'Issue date', key: 'issue_date' },
     { field: 'billed-total', label: 'Billed total', key: 'gross_total' }
@@ -305,10 +307,7 @@ function verifyField(analysis: SupportingDocument, section: DocumentSection, lin
     }
 }
 
-function reviewFields(analysis: SupportingDocument, input: BankImportInput, result: Record<string, unknown>): {
-    pending: IReceiptAiChange[];
-    proposals: IReceiptAiProposal[];
-} {
+function reviewFields(analysis: SupportingDocument, input: BankImportInput, result: Record<string, unknown>): IReceiptFieldReview {
     const section: DocumentSection | undefined = primarySection(analysis);
     const lines: Line[] = section ? sectionLines(input, analysis, section) : [];
     const pending: IReceiptAiChange[] = [];
@@ -336,7 +335,7 @@ function reviewFields(analysis: SupportingDocument, input: BankImportInput, resu
     return { pending, proposals };
 }
 
-function replaceConfirmed<T extends { id: string }>(analysis: SupportingDocument, fields: T[], matches: (field: T) => boolean, replacement: T): T[] {
+function replaceConfirmed<T extends Record<'id', string>>(analysis: SupportingDocument, fields: T[], matches: (field: T) => boolean, replacement: T): T[] {
     const replaced: Set<string> = new Set(fields.filter(matches).map((field: T): string => field.id));
     analysis.issues = analysis.issues.filter((issue: SupportingDocument['issues'][number]): boolean => issue.fieldId === null || !replaced.has(issue.fieldId));
     return replaced.size ? fields.flatMap((field: T): T[] => field.id === replacement.id ? [replacement] : replaced.has(field.id) ? [] : [field])
@@ -407,7 +406,7 @@ export function applySelectedReceiptAi(previous: SupportingDocument, proposals: 
     return finalizeAnalysis(analysis, input);
 }
 
-export function reviewNuExtractResult(previous: SupportingDocument, result: Record<string, unknown>): Extract<ReceiptAiResult, { status: 'ready' }> {
+export function reviewNuExtractResult(previous: SupportingDocument, result: Record<string, unknown>): Extract<ReceiptAiResult, Record<'status', 'ready'>> {
     const analysis: SupportingDocument = structuredClone(previous);
     const input: BankImportInput | null = analysis.input;
     if (!input || analysis.status === 'failed') {
@@ -419,15 +418,15 @@ export function reviewNuExtractResult(previous: SupportingDocument, result: Reco
     return { status: 'ready', model: 'nuextract3', analysis: verified, proposals, changes: [...changes, ...pending], conflicts };
 }
 
-function planSource(source: ReceiptAiSource): BankImportInput | undefined {
+function planSource(source: IReceiptAiSource): BankImportInput | undefined {
     const input: BankImportInput | null | undefined = source.previous?.input;
     return input && source.previous?.status !== 'failed' && input.source.sha256 === source.sha256 &&
         (source.sourceId === undefined || input.source.sourceId === source.sourceId) ? input : undefined;
 }
 
-async function extractModelResult(files: NuExtractRuntimeFiles, images: Uint8Array[], options: ExtractionOptions,
-    start: NonNullable<NuExtractReceiptDependencies['start']>): Promise<Record<string, unknown>> {
-    const runtime: ReceiptRuntime = await start(files, options.signal);
+async function extractModelResult(files: INuExtractRuntimeFiles, images: Uint8Array[], options: IExtractionOptions,
+    start: NonNullable<INuExtractReceiptDependencies['start']>): Promise<Record<string, unknown>> {
+    const runtime: IReceiptRuntime = await start(files, options.signal);
     try {
         options.onProgress?.({ phase: 'ocr', pageNumber: null, pageCount: images.length, completedPages: 0, device: files.gpuDevice ? 'gpu' : 'cpu' });
         return await runtime.extract({ images, template, instructions }, options.signal);
@@ -436,7 +435,7 @@ async function extractModelResult(files: NuExtractRuntimeFiles, images: Uint8Arr
     }
 }
 
-export async function reanalyzeNuExtractReceipt(source: ReceiptAiSource, dependencies: NuExtractReceiptDependencies, options: ExtractionOptions = {}): Promise<ReceiptAiResult> {
+export async function reanalyzeNuExtractReceipt(source: IReceiptAiSource, dependencies: INuExtractReceiptDependencies, options: IExtractionOptions = {}): Promise<ReceiptAiResult> {
     try {
         assertSourceNotCancelled(options.signal);
         const input: BankImportInput | undefined = planSource(source);
@@ -447,7 +446,7 @@ export async function reanalyzeNuExtractReceipt(source: ReceiptAiSource, depende
         if (createHash('sha256').update(bytes).digest('hex') !== source.sha256) {
             throw new SourceReadError('source-changed', 'The original receipt changed. Restore or relink it and try again.');
         }
-        const files: NuExtractRuntimeFiles | undefined = await dependencies.runtimeFiles(options.signal);
+        const files: INuExtractRuntimeFiles | undefined = await dependencies.runtimeFiles(options.signal);
         if (!files) {
             return { status: 'failed', error: 'Download NuExtract3 and select a compatible device under Settings → Document recognition.' };
         }
@@ -463,8 +462,8 @@ export async function reanalyzeNuExtractReceipt(source: ReceiptAiSource, depende
             return { status: 'failed', error: 'The rendered pages do not match the original receipt analysis.' };
         }
         options.onProgress?.({ phase: 'ocr', pageNumber: null, pageCount: rasters.images.length, completedPages: 0 });
-        const start: NonNullable<NuExtractReceiptDependencies['start']> = dependencies.start ??
-            ((model: NuExtractRuntimeFiles, signal?: AbortSignal): Promise<NuExtractRuntime> => NuExtractRuntime.start(model, signal));
+        const start: NonNullable<INuExtractReceiptDependencies['start']> = dependencies.start ??
+            ((model: INuExtractRuntimeFiles, signal?: AbortSignal): Promise<NuExtractRuntime> => NuExtractRuntime.start(model, signal));
         const result: Record<string, unknown> = await extractModelResult(files, rasters.images, options, start);
         assertSourceNotCancelled(options.signal);
         return { ...reviewNuExtractResult(source.previous, result), device: files.gpuDevice ? 'gpu' : 'cpu' };

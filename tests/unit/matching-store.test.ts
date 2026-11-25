@@ -19,7 +19,7 @@ import Database from 'better-sqlite3';
 import { test, vi, type TestContext } from 'vitest';
 import { SupportingDocumentState } from '../../electron/documents/document-state.js';
 import { interpretSupportingDocument } from '../../electron/documents/interpret.js';
-import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERSION, type SavedWorkspace } from '../../electron/store.js';
+import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERSION, type ISavedWorkspace } from '../../electron/store.js';
 import { reconciliationRows } from '../../electron/reconciliation-csv.js';
 import { WorkspaceSession } from '../../electron/workspace-session.js';
 import { commandSchema } from '../../src/shared/protocol.js';
@@ -200,7 +200,7 @@ test('ranks a previously imported OCR receipt first when item totals recover a m
 	const selection: MatchApprovalSelection = session.matchSummaries(workspace.matchRevision)!.find((row: IMatchSummary): boolean => row.transactionId === transactionId)!.approvalSelection!;
 	assert.equal((await session.dispatch({ type: 'approve-matches', loadRevision: workspace.loadRevision, selections: [selection] })).error, null);
 	assert.equal((await session.dispatch({ type: 'save' })).error, null);
-	const saved: SavedWorkspace = await loadWorkspace(file);
+	const saved: ISavedWorkspace = await loadWorkspace(file);
 	assert.equal(saved.matches.find((match: TransactionMatch): boolean => match.transactionId === transactionId)?.status, 'unmatched');
 	assert.deepEqual(saved.documentImports[0].files[0], { status: 'imported', record: receipt });
 	const exported: import('../../electron/reconciliation-csv.js').ReconciliationRow = reconciliationRows(saved).find((row: import('../../electron/reconciliation-csv.js').ReconciliationRow): boolean => row.transaction_id === transactionId)!;
@@ -338,7 +338,7 @@ test('opens version 3 without writing, suppresses coalesced legacy sections and 
 		db.close();
 	}
 	const oldBytes: NonSharedBuffer = await readFile(file);
-	const opened: SavedWorkspace = await loadWorkspace(file);
+	const opened: ISavedWorkspace = await loadWorkspace(file);
 	assert.equal(opened.schemaVersion, 3);
 	assert.deepEqual(await readFile(file), oldBytes);
 	assert.deepEqual(opened.documentImports, [oldRun]);
@@ -353,13 +353,13 @@ test('opens version 3 without writing, suppresses coalesced legacy sections and 
 		return originalPrepare(this, sql);
 	});
 	try {
-		await assert.rejects((): Promise<SavedWorkspace> => saveWorkspace(opened, opened.metadata), /Controlled migration write failure/);
+		await assert.rejects((): Promise<ISavedWorkspace> => saveWorkspace(opened, opened.metadata), /Controlled migration write failure/);
 	} finally {
 		prepare.mockRestore();
 	}
 	assert.deepEqual(await readFile(file), oldBytes);
 	assert.equal((await loadWorkspace(file)).schemaVersion, 3);
-	const saved: SavedWorkspace = await saveWorkspace(opened, opened.metadata);
+	const saved: ISavedWorkspace = await saveWorkspace(opened, opened.metadata);
 	assert.equal(saved.schemaVersion, SCHEMA_VERSION);
 	assert.deepEqual((await loadWorkspace(file)).matches, opened.matches);
 	assert.deepEqual(saved.documentImports, [oldRun]);
@@ -369,7 +369,7 @@ test('loads persisted evidence without requiring the current engine to produce t
 	const root: string = await directory(context);
 	const file: string = path.join(root, 'stored-judgment.receiptmatch');
 	const bank: StoredBankImport = retainedBank(root);
-	const saved: SavedWorkspace = await createWorkspace(file, newMetadata(), [bank], [documentRun(root, [invoice(root, 'invoice.pdf')])]);
+	const saved: ISavedWorkspace = await createWorkspace(file, newMetadata(), [bank], [documentRun(root, [invoice(root, 'invoice.pdf')])]);
 	const historical: TransactionMatch = saved.matches.find((match: TransactionMatch): boolean => match.status === 'reliable')!;
 	historical.status = 'uncertain';
 	historical.candidates[0].issues = ['conflicting-evidence'];
@@ -379,7 +379,7 @@ test('loads persisted evidence without requiring the current engine to produce t
 	} finally {
 		db.close();
 	}
-	const loaded: SavedWorkspace = await loadWorkspace(file);
+	const loaded: ISavedWorkspace = await loadWorkspace(file);
 	assert.deepEqual(loaded.matches, saved.matches);
 	const newDocumentImports: StoredDocumentImport[] = [...loaded.documentImports, documentRun(root, [])];
 	assert.deepEqual((await saveWorkspace(loaded, loaded.metadata, loaded.imports, newDocumentImports)).matches, saved.matches);
@@ -389,7 +389,7 @@ test('rolls back a match write failure together with the appended import and rej
 	const root: string = await directory(context);
 	const file: string = path.join(root, 'atomic.receiptmatch');
 	const bank: StoredBankImport = retainedBank(root);
-	const saved: SavedWorkspace = await createWorkspace(file, newMetadata(), [bank]);
+	const saved: ISavedWorkspace = await createWorkspace(file, newMetadata(), [bank]);
 	const before: NonSharedBuffer = await readFile(file);
 	const originalPrepare: (db: Database.Database, sql: string) => Database.Statement = Function.prototype.call.bind(Reflect.get(Database.prototype, 'prepare')) as (db: Database.Database, sql: string) => Database.Statement;
 	const prepare: import("vitest").MockInstance<typeof Database.prototype.prepare> = vi.spyOn(Database.prototype, 'prepare').mockImplementation(function (this: Database.Database, sql: string): Database.Statement<[object], unknown> | Database.Statement<unknown[], unknown> {
@@ -399,7 +399,7 @@ test('rolls back a match write failure together with the appended import and rej
 		return originalPrepare(this, sql);
 	});
 	try {
-		await assert.rejects((): Promise<SavedWorkspace> => saveWorkspace(saved, saved.metadata, [bank], [documentRun(root, [invoice(root, 'new.pdf')])]), /Controlled match write failure/);
+		await assert.rejects((): Promise<ISavedWorkspace> => saveWorkspace(saved, saved.metadata, [bank], [documentRun(root, [invoice(root, 'new.pdf')])]), /Controlled match write failure/);
 	} finally {
 		prepare.mockRestore();
 	}
@@ -412,7 +412,7 @@ test('rolls back a match write failure together with the appended import and rej
 		db.close();
 	}
 	const corrupted: NonSharedBuffer = await readFile(file);
-	await assert.rejects((): Promise<SavedWorkspace> => loadWorkspace(file), /suggestions do not agree/);
+	await assert.rejects((): Promise<ISavedWorkspace> => loadWorkspace(file), /suggestions do not agree/);
 	assert.deepEqual(await readFile(file), corrupted);
 });
 
@@ -498,12 +498,12 @@ test('opens version 4 without writing and saves review decisions and migration a
 		db.close();
 	}
 	const bytes: NonSharedBuffer = await readFile(file);
-	const opened: SavedWorkspace = await loadWorkspace(file);
+	const opened: ISavedWorkspace = await loadWorkspace(file);
 	assert.equal(opened.schemaVersion, 4);
 	assert.equal(opened.matchDecisions.size, 0);
 	assert.deepEqual(await readFile(file), bytes);
-	const save: (decisions: Map<string, string | null>) => Promise<SavedWorkspace> = (decisions: Map<string, string | null>): Promise<SavedWorkspace> => saveWorkspace(opened, opened.metadata, opened.imports, opened.documentImports, decisions);
-	await assert.rejects((): Promise<SavedWorkspace> => save(new Map([[first, document.id], [second, document.id]])), /already assigned/);
+	const save: (decisions: Map<string, string | null>) => Promise<ISavedWorkspace> = (decisions: Map<string, string | null>): Promise<ISavedWorkspace> => saveWorkspace(opened, opened.metadata, opened.imports, opened.documentImports, decisions);
+	await assert.rejects((): Promise<ISavedWorkspace> => save(new Map([[first, document.id], [second, document.id]])), /already assigned/);
 	const decisions: Map<string, string | null> = new Map([[first, document.id], [second, null]]);
 	const originalPrepare: (db: Database.Database, sql: string) => Database.Statement = Function.prototype.call.bind(Reflect.get(Database.prototype, 'prepare')) as (db: Database.Database, sql: string) => Database.Statement;
 	const prepare: import("vitest").MockInstance<typeof Database.prototype.prepare> = vi.spyOn(Database.prototype, 'prepare').mockImplementation(function (this: Database.Database, sql: string): Database.Statement<[object], unknown> | Database.Statement<unknown[], unknown> {
@@ -513,13 +513,13 @@ test('opens version 4 without writing and saves review decisions and migration a
 		return originalPrepare(this, sql);
 	});
 	try {
-		await assert.rejects((): Promise<SavedWorkspace> => save(decisions), /Controlled review write failure/);
+		await assert.rejects((): Promise<ISavedWorkspace> => save(decisions), /Controlled review write failure/);
 	} finally {
 		prepare.mockRestore();
 	}
 	assert.deepEqual(await readFile(file), bytes);
 	await save(decisions);
-	const migrated: SavedWorkspace = await loadWorkspace(file);
+	const migrated: ISavedWorkspace = await loadWorkspace(file);
 	assert.equal(migrated.schemaVersion, SCHEMA_VERSION);
 	assert.deepEqual(migrated.matchDecisions, decisions);
 	assert.deepEqual(migrated.matches, opened.matches);
@@ -536,7 +536,7 @@ test('corrects booking values with exact money, retains original evidence and pr
 	const [draft, blocked]: { rowId: string; draftId: string; }[] = bank.drafts;
 	assert.ok(first && draft && blocked);
 	const documents: StoredDocumentImport = documentRun(root, [invoice(root, 'invoice.pdf')]);
-	const created: SavedWorkspace = await createWorkspace(file, newMetadata(), [bank], [documents]);
+	const created: ISavedWorkspace = await createWorkspace(file, newMetadata(), [bank], [documents]);
 	const db: Database.Database = new Database(file);
 	try {
 		db.exec('DROP TABLE statement_analysis_versions; DROP TABLE document_field_reviews; DROP TABLE receipt_analysis_versions; DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; PRAGMA user_version=5;');
@@ -589,7 +589,7 @@ test('corrects booking values with exact money, retains original evidence and pr
 	assert.equal(review.error, null);
 	assert.equal((await session.dispatch({ type: 'save' })).error, null);
 	assert.equal((await session.dispatch({ type: 'open' })).error, null);
-	const saved: SavedWorkspace = await loadWorkspace(file);
+	const saved: ISavedWorkspace = await loadWorkspace(file);
 	assert.equal(saved.schemaVersion, SCHEMA_VERSION);
 	assert.equal(saved.bankCorrections.get(first.transactionId)?.revision, 3);
 	assert.deepEqual(saved.imports, created.imports);
@@ -674,7 +674,7 @@ test('recalculates matches from corrected document fields and saves originals, r
 	assert.deepEqual(await readFile(file), before);
 	assert.equal((await session.dispatch({ type: 'save' })).error, null);
 	assert.equal((await session.dispatch({ type: 'open' })).error, null);
-	const saved: SavedWorkspace = await loadWorkspace(file);
+	const saved: ISavedWorkspace = await loadWorkspace(file);
 	assert.equal(saved.schemaVersion, SCHEMA_VERSION);
 	assert.deepEqual(saved.documentImports, [source]);
 	assert.deepEqual(saved.matchDecisions.get(transactionId), receipt.id);

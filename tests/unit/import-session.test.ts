@@ -14,8 +14,8 @@ import Database from 'better-sqlite3';
 import { importIssue } from '../../src/shared/bank-import.js';
 import { PDF_EXTRACTION_LIMITS, PDF_EXTRACTION_VERSION, type ExtractionProgress, type ExtractionResult } from '../../src/shared/pdf-extraction.js';
 import { storedBankImportSchema, type BankImportRunResult } from '../../src/shared/workspace-import.js';
-import { StatementImportService, type BankImportOptions, type BankImportService } from '../../electron/import/service.js';
-import { WorkspaceSession, type WorkspaceDialogs } from '../../electron/workspace-session.js';
+import { StatementImportService, type IBankImportOptions, type IBankImportService } from '../../electron/import/service.js';
+import { WorkspaceSession, type IWorkspaceDialogs } from '../../electron/workspace-session.js';
 import { createWorkspace, fingerprint, loadWorkspace, newMetadata } from '../../electron/store.js';
 import { row, statement } from './bank-fixtures.js';
 import type { ReadOptionsWithBuffer } from 'node:fs';
@@ -42,9 +42,9 @@ function extracted(bytes: Uint8Array, sourceId: string, partial: boolean = false
     return { status: 'complete', input };
 }
 
-function dialogs(): { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: WorkspaceDialogs; } {
+function dialogs(): { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: IWorkspaceDialogs; } {
     const plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ('save' | 'discard' | 'cancel')[] } = { saves: [], opens: [], choices: [] };
-    const handlers: WorkspaceDialogs = {
+    const handlers: IWorkspaceDialogs = {
         save: async (): Promise<string | null> => Promise.resolve(plan.saves.shift() ?? null),
         open: async (): Promise<string | null> => Promise.resolve(plan.opens.shift() ?? null),
         unsaved: async (): Promise<"discard" | "save" | "cancel"> => Promise.resolve(plan.choices.shift() ?? 'cancel')
@@ -202,7 +202,7 @@ test('service detects file growth during bounded reads and never passes an unsta
 
 test('import/save/reopen preserves full records and stable IDs; loaded-byte duplicates stay clean and distinct sources are not amount-merged', async (): Promise<void> => {
     const { directory, source }: { directory: string; source: string; } = await fixtures();
-    const { plan, handlers }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: WorkspaceDialogs; } = dialogs();
+    const { plan, handlers }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: IWorkspaceDialogs; } = dialogs();
     let calls: number = 0;
     const service: StatementImportService = new StatementImportService({
         choose: async (): Promise<string> => Promise.resolve(source),
@@ -251,7 +251,7 @@ test('import/save/reopen preserves full records and stable IDs; loaded-byte dupl
 
 test('failed/cancelled saves and failed Open retain unsaved imports; explicit discard clears only current in-memory work', async (): Promise<void> => {
     const { directory, source }: { directory: string; source: string; } = await fixtures();
-    const { plan, handlers }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: WorkspaceDialogs; } = dialogs();
+    const { plan, handlers }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: IWorkspaceDialogs; } = dialogs();
     const service: StatementImportService = new StatementImportService({ choose: async (): Promise<string> => Promise.resolve(source), extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string): Promise<{ status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }> => Promise.resolve(extracted(bytes, id)) });
     const session: WorkspaceSession = new WorkspaceSession(handlers, undefined, service);
     await session.dispatch({ type: 'new' });
@@ -291,14 +291,14 @@ test('failed/cancelled saves and failed Open retain unsaved imports; explicit di
 
 test('cancellation wins over a late successful import and all competing workspace actions remain blocked', async (): Promise<void> => {
     const { directory, source }: { directory: string; source: string; } = await fixtures();
-    const { plan, handlers }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: WorkspaceDialogs; } = dialogs();
+    const { plan, handlers }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: IWorkspaceDialogs; } = dialogs();
     const preparer: StatementImportService = new StatementImportService({ choose: async (): Promise<string> => Promise.resolve(source), extract: async (bytes: Uint8Array<ArrayBufferLike>, id: string): Promise<{ status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }> => Promise.resolve(extracted(bytes, id)) });
     const prepared: BankImportRunResult = await preparer.run({ existing: [] });
     assert.equal(prepared.status, 'imported');
     let release: ((result: BankImportRunResult) => void) | undefined;
     let progress: ((value: ExtractionProgress) => void) | undefined;
-    const service: BankImportService = {
-        run: (options: BankImportOptions): Promise<BankImportRunResult> => {
+    const service: IBankImportService = {
+        run: (options: IBankImportOptions): Promise<BankImportRunResult> => {
             progress = options.onProgress;
             return new Promise((resolve: (value: BankImportRunResult | PromiseLike<BankImportRunResult>) => void): void => {
                 release = resolve;
@@ -377,8 +377,8 @@ test('service cancellation and failure outcomes do not create records or dirty a
         { status: 'failed', issues: [importIssue('synthetic-failure', 'Synthetic failure.')] },
         { status: 'unsupported', issues: [importIssue('synthetic-unsupported', 'Synthetic unsupported statement.')] }
     ] as const) {
-        const { plan, handlers }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: WorkspaceDialogs; } = dialogs();
-        const fixed: BankImportService = { run: async (): Promise<BankImportRunResult> => Promise.resolve(structuredClone(result) as BankImportRunResult) };
+        const { plan, handlers }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: IWorkspaceDialogs; } = dialogs();
+        const fixed: IBankImportService = { run: async (): Promise<BankImportRunResult> => Promise.resolve(structuredClone(result) as BankImportRunResult) };
         const session: WorkspaceSession = new WorkspaceSession(handlers, undefined, fixed);
         await session.dispatch({ type: 'new' });
         plan.saves.push(path.join(directory, `${result.status}.receiptmatch`));
@@ -461,7 +461,7 @@ test('invalid saved import mappings report workspace data errors and preserve cu
         db.close();
     }
     const damagedHash: string = await fingerprint(damagedFile);
-    const { plan, handlers }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: WorkspaceDialogs; } = dialogs();
+    const { plan, handlers }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: IWorkspaceDialogs; } = dialogs();
     const session: WorkspaceSession = new WorkspaceSession(handlers, undefined, service);
     await session.dispatch({ type: 'new' });
     await session.dispatch({ type: 'rename', name: 'Current unsaved work' });

@@ -4,10 +4,10 @@ import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test, type TestContext } from 'vitest';
-import { createWorkspace, loadWorkspace, newMetadata, type SavedWorkspace } from '../../electron/store.js';
-import { WorkspaceSession, type WorkspaceDialogs } from '../../electron/workspace-session.js';
+import { createWorkspace, loadWorkspace, newMetadata, type ISavedWorkspace } from '../../electron/store.js';
+import { WorkspaceSession, type IWorkspaceDialogs } from '../../electron/workspace-session.js';
 import { interpretSupportingDocument } from '../../electron/documents/interpret.js';
-import { applySelectedReceiptAi, reviewNuExtractResult, type ReceiptAiSource } from '../../electron/documents/nuextract-receipt.js';
+import { applySelectedReceiptAi, reviewNuExtractResult, type IReceiptAiSource } from '../../electron/documents/nuextract-receipt.js';
 import { compareDocuments } from '../../electron/source-comparison.js';
 import type { PositionedSpan } from '../../src/shared/bank-import.js';
 import { documentCorrectionKey, type DocumentCorrection } from '../../src/shared/document-corrections.js';
@@ -62,11 +62,11 @@ async function fixture(context: TestContext, options: { corrected?: true; select
         ...approvalSelectionFor(transactionId, document.id, 1, correction?.revision), batchId: randomUUID(), approvedAt: '2032-06-01T12:00:00Z'
     } };
     await createWorkspace(file, newMetadata(), [bank], [report], new Map([[transactionId, document.id]]), new Map(), corrections, new Map([[transactionId, approved]]));
-    const dialogs: WorkspaceDialogs = { open: (): Promise<string> => Promise.resolve(file), save: (): Promise<string> => Promise.resolve(file),
+    const dialogs: IWorkspaceDialogs = { open: (): Promise<string> => Promise.resolve(file), save: (): Promise<string> => Promise.resolve(file),
         unsaved: (): Promise<'discard'> => Promise.resolve('discard') };
     const modelReading: Fixture['modelReading'] = { total: '9007199254740993.27' };
     const session: WorkspaceSession = new WorkspaceSession(dialogs, undefined, undefined, undefined, undefined, undefined, {
-        async analyze(source: ReceiptAiSource): Promise<ReceiptAiResult> {
+        async analyze(source: IReceiptAiSource): Promise<ReceiptAiResult> {
             if (options.selectable) {
                 assert.ok(source.previous);
                 return reviewNuExtractResult(source.previous, {
@@ -253,9 +253,9 @@ test('keeps receipt identity and assignment and renews review only for changed m
     assert.deepEqual(await readFile(file), saved);
 
     assert.equal((await session.dispatch({ type: 'save' })).error, null);
-    const stored: SavedWorkspace = await loadWorkspace(file);
+    const stored: ISavedWorkspace = await loadWorkspace(file);
     assert.deepEqual(stored.documentImports, [report]);
-    assert.deepEqual(stored.receiptAnalysisVersions.map((version: SavedWorkspace['receiptAnalysisVersions'][number]): (string | undefined)[] =>
+    assert.deepEqual(stored.receiptAnalysisVersions.map((version: ISavedWorkspace['receiptAnalysisVersions'][number]): (string | undefined)[] =>
         [version.documentId, version.analysis.input?.extraction.runId]), [
         [document.id, changed.analysis.input?.extraction.runId]
     ]);
@@ -286,7 +286,7 @@ test('preserves an existing manual correction and approval while applying a veri
     assert.equal(total(projected.originals[document.id].sections).candidates[0].coefficient, '4875');
     assert.equal(total(imported(projected.reports, document.id).result.sections).candidates[0].coefficient, '5040');
     assert.equal((await session.dispatch({ type: 'save' })).error, null);
-    const stored: SavedWorkspace = await loadWorkspace(file);
+    const stored: ISavedWorkspace = await loadWorkspace(file);
     assert.deepEqual([...stored.documentCorrections.values()], [correction]);
     assert.equal((await session.dispatch({ type: 'open' })).error, null);
     assert.equal(workspace(session).approvedDocumentCount, 1);

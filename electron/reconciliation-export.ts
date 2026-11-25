@@ -11,16 +11,16 @@ import { excludeDuplicateTransactions } from '../src/shared/transaction-duplicat
 import { activeStatements, activeSupportingDocuments } from '../src/shared/source-replacements.js';
 import {
 	approvedExportDocuments, copyApprovedDocuments, errorCode, ExportDestinationError, ExportFileCleanupError, openExportDirectory, writeExportFile,
-	type ApprovedExportDocument, type ExportDirectory,
+	type IApprovedExportDocument, type IExportDirectory,
 } from './document-export.js';
 import { reconciliationRows, serializeReconciliationCsv } from './reconciliation-csv.js';
-import type { SavedWorkspace } from './store.js';
+import type { ISavedWorkspace } from './store.js';
 
 const filename: "reconciliation.csv" = 'reconciliation.csv';
 
-export async function writeReconciliationExport(snapshot: SavedWorkspace, destination: string, pattern: string): Promise<IReconciliationExportReport> {
+export async function writeReconciliationExport(snapshot: ISavedWorkspace, destination: string, pattern: string): Promise<IReconciliationExportReport> {
 	const sources: string[] = [...snapshot.sources.map((source: IWorkspaceSource): string => source.filePath), ...snapshot.sourceRelocations.values()];
-	const directory: ExportDirectory = await openExportDirectory(destination, sources);
+	const directory: IExportDirectory = await openExportDirectory(destination, sources);
 	const filePath: string = path.join(directory.path, filename);
 	const exists: boolean = await lstat(filePath).then((): boolean => true, (error: unknown): boolean => {
 		if (errorCode(error) === 'ENOENT') {
@@ -38,7 +38,7 @@ export async function writeReconciliationExport(snapshot: SavedWorkspace, destin
 	for (const id of snapshot.ignoredTransactions) {
 		approvals.delete(id);
 	}
-	const documents: ApprovedExportDocument[] = approvedExportDocuments(imports, activeSupportingDocuments(snapshot.documentImports, snapshot.sourceReplacements), approvals, snapshot.sourceRelocations);
+	const documents: IApprovedExportDocument[] = approvedExportDocuments(imports, activeSupportingDocuments(snapshot.documentImports, snapshot.sourceReplacements), approvals, snapshot.sourceRelocations);
 	const documentCopies: IDocumentExportReport = await copyApprovedDocuments(directory, pattern, documents, sources);
 	try {
 		const csv: string = serializeReconciliationCsv(reconciliationRows(snapshot, documentCopies.outcomes));

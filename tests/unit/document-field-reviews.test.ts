@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { test } from 'vitest';
-import { WorkspaceSession, type WorkspaceDialogs } from '../../electron/workspace-session.js';
-import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERSION, type SavedWorkspace } from '../../electron/store.js';
+import { WorkspaceSession, type IWorkspaceDialogs } from '../../electron/workspace-session.js';
+import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERSION, type ISavedWorkspace } from '../../electron/store.js';
 import { WorkspaceDocumentState } from '../../electron/documents/document-state.js';
 import { documentFieldConfirmationIssue, documentFieldReviewKey, documentFieldSignature, isDocumentFieldConfirmed, type DocumentFieldReview, type DocumentFieldReviewTarget } from '../../src/shared/document-field-reviews.js';
 import { documentRevisionIndex } from '../../src/shared/match-approvals.js';
@@ -79,7 +79,7 @@ test('confirmation and withdrawal persist, reject stale commands and do not assi
         document.result.status = 'partial';
         const original: SupportingDocument = structuredClone(document.result);
         await createWorkspace(file, newMetadata(), [retainedBank(root)], [documentRun(root, [document])]);
-        const dialogs: WorkspaceDialogs = { open: async (): Promise<string> => Promise.resolve(file), save: async (): Promise<string> => Promise.resolve(file), unsaved: async (): Promise<'discard'> => Promise.resolve('discard') };
+        const dialogs: IWorkspaceDialogs = { open: async (): Promise<string> => Promise.resolve(file), save: async (): Promise<string> => Promise.resolve(file), unsaved: async (): Promise<'discard'> => Promise.resolve('discard') };
         const session: WorkspaceSession = new WorkspaceSession(dialogs);
         await session.dispatch({ type: 'open' });
         const target: DocumentFieldReviewTarget = { documentId: document.id, sectionId: section.sectionId, fieldId: merchant.id };
@@ -103,7 +103,7 @@ test('confirmation and withdrawal persist, reject stale commands and do not assi
         assert.equal(effective(restored).issues.some((issue: SupportingDocument['issues'][number]): boolean => issue.code === 'unconfirmed-merchant'), true);
         assert.equal(restored.state().workspace!.documentFieldReviews![0].revision, 3);
         await restored.dispatch({ type: 'save' });
-        const withdrawn: SavedWorkspace = await loadWorkspace(file);
+        const withdrawn: ISavedWorkspace = await loadWorkspace(file);
         assert.equal(withdrawn.documentFieldReviews.get(documentFieldReviewKey(target))!.confirmed, false);
         assert.equal(documentRevisionIndex(withdrawn.documentCorrections.values(), withdrawn.documentFieldReviews.values()).get(document.id), 3);
         await restored.dispatch({ type: 'new' });
@@ -146,10 +146,10 @@ test('version 13 opens unchanged and gains field reviews only on explicit save',
         const db: Database.Database = new Database(file);
         db.exec('DROP TABLE statement_analysis_versions; DROP TABLE document_field_reviews; PRAGMA user_version=13;');
         db.close();
-        const previous: SavedWorkspace = await loadWorkspace(file);
+        const previous: ISavedWorkspace = await loadWorkspace(file);
         assert.equal(previous.schemaVersion, 13);
         assert.equal(previous.documentFieldReviews.size, 0);
-        const saved: SavedWorkspace = await saveWorkspace(previous, previous.metadata);
+        const saved: ISavedWorkspace = await saveWorkspace(previous, previous.metadata);
         assert.equal(saved.schemaVersion, SCHEMA_VERSION);
         assert.equal((await loadWorkspace(file)).documentFieldReviews.size, 0);
     } finally {

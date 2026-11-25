@@ -19,7 +19,8 @@ export function transactionsIgnoredByRules(imports: StoredBankImport[], rules: R
         return ignored;
     }
     for (const record of imports) {
-        const ids: Map<string, string> = new Map(record.transactions.map(({ rowId, transactionId }: { rowId: string; transactionId: string; }): [string, string] => [rowId, transactionId]));
+        const ids: Map<string, string> = new Map(record.transactions.map(({ rowId, transactionId }: StoredBankImport['transactions'][number]): [string, string] =>
+            [rowId, transactionId]));
         for (const row of record.result.transactions) {
             const key: string | null = transactionIgnoreRuleKey(row);
             if (key && rules.has(key)) {

@@ -7,8 +7,8 @@ import { test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import path from "node:path";
-import { WorkspaceSession, type WorkspaceDialogs } from "../../electron/workspace-session.js";
-import type { DocumentImportOptions, DocumentImportService } from "../../electron/documents/service.js";
+import { WorkspaceSession, type IWorkspaceDialogs } from "../../electron/workspace-session.js";
+import type { IDocumentImportOptions, IDocumentImportService } from "../../electron/documents/service.js";
 import { createWorkspace, newMetadata } from "../../electron/store.js";
 import type { StoredDocumentImport } from "../../src/shared/workspace-documents.js";
 import { documentRun } from "./document-fixtures.js";
@@ -18,9 +18,9 @@ async function directory(): Promise<string> {
 	return mkdtemp(path.resolve("artifacts/doc-session-"));
 }
 
-function dialogs(): { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: WorkspaceDialogs; } {
+function dialogs(): { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: IWorkspaceDialogs; } {
 	const plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[] } = { saves: [], opens: [], choices: [] };
-	const handlers: WorkspaceDialogs = {
+	const handlers: IWorkspaceDialogs = {
 		save: async (): Promise<string | null> => Promise.resolve(plan.saves.shift() ?? null),
 		open: async (): Promise<string | null> => Promise.resolve(plan.opens.shift() ?? null),
 		unsaved: async (): Promise<"discard" | "save" | "cancel"> => Promise.resolve(plan.choices.shift() ?? "cancel"),
@@ -32,11 +32,11 @@ test("document analysis remains unsaved until explicit save and reopens with imm
 	const root: string = await directory(),
 		file: string = path.join(root, "documents.receiptmatch"),
 		first: StoredDocumentImport = documentRun(root),
-		script: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: WorkspaceDialogs; } = dialogs();
+		script: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: IWorkspaceDialogs; } = dialogs();
 	let next: StoredDocumentImport | null = first;
-	const sources: DocumentImportOptions["existingSources"][] = [];
-	const service: DocumentImportService = {
-		run: async (options: DocumentImportOptions): Promise<StoredDocumentImport | null> => {
+	const sources: IDocumentImportOptions["existingSources"][] = [];
+	const service: IDocumentImportService = {
+		run: async (options: IDocumentImportOptions): Promise<StoredDocumentImport | null> => {
 			sources.push(options.existingSources);
 			return Promise.resolve(next);
 		},
@@ -69,7 +69,7 @@ test("document analysis remains unsaved until explicit save and reopens with imm
 	assert.equal(sources[1].length, 1);
 	assert.equal(session.state().workspace?.dirty, true, "the new run report is an explicit unsaved change");
 	await session.dispatch({ type: "save" });
-	const reopen: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: WorkspaceDialogs; } = dialogs();
+	const reopen: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: IWorkspaceDialogs; } = dialogs();
 	reopen.plan.opens.push(file);
 	const restored: WorkspaceSession = new WorkspaceSession(reopen.handlers);
 	await restored.dispatch({ type: "open" });
@@ -79,15 +79,15 @@ test("document analysis remains unsaved until explicit save and reopens with imm
 
 test("cancelled document runs retain completed files while concurrent actions and late progress cannot overwrite the workspace", async (): Promise<void> => {
 	const root: string = await directory(),
-		script: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: WorkspaceDialogs; } = dialogs(),
+		script: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: IWorkspaceDialogs; } = dialogs(),
 		run: StoredDocumentImport = documentRun(root);
 	run.status = "cancelled";
-	let finish!: (value: StoredDocumentImport) => void, captured!: DocumentImportOptions;
+	let finish!: (value: StoredDocumentImport) => void, captured!: IDocumentImportOptions;
 	const pending: Promise<StoredDocumentImport> = new Promise<StoredDocumentImport>((resolve: (value: StoredDocumentImport | PromiseLike<StoredDocumentImport>) => void): void => {
 		finish = resolve;
 	});
 	const session: WorkspaceSession = new WorkspaceSession(script.handlers, undefined, undefined, {
-		run: async (options: DocumentImportOptions): Promise<StoredDocumentImport> => {
+		run: async (options: IDocumentImportOptions): Promise<StoredDocumentImport> => {
 			captured = options;
 			return pending;
 		},
@@ -122,7 +122,7 @@ test("cancelled folder selection stays clean and failed saves or invalid Open pr
 	const root: string = await directory(),
 		file: string = path.join(root, "saved.receiptmatch");
 	await createWorkspace(file, newMetadata());
-	const script: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: WorkspaceDialogs; } = dialogs();
+	const script: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: IWorkspaceDialogs; } = dialogs();
 	script.plan.opens.push(file);
 	let next: StoredDocumentImport | null = null;
 	const session: WorkspaceSession = new WorkspaceSession(script.handlers, undefined, undefined, { run: async (): Promise<StoredDocumentImport | null> => Promise.resolve(next) });
@@ -153,7 +153,7 @@ test("cancelled folder selection stays clean and failed saves or invalid Open pr
 
 test("invalid document skips and reused identities are rejected without retaining a report", async (): Promise<void> => {
 	const root: string = await directory(),
-		script: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: WorkspaceDialogs; } = dialogs();
+		script: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; handlers: IWorkspaceDialogs; } = dialogs();
 	let candidate: StoredDocumentImport = documentRun(root, []);
 	const session: WorkspaceSession = new WorkspaceSession(script.handlers, undefined, undefined, { run: async (): Promise<StoredDocumentImport> => Promise.resolve(candidate) });
 	await session.dispatch({ type: "new" });

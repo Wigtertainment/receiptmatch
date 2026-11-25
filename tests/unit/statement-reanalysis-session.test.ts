@@ -5,10 +5,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { test, type TestContext } from 'vitest';
-import type { StatementAiService, StatementAiSource } from '../../electron/import/reanalyze-statement.js';
+import type { IStatementAiService, IStatementAiSource } from '../../electron/import/reanalyze-statement.js';
 import { reconciliationRows } from '../../electron/reconciliation-csv.js';
-import { createWorkspace, loadWorkspace, newMetadata, SCHEMA_VERSION, type SavedWorkspace } from '../../electron/store.js';
-import { WorkspaceSession, type WorkspaceDialogs } from '../../electron/workspace-session.js';
+import { createWorkspace, loadWorkspace, newMetadata, SCHEMA_VERSION, type ISavedWorkspace } from '../../electron/store.js';
+import { WorkspaceSession, type IWorkspaceDialogs } from '../../electron/workspace-session.js';
 import { importIssue, type BankImportResult } from '../../src/shared/bank-import.js';
 import { documentFieldReviewKey, type DocumentFieldReview } from '../../src/shared/document-field-reviews.js';
 import type { StatementAiPreviewResult, StatementAiRequest, StatementAiResult } from '../../src/shared/statement-ai.js';
@@ -18,7 +18,7 @@ import { documentRun, retainedBank, retainedDocument } from './document-fixtures
 
 interface Fixture { session: WorkspaceSession; original: StoredBankImport; file: string; request: StatementAiRequest; root: string; receiptId: string }
 
-function proposal(source: StatementAiSource, date: string = '2032-02-26'): StatementAiResult {
+function proposal(source: IStatementAiSource, date: string = '2032-02-26'): StatementAiResult {
     const result: BankImportResult = structuredClone(source.original.result);
     result.adapter = null;
     result.localRecognition = { model: 'nuextract3', parserVersion: '1' };
@@ -36,7 +36,7 @@ function missingDate(record: StoredBankImport): void {
     record.result.issues = [issue];
 }
 
-async function fixture(context: TestContext, analyze: StatementAiService['analyze'] = (source: StatementAiSource): Promise<StatementAiResult> => Promise.resolve(proposal(source)),
+async function fixture(context: TestContext, analyze: IStatementAiService['analyze'] = (source: IStatementAiSource): Promise<StatementAiResult> => Promise.resolve(proposal(source)),
     prepare?: (record: StoredBankImport) => void): Promise<Fixture> {
     const root: string = await mkdtemp(path.join(tmpdir(), 'receiptmatch-statement-reanalysis-'));
     context.onTestFinished(async (): Promise<void> => rm(root, { recursive: true, force: true }));
@@ -48,7 +48,7 @@ async function fixture(context: TestContext, analyze: StatementAiService['analyz
     const receipt: ReturnType<typeof retainedDocument> = retainedDocument(root);
     const file: string = path.join(root, 'workspace.receiptmatch');
     await createWorkspace(file, newMetadata(), [original], [documentRun(root, [receipt])]);
-    const dialogs: WorkspaceDialogs = { open: async (): Promise<string> => Promise.resolve(file), save: async (): Promise<string> => Promise.resolve(file),
+    const dialogs: IWorkspaceDialogs = { open: async (): Promise<string> => Promise.resolve(file), save: async (): Promise<string> => Promise.resolve(file),
         unsaved: async (): Promise<'discard'> => Promise.resolve('discard'), relinkOriginal: async (): Promise<string> => Promise.resolve(path.join(root, 'relocated.pdf')) };
     const session: WorkspaceSession = new WorkspaceSession(dialogs, undefined, undefined, undefined, undefined, undefined, undefined, { analyze });
     assert.equal((await session.dispatch({ type: 'open' })).error, null);
@@ -90,7 +90,7 @@ test('complete adapter statements produce an isolated preview and append one ana
     assert.equal(session.state().workspace!.matchRevision, before.workspace!.matchRevision + 1);
     assert.equal((await session.acceptStatementAnalysis(acceptance)).status, 'failed');
     assert.equal((await session.dispatch({ type: 'save' })).error, null);
-    const saved: SavedWorkspace = await loadWorkspace(file);
+    const saved: ISavedWorkspace = await loadWorkspace(file);
     assert.deepEqual(saved.imports, [original]);
     assert.equal(saved.statementAnalysisVersions.length, 1);
     assert.equal(saved.sources.length, 2);
@@ -102,7 +102,7 @@ test('complete adapter statements produce an isolated preview and append one ana
 });
 
 test('partial statements can promote an unresolved booking without importing another statement', async (context: TestContext): Promise<void> => {
-    const { session, original, request }: Fixture = await fixture(context, (source: StatementAiSource): Promise<StatementAiResult> => {
+    const { session, original, request }: Fixture = await fixture(context, (source: IStatementAiSource): Promise<StatementAiResult> => {
         const result: BankImportResult = structuredClone(source.original.result);
         const row: BankImportResult['unresolvedDrafts'][number] = result.unresolvedDrafts[0];
         result.transactions.push({ rowId: row.rowId, accountSectionId: row.accountSectionId, valueDate: row.valueDate, reportedOriginalAmount: row.reportedOriginalAmount,
@@ -141,7 +141,7 @@ test('discarded, superseded and workspace-stale tokens cannot apply a statement 
 
 test('acceptance rechecks original bytes and resolved relink path', async (context: TestContext): Promise<void> => {
     const observed: string[] = [];
-    const { session, request, original, root }: Fixture = await fixture(context, (source: StatementAiSource): Promise<StatementAiResult> => {
+    const { session, request, original, root }: Fixture = await fixture(context, (source: IStatementAiSource): Promise<StatementAiResult> => {
         observed.push(source.filePath);
         return Promise.resolve(proposal(source));
     });
@@ -184,14 +184,14 @@ test('surviving assignments remain but approvals require explicit acknowledgemen
     assert.equal(summary(session, id).review.status, 'assigned');
     assert.equal(summary(session, id).approvalStatus.status, 'revoked');
     await session.dispatch({ type: 'save' });
-    const saved: SavedWorkspace = await loadWorkspace(file);
+    const saved: ISavedWorkspace = await loadWorkspace(file);
     assert.equal(saved.matchDecisions.get(id), receiptId);
     assert.equal(saved.statementAnalysisVersions.length, 1);
 });
 
 test('model failures and in-flight cancellation leave the active analysis and saved workspace untouched', async (context: TestContext): Promise<void> => {
     let attempt: number = 0;
-    const { session, request, file, original }: Fixture = await fixture(context, async (_source: StatementAiSource, options: Parameters<StatementAiService['analyze']>[1]): Promise<StatementAiResult> => {
+    const { session, request, file, original }: Fixture = await fixture(context, async (_source: IStatementAiSource, options: Parameters<IStatementAiService['analyze']>[1]): Promise<StatementAiResult> => {
         if (++attempt === 1) {
             return { status: 'unavailable', error: 'Install NuExtract3.' };
         }
@@ -216,7 +216,7 @@ test('model failures and in-flight cancellation leave the active analysis and sa
 
 test('corrected draft approvals are revoked when another statement row changes and remain revoked after reopen', async (context: TestContext): Promise<void> => {
     const { session, request, original, receiptId }: Fixture = await fixture(context,
-        (source: StatementAiSource): Promise<StatementAiResult> => Promise.resolve(proposal(source)), missingDate);
+        (source: IStatementAiSource): Promise<StatementAiResult> => Promise.resolve(proposal(source)), missingDate);
     const id: string = original.drafts[0].draftId;
     await session.dispatch({ type: 'correct-bank-row', revision: session.state().workspace!.matchRevision, rowId: id, changes: { bookingDate: '2032-02-28' } });
     await session.dispatch({ type: 'review-match', revision: session.state().workspace!.matchRevision, transactionId: id, review: { status: 'assigned', documentId: receiptId } });
@@ -261,7 +261,7 @@ test('schema 16 document confirmations survive statement reanalysis, migration a
         revision: session.state().workspace!.matchRevision, ...target, confirmed: true });
     assert.equal(confirmed.error, null);
     assert.equal((await session.dispatch({ type: 'save' })).error, null);
-    const before: SavedWorkspace = await loadWorkspace(file);
+    const before: ISavedWorkspace = await loadWorkspace(file);
     const review: DocumentFieldReview = before.documentFieldReviews.get(documentFieldReviewKey(target))!;
     assert.equal(review.confirmed, true);
     const db: Database.Database = new Database(file);
@@ -278,7 +278,7 @@ test('schema 16 document confirmations survive statement reanalysis, migration a
     const preview: Extract<StatementAiPreviewResult, { status: 'ready' }> = ready(await session.reanalyzeStatement(currentRequest));
     assert.equal((await session.acceptStatementAnalysis({ token: preview.token, loadRevision: currentRequest.loadRevision, acknowledgeConflicts: true })).status, 'adopted');
     assert.equal((await session.dispatch({ type: 'save' })).error, null);
-    const saved: SavedWorkspace = await loadWorkspace(file);
+    const saved: ISavedWorkspace = await loadWorkspace(file);
     assert.equal(saved.schemaVersion, SCHEMA_VERSION);
     assert.deepEqual(saved.documentFieldReviews.get(documentFieldReviewKey(target)), review);
     assert.deepEqual(saved.imports, [original]);

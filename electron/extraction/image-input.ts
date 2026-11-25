@@ -3,7 +3,10 @@ import { JPG } from "image-size/types/jpg";
 import type { IImage } from "image-size/types/interface";
 import { PDF_EXTRACTION_LIMITS } from "../../src/shared/pdf-extraction.js";
 
-export const IMAGE_MIME_TYPES: { readonly png: "image/png"; readonly jpeg: "image/jpeg"; } = { png: "image/png", jpeg: "image/jpeg" } as const;
+interface IImageMimeTypes { readonly png: "image/png"; readonly jpeg: "image/jpeg" }
+interface IImageDimensions { width: number; height: number }
+
+export const IMAGE_MIME_TYPES: IImageMimeTypes = { png: "image/png", jpeg: "image/jpeg" } as const;
 export class ImageInputError extends Error {
 	constructor(
 		readonly code: "invalid-input" | "image-format" | "image-invalid" | "pixel-limit",
@@ -27,7 +30,7 @@ export function assertImageDimensions(width: number, height: number): void {
 }
 
 // This bounds decoder allocation using metadata; successful header parsing does not prove a complete or decodable image.
-export function imageInputDimensions(bytes: Uint8Array, format: "png" | "jpeg", byteLimit: number = PDF_EXTRACTION_LIMITS.bytes): { width: number; height: number } {
+export function imageInputDimensions(bytes: Uint8Array, format: "png" | "jpeg", byteLimit: number = PDF_EXTRACTION_LIMITS.bytes): IImageDimensions {
 	if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1 || bytes.byteLength > byteLimit) {
 		throw new ImageInputError("invalid-input", "Choose a nonempty image within the local extraction byte limit.");
 	}
@@ -38,7 +41,7 @@ export function imageInputDimensions(bytes: Uint8Array, format: "png" | "jpeg", 
 	if (!signature.every((value: number, index: number): boolean => bytes[index] === value)) {
 		throw new ImageInputError("image-format", "The image signature does not match its authorized format.");
 	}
-	let dimensions: { width: number; height: number };
+	let dimensions: IImageDimensions;
 	try {
 		// Library DataViews must not reach beyond the authorized byte view into its backing buffer.
 		const bounded: Uint8Array<ArrayBufferLike> = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes : Uint8Array.from(bytes);

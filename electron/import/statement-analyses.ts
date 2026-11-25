@@ -7,16 +7,16 @@ import { statementAnalysisVersionSchema, type StatementAnalysisVersion } from '.
 import { storedBankImportSchema, type StoredBankImport } from '../../src/shared/workspace-import.js';
 
 type Row = TransactionCandidate | UnresolvedDraft;
-interface IdentifiedRow { row: Row; id: string; kind: 'transaction' | 'draft' }
+interface IIdentifiedRow { row: Row; id: string; kind: 'transaction' | 'draft' }
 
-function rows(record: StoredBankImport): IdentifiedRow[] {
+function rows(record: StoredBankImport): IIdentifiedRow[] {
     const transactions: Map<string, string> = new Map(record.transactions.map((item: StoredBankImport['transactions'][number]): [string, string] => [item.rowId, item.transactionId]));
     const drafts: Map<string, string> = new Map(record.drafts.map((item: StoredBankImport['drafts'][number]): [string, string] => [item.rowId, item.draftId]));
-    return [...record.result.transactions.map((row: TransactionCandidate): IdentifiedRow => ({ row, id: transactions.get(row.rowId)!, kind: 'transaction' })),
-        ...record.result.unresolvedDrafts.map((row: UnresolvedDraft): IdentifiedRow => ({ row, id: drafts.get(row.rowId)!, kind: 'draft' }))];
+    return [...record.result.transactions.map((row: TransactionCandidate): IIdentifiedRow => ({ row, id: transactions.get(row.rowId)!, kind: 'transaction' })),
+        ...record.result.unresolvedDrafts.map((row: UnresolvedDraft): IIdentifiedRow => ({ row, id: drafts.get(row.rowId)!, kind: 'draft' }))];
 }
 
-function rowSignature({ row, kind }: IdentifiedRow): string {
+function rowSignature({ row, kind }: IIdentifiedRow): string {
     return JSON.stringify([kind, row.accountSectionId, row.bookingDate?.value, row.valueDate?.value, row.accountAmount?.value, row.direction,
         row.reportedOriginalAmount?.value, row.description?.value, row.counterpartyCandidate?.value,
         row.references.map((reference: Row['references'][number]): string[] => [reference.label, reference.value]),
@@ -24,8 +24,8 @@ function rowSignature({ row, kind }: IdentifiedRow): string {
 }
 
 function reusableRows(current: StoredBankImport, proposed: StoredBankImport): Map<string, string> {
-    const before: Map<string, IdentifiedRow[]> = new Map();
-    const after: Map<string, IdentifiedRow[]> = new Map();
+    const before: Map<string, IIdentifiedRow[]> = new Map();
+    const after: Map<string, IIdentifiedRow[]> = new Map();
     for (const [record, index] of [[current, before], [proposed, after]] as const) {
         for (const item of rows(record)) {
             const signature: string = rowSignature(item);
@@ -34,7 +34,7 @@ function reusableRows(current: StoredBankImport, proposed: StoredBankImport): Ma
     }
     const reusable: Map<string, string> = new Map();
     for (const [signature, candidates] of after) {
-        const previous: IdentifiedRow[] | undefined = before.get(signature);
+        const previous: IIdentifiedRow[] | undefined = before.get(signature);
         if (previous?.length === 1 && candidates.length === 1) {
             reusable.set(candidates[0].row.rowId, previous[0].id);
         }
@@ -94,7 +94,7 @@ export function projectStatementAnalyses(imports: StoredBankImport[], versions: 
     const latest: Map<string, StoredBankImport> = new Map(imports.map((record: StoredBankImport): [string, StoredBankImport] => [record.id, record]));
     const originals: Map<string, StoredBankImport> = new Map(latest);
     const seen: Set<string> = new Set(imports.flatMap((record: StoredBankImport): string[] => [record.id, record.result.sourceProvenance!.sourceId,
-        ...record.accounts.flatMap((account: StoredBankImport['accounts'][number]): string[] => [account.accountId, account.statementId]), ...rows(record).map((item: IdentifiedRow): string => item.id)]).map((id: string): string => id.toLowerCase()));
+        ...record.accounts.flatMap((account: StoredBankImport['accounts'][number]): string[] => [account.accountId, account.statementId]), ...rows(record).map((item: IIdentifiedRow): string => item.id)]).map((id: string): string => id.toLowerCase()));
     for (const version of z.array(statementAnalysisVersionSchema).max(1000).parse(versions)) {
         const original: StoredBankImport | undefined = originals.get(version.importId);
         const current: StoredBankImport | undefined = latest.get(version.importId);
@@ -118,7 +118,7 @@ export function projectCorrectedStatementAnalyses(imports: StoredBankImport[], v
     const history: StoredBankImport[] = [...imports, ...versions.map((version: StatementAnalysisVersion): StoredBankImport => version.record)];
     const known: Set<string> = new Set();
     for (const record of history) {
-        const applicable: Map<string, BankCorrection> = new Map(rows(record).flatMap((item: IdentifiedRow): [string, BankCorrection][] => {
+        const applicable: Map<string, BankCorrection> = new Map(rows(record).flatMap((item: IIdentifiedRow): [string, BankCorrection][] => {
             const correction: BankCorrection | undefined = corrections.get(item.id);
             if (!correction) {
                 return [];
@@ -132,24 +132,24 @@ export function projectCorrectedStatementAnalyses(imports: StoredBankImport[], v
         throw new Error('A correction refers to a bank row outside the statement history.');
     }
     const active: StoredBankImport[] = projectStatementAnalyses(imports, versions);
-    const activeIds: Set<string> = new Set(active.flatMap((record: StoredBankImport): string[] => rows(record).map((item: IdentifiedRow): string => item.id)));
+    const activeIds: Set<string> = new Set(active.flatMap((record: StoredBankImport): string[] => rows(record).map((item: IIdentifiedRow): string => item.id)));
     return applyBankCorrections(active, new Map([...corrections].filter(([id]: [string, BankCorrection]): boolean => activeIds.has(id))));
 }
 
 export function historicalStatementImports(imports: StoredBankImport[], versions: readonly StatementAnalysisVersion[], corrections: ReadonlyMap<string, BankCorrection>): StoredBankImport[] {
     projectCorrectedStatementAnalyses(imports, versions, corrections);
     return imports.map((original: StoredBankImport): StoredBankImport => {
-        const all: Map<string, IdentifiedRow> = new Map();
+        const all: Map<string, IIdentifiedRow> = new Map();
         for (const record of [original, ...versions.filter((version: StatementAnalysisVersion): boolean => version.importId === original.id).map((version: StatementAnalysisVersion): StoredBankImport => version.record)]) {
-            const applicable: Map<string, BankCorrection> = new Map(rows(record).flatMap((item: IdentifiedRow): [string, BankCorrection][] => corrections.has(item.id) ? [[item.id, corrections.get(item.id)!]] : []));
+            const applicable: Map<string, BankCorrection> = new Map(rows(record).flatMap((item: IIdentifiedRow): [string, BankCorrection][] => corrections.has(item.id) ? [[item.id, corrections.get(item.id)!]] : []));
             for (const item of rows(applyBankCorrections([record], applicable)[0])) {
                 all.set(item.id, { ...item, row: { ...item.row, rowId: item.id } });
             }
         }
-        const values: IdentifiedRow[] = [...all.values()];
-        return { ...original, result: { ...original.result, transactions: values.filter((item: IdentifiedRow): boolean => item.kind === 'transaction').map((item: IdentifiedRow): TransactionCandidate => item.row as TransactionCandidate),
-            unresolvedDrafts: values.filter((item: IdentifiedRow): boolean => item.kind === 'draft').map((item: IdentifiedRow): UnresolvedDraft => item.row as UnresolvedDraft) },
-            transactions: values.filter((item: IdentifiedRow): boolean => item.kind === 'transaction').map((item: IdentifiedRow): StoredBankImport['transactions'][number] => ({ rowId: item.id, transactionId: item.id })),
-            drafts: values.filter((item: IdentifiedRow): boolean => item.kind === 'draft').map((item: IdentifiedRow): StoredBankImport['drafts'][number] => ({ rowId: item.id, draftId: item.id })) };
+        const values: IIdentifiedRow[] = [...all.values()];
+        return { ...original, result: { ...original.result, transactions: values.filter((item: IIdentifiedRow): boolean => item.kind === 'transaction').map((item: IIdentifiedRow): TransactionCandidate => item.row as TransactionCandidate),
+            unresolvedDrafts: values.filter((item: IIdentifiedRow): boolean => item.kind === 'draft').map((item: IIdentifiedRow): UnresolvedDraft => item.row as UnresolvedDraft) },
+            transactions: values.filter((item: IIdentifiedRow): boolean => item.kind === 'transaction').map((item: IIdentifiedRow): StoredBankImport['transactions'][number] => ({ rowId: item.id, transactionId: item.id })),
+            drafts: values.filter((item: IIdentifiedRow): boolean => item.kind === 'draft').map((item: IIdentifiedRow): StoredBankImport['drafts'][number] => ({ rowId: item.id, draftId: item.id })) };
     });
 }

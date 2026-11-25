@@ -10,7 +10,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test, type TestContext } from 'vitest';
-import { createWorkspace, loadWorkspace, newMetadata, type SavedWorkspace } from '../../electron/store.js';
+import { createWorkspace, loadWorkspace, newMetadata, type ISavedWorkspace } from '../../electron/store.js';
 import { WorkspaceSession } from '../../electron/workspace-session.js';
 import { reconciliationRows } from '../../electron/reconciliation-csv.js';
 import { approvalSelectionFor } from '../../src/shared/match-approvals.js';
@@ -74,7 +74,7 @@ test('stages a changed document, keeps its prior review in history and revokes o
     assert.deepEqual(session.state().workspace?.supersededDocuments, [receipt.id]);
     assert.equal(session.documentImports().length, 2);
     assert.equal((await session.dispatch({ type: 'save' })).error, null);
-    const saved: SavedWorkspace = await loadWorkspace(workspace);
+    const saved: ISavedWorkspace = await loadWorkspace(workspace);
     assert.equal(saved.archivedSourceReviews.get(receipt.result.input!.source.sourceId)?.get(transactionId), receipt.id);
     assert.notEqual(saved.matchDecisions.get(transactionId), receipt.id);
     await session.dispatch({ type: 'open' });
@@ -106,7 +106,7 @@ test('requires acknowledgement for an unrelated document and leaves the previous
     assert.equal(session.state().workspace?.dirty, false);
     assert.deepEqual(await accept(analysis.comparison.token, true), { status: 'adopted' });
     assert.equal((await session.dispatch({ type: 'save' })).error, null);
-    const saved: SavedWorkspace = await loadWorkspace(workspace);
+    const saved: ISavedWorkspace = await loadWorkspace(workspace);
     assert.equal(saved.matchDecisions.has(transactionId), false);
     assert.equal(saved.archivedSourceReviews.get(receipt.result.input!.source.sourceId)?.get(transactionId), receipt.id);
 });
@@ -128,7 +128,7 @@ test.for([false, true])('keeps the review and approval for an unchanged booking 
     assert.deepEqual(session.state().workspace?.supersededStatements, [bank.id]);
     assert.ok(!session.matchResults().some((match: TransactionMatch): boolean => match.transactionId === transactionId));
     assert.equal((await session.dispatch({ type: 'save' })).error, null);
-    const saved: SavedWorkspace = await loadWorkspace(workspace);
+    const saved: ISavedWorkspace = await loadWorkspace(workspace);
     assert.equal(saved.imports.length, 2);
     assert.equal(reconciliationRows(saved).filter((row: import('../../electron/reconciliation-csv.js').ReconciliationRow): boolean => row.row_type === 'transaction').length, bank.transactions.length);
     const rows: import('../../electron/reconciliation-csv.js').ReconciliationRow[] = reconciliationRows(saved);

@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test, type TestContext } from 'vitest';
 import { reconciliationCsvColumns, reconciliationRows, serializeReconciliationCsv } from '../../electron/reconciliation-csv.js';
-import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, type SavedWorkspace } from '../../electron/store.js';
+import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, type ISavedWorkspace } from '../../electron/store.js';
 import { advanceReviewRevision, approvalSelectionFor } from '../../src/shared/match-approvals.js';
 import type { DocumentExportOutcome } from '../../src/shared/document-export.js';
 import { row, statement } from './bank-fixtures.js';
@@ -32,7 +32,7 @@ test('projects saved bookings, approval and copy outcomes, and unresolved rows w
 	await createWorkspace(file, newMetadata(), [bank], [documentRun(root, [document, replacement])], new Map([[first, document.id], [second, null]]),
 		new Map([[promoted, { rowId: promoted, revision: 2, accountAmount: { currency: 'EUR', coefficient: '-90071992547409932700', scale: 4 } }]]),
 		new Map(), new Map([[first, { associationRevision: 1, approval }]]));
-	const snapshot: SavedWorkspace = await loadWorkspace(file);
+	const snapshot: ISavedWorkspace = await loadWorkspace(file);
 	const rows: import('../../electron/reconciliation-csv.js').ReconciliationRow[] = reconciliationRows(snapshot);
 	assert.equal(rows.length, 4);
 	const [approved, completed, corrected, draft]: import('../../electron/reconciliation-csv.js').ReconciliationRow[] = rows;
@@ -86,7 +86,7 @@ test('projects saved bookings, approval and copy outcomes, and unresolved rows w
 	assert.throws((): import('../../electron/reconciliation-csv.js').ReconciliationRow[] => reconciliationRows(snapshot, [{ ...outcome, transactionId: second }]), /saved approvals/);
 	assert.throws((): import('../../electron/reconciliation-csv.js').ReconciliationRow[] => reconciliationRows(snapshot, [{ ...outcome, documentId: randomUUID() }]), /saved approvals/);
 
-	const reassigned: SavedWorkspace = await saveWorkspace(snapshot, snapshot.metadata, snapshot.imports, snapshot.documentImports,
+	const reassigned: ISavedWorkspace = await saveWorkspace(snapshot, snapshot.metadata, snapshot.imports, snapshot.documentImports,
 		new Map(snapshot.matchDecisions).set(first, replacement.id), snapshot.bankCorrections, snapshot.documentCorrections,
 		new Map(snapshot.reviewApprovals).set(first, advanceReviewRevision(snapshot.reviewApprovals.get(first))));
 	const [revoked]: import('../../electron/reconciliation-csv.js').ReconciliationRow[] = reconciliationRows(reassigned);

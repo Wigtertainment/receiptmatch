@@ -5,7 +5,7 @@ import { defaultExportFilenamePattern, exportFilenameExample, renderExportFilena
 
 export async function readExportFilenamePattern(file: string): Promise<string> {
 	try {
-		const stored: { filenamePattern?: unknown; } | null = JSON.parse(await readFile(file, 'utf8')) as { filenamePattern?: unknown } | null;
+		const stored: Partial<Record<'filenamePattern', unknown>> | null = JSON.parse(await readFile(file, 'utf8')) as Partial<Record<'filenamePattern', unknown>> | null;
 		const pattern: unknown = stored?.filenamePattern;
 		return typeof pattern === 'string' && 'filename' in renderExportFilename(pattern, exportFilenameExample) ? pattern.trim() : defaultExportFilenamePattern;
 	} catch (error: unknown) {

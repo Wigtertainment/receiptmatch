@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test, type TestContext } from 'vitest';
 import { StatementImportService } from '../../electron/import/service.js';
-import { createWorkspace, loadWorkspace, newMetadata, type SavedWorkspace } from '../../electron/store.js';
+import { createWorkspace, loadWorkspace, newMetadata, type ISavedWorkspace } from '../../electron/store.js';
 import { WorkspaceSession } from '../../electron/workspace-session.js';
 import type { BankImportInput } from '../../src/shared/bank-import.js';
 import type { BankCorrection } from '../../src/shared/bank-corrections.js';
@@ -117,7 +117,7 @@ test('removes only the current statement selection and permits reimport before s
     assert.notEqual(reimported.id, removed.id);
     assert.equal(reimported.result.sourceProvenance?.sha256, provenance.sha256);
     assert.equal((await session.dispatch({ type: 'save' })).error, null);
-    const saved: SavedWorkspace = await loadWorkspace(file);
+    const saved: ISavedWorkspace = await loadWorkspace(file);
     assert.deepEqual(saved.imports, [kept, reimported]);
     assert.deepEqual(saved.documentImports[0].files, [{ status: 'imported', record: receipt }]);
     assert.equal(saved.matchDecisions.size, 0);
@@ -202,7 +202,7 @@ test('reconnects remaining replacement versions and reactivates the predecessor 
     const originalId: string = original.transactions[0].transactionId, latestId: string = latest.transactions[0].transactionId;
     const receipt: StoredSupportingDocument = retainedDocument(root);
     const replacements: Map<string, string> = new Map([[originalSource, middleSource], [middleSource, latestSource]]);
-    const archives: SavedWorkspace['archivedSourceReviews'] = new Map([[originalSource, new Map([[originalId, receipt.id]])]]);
+    const archives: ISavedWorkspace['archivedSourceReviews'] = new Map([[originalSource, new Map([[originalId, receipt.id]])]]);
     await createWorkspace(file, newMetadata(), [original, middle, latest], [documentRun(root, [receipt])], new Map([[latestId, receipt.id]]), undefined, undefined,
         new Map([[latestId, approved(latestId, receipt.id)]]), undefined, undefined, replacements, archives);
     const session: WorkspaceSession = createSession(file);

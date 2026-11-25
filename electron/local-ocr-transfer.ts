@@ -5,7 +5,7 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { NUEXTRACT_ASSETS, type ModelAsset } from './local-ocr-assets.js';
+import { NUEXTRACT_ASSETS, type IModelAsset } from './local-ocr-assets.js';
 
 const publisher: "huggingface.co" = 'huggingface.co';
 const downloadHosts: Set<string> = new Set([publisher, 'cas-bridge.xethub.hf.co', 'us.aws.cdn.hf.co']);
@@ -26,7 +26,7 @@ async function fetchAsset(source: string, signal: AbortSignal): Promise<Readable
     const license: boolean = url.href === vulkanRuntimeLicenseUrl;
     const hosts: ReadonlySet<string> = runtime ? runtimeDownloadHosts : downloadHosts;
     const model: boolean = trustedUrl(url, downloadHosts) && url.hostname === publisher
-        && NUEXTRACT_ASSETS.some((asset: ModelAsset): boolean => asset.url === url.href);
+        && NUEXTRACT_ASSETS.some((asset: IModelAsset): boolean => asset.url === url.href);
     if (!runtime && !license && !model) {
         throw new Error('Invalid model source.');
     }
@@ -50,7 +50,7 @@ async function fetchAsset(source: string, signal: AbortSignal): Promise<Readable
     throw new Error('Model download exceeded its redirect limit.');
 }
 
-export async function downloadModelAssets(assets: readonly ModelAsset[], staging: string, signal: AbortSignal, onBytes: (bytes: number) => void): Promise<void> {
+export async function downloadModelAssets(assets: readonly IModelAsset[], staging: string, signal: AbortSignal, onBytes: (bytes: number) => void): Promise<void> {
     let totalBytes: number = 0;
     for (const asset of assets) {
         signal.throwIfAborted();

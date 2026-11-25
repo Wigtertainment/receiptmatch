@@ -6,11 +6,16 @@ import {
 } from '../../src/shared/bank-import.js';
 import { moneySchema, type Money } from '../../src/shared/money.js';
 
-interface Line { spans: PositionedSpan[]; y: number; }
-interface Header { line: Line; detailsLeft: number; creditLeft: number; creditRight: number; debitRight: number; }
-interface Row { rowId: string; lines: Line[]; }
-const metadata: { bankId: string; adapterId: string; version: string; layouts: { layoutId: string; version: string; }[]; } = { bankId: 'airwallex', adapterId: 'airwallex-business', version: '1', layouts: [{ layoutId: 'account-activity-english-eur', version: '1' }] };
-const selection: { bankId: string; adapterId: string; version: string; layoutId: string; layoutVersion: string; } = { bankId: metadata.bankId, adapterId: metadata.adapterId, version: metadata.version,
+interface ILine { spans: PositionedSpan[]; y: number; }
+interface IHeader { line: ILine; detailsLeft: number; creditLeft: number; creditRight: number; debitRight: number; }
+interface IRow { rowId: string; lines: ILine[]; }
+type TransactionColumns = Record<'date' | 'details' | 'credit' | 'debit' | 'balance', PositionedSpan[]>;
+type ParsedRowData = Omit<UnresolvedDraft, 'issues' | 'valueDate'> & Record<'valueDate', null>;
+
+const metadata: IBankAdapter['metadata'] = {
+    bankId: 'airwallex', adapterId: 'airwallex-business', version: '1', layouts: [{ layoutId: 'account-activity-english-eur', version: '1' }]
+};
+const selection: NonNullable<BankImportResult['adapter']> = { bankId: metadata.bankId, adapterId: metadata.adapterId, version: metadata.version,
     layoutId: metadata.layouts[0].layoutId, layoutVersion: metadata.layouts[0].version };
 const months: string[] = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 const amountPattern: "(?:0|[1-9]\\d*|[1-9]\\d{0,2}(?:,\\d{3})+)\\.\\d{2}" = '(?:0|[1-9]\\d*|[1-9]\\d{0,2}(?:,\\d{3})+)\\.\\d{2}';
@@ -23,10 +28,10 @@ function joined(spans: PositionedSpan[]): string {
     return spans.map((span: PositionedSpan): string => span.text.trim()).filter(Boolean).join(' ');
 }
 
-function linesOf(page: ImportPage): Line[] {
-    const lines: Line[] = [];
+function linesOf(page: ImportPage): ILine[] {
+    const lines: ILine[] = [];
     for (const span of [...page.spans].sort((a: PositionedSpan, b: PositionedSpan): number => a.region.y - b.region.y || a.region.x - b.region.x || a.text.localeCompare(b.text))) {
-        const line: Line | undefined = lines.at(-1);
+        const line: ILine | undefined = lines.at(-1);
         if (line && Math.abs(line.y - span.region.y) <= Math.min(2.5, span.region.height / 2)) {
             line.spans.push(span);
         } else {
@@ -57,7 +62,7 @@ function evidence(page: ImportPage, spans: PositionedSpan[]): SourceEvidence[] {
     });
 }
 
-function headerOf(line: Line): Header | null {
+function headerOf(line: ILine): IHeader | null {
     const names: string[] = ['Date', 'Details', 'Credit', 'Debit', 'Balance'];
     const fields: (PositionedSpan | undefined)[] = names.map((name: string): PositionedSpan | undefined => line.spans.find((span: PositionedSpan): boolean => span.text.trim() === name));
     if (fields.some((field: PositionedSpan | undefined): field is undefined => !field)) {
@@ -70,7 +75,7 @@ function headerOf(line: Line): Header | null {
     return { line, detailsLeft: details.region.x, creditLeft: credit.region.x, creditRight: debit.region.x, debitRight: balance.region.x };
 }
 
-function columns(line: Line, header: Header): { date: PositionedSpan[]; details: PositionedSpan[]; credit: PositionedSpan[]; debit: PositionedSpan[]; balance: PositionedSpan[]; } {
+function columns(line: ILine, header: IHeader): TransactionColumns {
     const date: PositionedSpan[] = [], details: PositionedSpan[] = [], credit: PositionedSpan[] = [], debit: PositionedSpan[] = [], balance: PositionedSpan[] = [];
     for (const span of line.spans) {
         const end: number = span.region.x + span.region.width;
@@ -105,44 +110,45 @@ function amountOf(raw: string, currency: string, direction: 'incoming' | 'outgoi
         return null;
     }
     const magnitude: bigint = BigInt(match[1].replace(/[,.]/g, ''));
-    const parsed: ZodSafeParseResult<{ coefficient: string; currency: string; scale: number; }> = moneySchema.safeParse({ coefficient: (direction === 'outgoing' ? -magnitude : magnitude).toString(), currency, scale: 2 });
+    const parsed: ZodSafeParseResult<Money> = moneySchema.safeParse({ coefficient: (direction === 'outgoing' ? -magnitude : magnitude).toString(), currency, scale: 2 });
     return parsed.success ? parsed.data : null;
 }
 
-function possibleRow(line: Line, header: Header): boolean {
-    const cells: { date: PositionedSpan[]; details: PositionedSpan[]; credit: PositionedSpan[]; debit: PositionedSpan[]; balance: PositionedSpan[]; } = columns(line, header);
+function possibleRow(line: ILine, header: IHeader): boolean {
+    const cells: TransactionColumns = columns(line, header);
     return /^[A-Za-z?]{3}\s+(?:\d{1,2}|\?+)\s+\d{4}\b/.test(joined(cells.date)) ||
         [...cells.credit, ...cells.debit, ...cells.balance].some((span: PositionedSpan): boolean => /\d[\d,]*\.\d/.test(span.text)) ||
         transactionTypes.has(joined(cells.details));
 }
 
-function summary(line: Line): boolean {
+function summary(line: ILine): boolean {
     return new RegExp(`^(?:Starting|Ending) balance\\s+${amountPattern}\\s+EUR$`).test(joined(line.spans));
 }
 
-function footer(line: Line, header: Header): boolean {
+function footer(line: ILine, header: IHeader): boolean {
     return line.spans[0].region.x >= header.creditLeft && /^Page \d+ of \d+$/.test(joined(line.spans));
 }
 
-function unresolved(page: ImportPage, row: Row, code: string, message: string): UnresolvedDraft {
-    const source: SourceEvidence[] = row.lines.flatMap((line: Line): SourceEvidence[] => evidence(page, line.spans));
+function unresolved(page: ImportPage, row: IRow, code: string, message: string): UnresolvedDraft {
+    const source: SourceEvidence[] = row.lines.flatMap((line: ILine): SourceEvidence[] => evidence(page, line.spans));
     return { rowId: row.rowId, accountSectionId: 'wallet-eur', bookingDate: null, valueDate: null, accountAmount: null, direction: null,
         reportedOriginalAmount: null, description: null, counterpartyCandidate: null, references: [], evidence: source,
         issues: [importIssue(code, message, source, row.rowId)] };
 }
 
 type RowDetails = Pick<UnresolvedDraft, 'reportedOriginalAmount' | 'counterpartyCandidate' | 'references'>;
-interface ParsedRow { transaction: BankImportResult['transactions'][number] | null; draft: UnresolvedDraft | null }
-interface PageTitle { page: ImportPage; line: Line; currency: string }
-interface PageHeader { page: ImportPage; header: Header }
-interface TableSection { header: Header; start: number; end: number; inTable: boolean }
+interface IParsedRow { transaction: BankImportResult['transactions'][number] | null; draft: UnresolvedDraft | null }
+interface IPageTitle { page: ImportPage; line: ILine; currency: string }
+interface IPageHeader { page: ImportPage; header: IHeader }
+interface IPageLines { page: ImportPage; lines: ILine[] }
+interface ITableSection { header: IHeader; start: number; end: number; inTable: boolean }
 
 function readOriginalAmount(text: string, direction: UnresolvedDraft['direction'], detailEvidence: SourceEvidence[], rowId: string,
     issues: ImportIssue[]): UnresolvedDraft['reportedOriginalAmount'] {
     const markers: RegExpExecArray[] = [...text.matchAll(/\):/g)];
     if (markers.length) {
         const field: RegExpExecArray | null = new RegExp(`^([A-Z]{3})\\s+(${amountPattern})(?:\\s+1\\s+EUR\\s*=\\s*\\d+(?:\\.\\d+)?\\s+[A-Z]{3})?$`).exec(text.slice(markers[0].index + 2).trim());
-        const original: { coefficient: string; currency: string; scale: number; } | null = field && markers.length === 1 && direction ? amountOf(field[2], field[1], direction) : null;
+        const original: Money | null = field && markers.length === 1 && direction ? amountOf(field[2], field[1], direction) : null;
         if (original) {
             return { value: original, evidence: detailEvidence };
         }
@@ -188,8 +194,8 @@ type Settlement = Pick<UnresolvedDraft, 'direction' | 'accountAmount'>;
 function readSettlement(page: ImportPage, rowId: string, credits: PositionedSpan[], debits: PositionedSpan[], source: SourceEvidence[], issues: ImportIssue[]): Settlement {
     const direction: UnresolvedDraft['direction'] = credits.length && !debits.length ? 'incoming' : debits.length && !credits.length ? 'outgoing' : null;
     const amountSpans: PositionedSpan[] = direction === 'incoming' ? credits : debits;
-    const amount: { coefficient: string; currency: string; scale: number; } | null = direction ? amountOf(joined(amountSpans), 'EUR', direction) : null;
-    const accountAmount: { value: { coefficient: string; currency: string; scale: number; }; evidence: SourceEvidence[]; } | null = amount ? { value: amount, evidence: evidence(page, amountSpans) } : null;
+    const amount: Money | null = direction ? amountOf(joined(amountSpans), 'EUR', direction) : null;
+    const accountAmount: UnresolvedDraft['accountAmount'] = amount ? { value: amount, evidence: evidence(page, amountSpans) } : null;
     if (!accountAmount) {
         issues.push(importIssue(credits.length && debits.length ? 'conflicting-fields' : 'invalid-amount',
         'Exactly one readable credit or debit amount is required.', source, rowId, 'accountAmount'));
@@ -197,16 +203,18 @@ function readSettlement(page: ImportPage, rowId: string, credits: PositionedSpan
     return { direction, accountAmount };
 }
 
-function interpret(page: ImportPage, row: Row, header: Header, dateBasis: string, basisEvidence: SourceEvidence[]): ParsedRow {
-    const cells: { date: PositionedSpan[]; details: PositionedSpan[]; credit: PositionedSpan[]; debit: PositionedSpan[]; balance: PositionedSpan[]; }[] = row.lines.map((line: Line): { date: PositionedSpan[]; details: PositionedSpan[]; credit: PositionedSpan[]; debit: PositionedSpan[]; balance: PositionedSpan[]; } => columns(line, header));
-    const source: SourceEvidence[] = row.lines.flatMap((line: Line): SourceEvidence[] => evidence(page, line.spans));
+function interpret(page: ImportPage, row: IRow, header: IHeader, dateBasis: string, basisEvidence: SourceEvidence[]): IParsedRow {
+    const cells: TransactionColumns[] = row.lines.map((line: ILine): TransactionColumns => columns(line, header));
+    const source: SourceEvidence[] = row.lines.flatMap((line: ILine): SourceEvidence[] => evidence(page, line.spans));
     const issues: BankImportResult['issues'] = [];
-    const dates: PositionedSpan[] = cells.flatMap((cell: { date: PositionedSpan[]; details: PositionedSpan[]; credit: PositionedSpan[]; debit: PositionedSpan[]; balance: PositionedSpan[]; }): PositionedSpan[] => cell.date), credits: PositionedSpan[] = cells.flatMap((cell: { date: PositionedSpan[]; details: PositionedSpan[]; credit: PositionedSpan[]; debit: PositionedSpan[]; balance: PositionedSpan[]; }): PositionedSpan[] => cell.credit), debits: PositionedSpan[] = cells.flatMap((cell: { date: PositionedSpan[]; details: PositionedSpan[]; credit: PositionedSpan[]; debit: PositionedSpan[]; balance: PositionedSpan[]; }): PositionedSpan[] => cell.debit);
-    const details: PositionedSpan[] = cells.flatMap((cell: { date: PositionedSpan[]; details: PositionedSpan[]; credit: PositionedSpan[]; debit: PositionedSpan[]; balance: PositionedSpan[]; }): PositionedSpan[] => cell.details);
-    const descriptionText: string = cells.map((cell: { date: PositionedSpan[]; details: PositionedSpan[]; credit: PositionedSpan[]; debit: PositionedSpan[]; balance: PositionedSpan[]; }): string => joined(cell.details)).filter(Boolean).join('\n');
-    const description: { value: string; evidence: SourceEvidence[]; } | null = descriptionText ? { value: descriptionText, evidence: evidence(page, details) } : null;
+    const dates: PositionedSpan[] = cells.flatMap((cell: TransactionColumns): PositionedSpan[] => cell.date),
+        credits: PositionedSpan[] = cells.flatMap((cell: TransactionColumns): PositionedSpan[] => cell.credit),
+        debits: PositionedSpan[] = cells.flatMap((cell: TransactionColumns): PositionedSpan[] => cell.debit);
+    const details: PositionedSpan[] = cells.flatMap((cell: TransactionColumns): PositionedSpan[] => cell.details);
+    const descriptionText: string = cells.map((cell: TransactionColumns): string => joined(cell.details)).filter(Boolean).join('\n');
+    const description: UnresolvedDraft['description'] = descriptionText ? { value: descriptionText, evidence: evidence(page, details) } : null;
     const date: string | null = dateOf(joined(dates));
-    const bookingDate: { value: string; basisLabel: string; evidence: SourceEvidence[]; } | null = date ? { value: date, basisLabel: dateBasis, evidence: [...evidence(page, dates), ...basisEvidence] } : null;
+    const bookingDate: UnresolvedDraft['bookingDate'] = date ? { value: date, basisLabel: dateBasis, evidence: [...evidence(page, dates), ...basisEvidence] } : null;
     if (!bookingDate) {
         issues.push(importIssue('invalid-date', 'The printed booking date is missing, invalid or ambiguous.', source, row.rowId, 'bookingDate'));
     }
@@ -220,7 +228,7 @@ function interpret(page: ImportPage, row: Row, header: Header, dateBasis: string
     }
     const { reportedOriginalAmount, counterpartyCandidate, references }: RowDetails =
         readRowDetails(kind, descriptionText, direction, evidence(page, details), row.rowId, issues);
-    const base: { rowId: string; accountSectionId: string; bookingDate: { value: string; basisLabel: string; evidence: SourceEvidence[]; } | null; valueDate: null; accountAmount: { value: { coefficient: string; currency: string; scale: number; }; evidence: SourceEvidence[]; } | null; direction: "incoming" | "outgoing" | null; reportedOriginalAmount: { value: { coefficient: string; currency: string; scale: number; }; evidence: SourceEvidence[]; } | null; description: { value: string; evidence: SourceEvidence[]; } | null; counterpartyCandidate: { value: string; evidence: SourceEvidence[]; } | null; references: { label: string; value: string; evidence: SourceEvidence[]; }[]; evidence: SourceEvidence[]; } = { rowId: row.rowId, accountSectionId: 'wallet-eur', bookingDate, valueDate: null, accountAmount, direction,
+    const base: ParsedRowData = { rowId: row.rowId, accountSectionId: 'wallet-eur', bookingDate, valueDate: null, accountAmount, direction,
         reportedOriginalAmount, description, counterpartyCandidate, references, evidence: source };
     if (issues.length || !bookingDate || !accountAmount || !direction || !description) {
         return { draft: { ...base, issues }, transaction: null };
@@ -228,7 +236,7 @@ function interpret(page: ImportPage, row: Row, header: Header, dateBasis: string
     return { transaction: { ...base, bookingDate, accountAmount, direction, description }, draft: null };
 }
 
-function checkPageCoverage(page: ImportPage, lines: Line[], pageIndex: number, pageCount: number, firstHeader: Header, result: BankImportResult): void {
+function checkPageCoverage(page: ImportPage, lines: ILine[], pageIndex: number, pageCount: number, firstHeader: IHeader, result: BankImportResult): void {
     if (page.pageNumber !== pageIndex + 1) {
         result.issues.push({
         ...importIssue('missing-page', 'The extraction does not cover consecutive source pages.'), pageId: page.pageId
@@ -242,12 +250,12 @@ function checkPageCoverage(page: ImportPage, lines: Line[], pageIndex: number, p
     }
 }
 
-function reviewHeaderlessPage(page: ImportPage, lines: Line[], fallback: Header, result: BankImportResult): boolean {
-    const possible: boolean = lines.some((line: Line): boolean => !summary(line) && !footer(line, fallback) && possibleRow(line, fallback));
-    const pageContent: string = lines.map((line: Line): string => joined(line.spans)).join('\n');
+function reviewHeaderlessPage(page: ImportPage, lines: ILine[], fallback: IHeader, result: BankImportResult): boolean {
+    const possible: boolean = lines.some((line: ILine): boolean => !summary(line) && !footer(line, fallback) && possibleRow(line, fallback));
+    const pageContent: string = lines.map((line: ILine): string => joined(line.spans)).join('\n');
     const information: boolean = pageContent.includes('Important information') && pageContent.includes('Account Details') &&
         pageContent.includes('Account Balance') && pageContent.includes('Transaction Types');
-    const closing: boolean = lines.length > 0 && lines.every((line: Line): boolean => footer(line, fallback) || (summary(line) && joined(line.spans).startsWith("Ending")));
+    const closing: boolean = lines.length > 0 && lines.every((line: ILine): boolean => footer(line, fallback) || (summary(line) && joined(line.spans).startsWith("Ending")));
     if (!possible && (information || closing)) {
         return false;
     }
@@ -255,15 +263,15 @@ function reviewHeaderlessPage(page: ImportPage, lines: Line[], fallback: Header,
     return true;
 }
 
-function tableSections(page: ImportPage, lines: Line[], pageHeaders: Header[], fallback: Header, titles: PageTitle[], result: BankImportResult): TableSection[] {
-    const sections: TableSection[] = pageHeaders.map((header: Header, index: number): { header: Header; start: number; end: number; inTable: boolean; } => ({ header, start: header.line.y + 2, end: pageHeaders[index + 1]?.line.y ?? page.height,
-        inTable: titles.some((title: { page: ImportPage; line: Line; currency: string; }): boolean => title.page.pageId === page.pageId && title.line.y < header.line.y) }));
-    const firstTitle: { page: ImportPage; line: Line; currency: string; } | undefined = titles.find((title: { page: ImportPage; line: Line; currency: string; }): boolean => title.page.pageId === page.pageId && title.line.y < pageHeaders[0]?.line.y);
+function tableSections(page: ImportPage, lines: ILine[], pageHeaders: IHeader[], fallback: IHeader, titles: IPageTitle[], result: BankImportResult): ITableSection[] {
+    const sections: ITableSection[] = pageHeaders.map((header: IHeader, index: number): ITableSection => ({ header, start: header.line.y + 2, end: pageHeaders[index + 1]?.line.y ?? page.height,
+        inTable: titles.some((title: IPageTitle): boolean => title.page.pageId === page.pageId && title.line.y < header.line.y) }));
+    const firstTitle: IPageTitle | undefined = titles.find((title: IPageTitle): boolean => title.page.pageId === page.pageId && title.line.y < pageHeaders[0]?.line.y);
     if (firstTitle) {
-        const leading: Line[] = lines.filter((line: Line): boolean => line.y > firstTitle.line.y + 2 && line.y < pageHeaders[0].line.y && !summary(line) && !footer(line, fallback));
+        const leading: ILine[] = lines.filter((line: ILine): boolean => line.y > firstTitle.line.y + 2 && line.y < pageHeaders[0].line.y && !summary(line) && !footer(line, fallback));
         if (leading.length) {
             result.issues.push(importIssue('missing-table-header', 'Content before the first supported transaction header needs review.',
-                leading.flatMap((line: Line): SourceEvidence[] => evidence(page, line.spans))));
+                leading.flatMap((line: ILine): SourceEvidence[] => evidence(page, line.spans))));
             sections.unshift({ header: fallback, start: firstTitle.line.y + 2, end: pageHeaders[0].line.y, inTable: false });
         }
     }
@@ -273,24 +281,24 @@ function tableSections(page: ImportPage, lines: Line[], pageHeaders: Header[], f
     return sections;
 }
 
-function rowMarkers(line: Line, header: Header): { financial: boolean; category: boolean } {
-    const cell: { date: PositionedSpan[]; details: PositionedSpan[]; credit: PositionedSpan[]; debit: PositionedSpan[]; balance: PositionedSpan[]; } = columns(line, header);
+function rowMarkers(line: ILine, header: IHeader): Record<'financial' | 'category', boolean> {
+    const cell: TransactionColumns = columns(line, header);
     const financial: boolean = cell.date.length > 0 || cell.credit.length > 0 || cell.debit.length > 0 || cell.balance.length > 0;
     const category: boolean = transactionTypes.has(joined(cell.details)) && !financial;
     return { financial, category };
 }
 
-function parseTable(page: ImportPage, lines: Line[], { header, start, end, inTable }: TableSection, counter: number, dateBasis: string,
+function parseTable(page: ImportPage, lines: ILine[], { header, start, end, inTable }: ITableSection, counter: number, dateBasis: string,
     basisEvidence: SourceEvidence[], result: BankImportResult): number {
-    const body: Line[] = lines.filter((line: Line): boolean => line.y > start && line.y < end);
-    let row: Row | null = null;
+    const body: ILine[] = lines.filter((line: ILine): boolean => line.y > start && line.y < end);
+    let row: IRow | null = null;
     let ended: boolean = false;
     let anchored: boolean = false;
     const flush: (uncertainBoundary?: boolean) => void = (uncertainBoundary: boolean = false): void => {
         if (!row) {
             return;
         }
-        const parsed: ParsedRow = inTable && !ended && !uncertainBoundary ? interpret(page, row, header, dateBasis, basisEvidence) : { transaction: null,
+        const parsed: IParsedRow = inTable && !ended && !uncertainBoundary ? interpret(page, row, header, dateBasis, basisEvidence) : { transaction: null,
             draft: unresolved(page, row, uncertainBoundary ? 'ambiguous-row-boundary' : inTable ? 'outside-table-row' : 'missing-table-header',
                 'A possible transaction has no unambiguous supported table context.') };
         if (parsed.transaction) {
@@ -307,13 +315,13 @@ function parseTable(page: ImportPage, lines: Line[], { header, start, end, inTab
             ended ||= footer(line, header) || joined(line.spans).startsWith("Ending");
             continue;
         }
-        const { financial, category }: { financial: boolean; category: boolean } = rowMarkers(line, header);
+        const { financial, category }: Record<'financial' | 'category', boolean> = rowMarkers(line, header);
         if (!inTable && !row && !possibleRow(line, header)) {
             continue;
         }
-        const previous: Line | undefined = row?.lines.at(-1);
+        const previous: ILine | undefined = row?.lines.at(-1);
         // A separated, unlabeled block must not contaminate the preceding transaction's details.
-        const separated: boolean | undefined = anchored && previous && line.y - previous.y > 2 * Math.max(...row!.lines.flatMap((value: Line): number[] => value.spans.map((span: PositionedSpan): number => span.region.height)));
+        const separated: boolean | undefined = anchored && previous && line.y - previous.y > 2 * Math.max(...row!.lines.flatMap((value: ILine): number[] => value.spans.map((span: PositionedSpan): number => span.region.height)));
         if (category || (financial && anchored) || separated) {
             flush(Boolean(financial && anchored && !category && !separated));
         }
@@ -325,18 +333,18 @@ function parseTable(page: ImportPage, lines: Line[], { header, start, end, inTab
     return counter;
 }
 
-function parsePage(page: ImportPage, lines: Line[], pageIndex: number, pageCount: number, headers: PageHeader[], titles: PageTitle[],
+function parsePage(page: ImportPage, lines: ILine[], pageIndex: number, pageCount: number, headers: IPageHeader[], titles: IPageTitle[],
     dateBasis: string, basisEvidence: SourceEvidence[], result: BankImportResult): void {
     checkPageCoverage(page, lines, pageIndex, pageCount, headers[0].header, result);
     if (page.status === 'failed') {
         result.issues.push({ ...importIssue('failed-page', 'A source page could not be extracted.'), pageId: page.pageId }); return;
     }
-    const pageHeaders: Header[] = headers.filter((value: { page: ImportPage; header: Header; }): boolean => value.page.pageId === page.pageId).map((value: { page: ImportPage; header: Header; }): Header => value.header);
-    const fallback: Header = headers[0].header;
+    const pageHeaders: IHeader[] = headers.filter((value: IPageHeader): boolean => value.page.pageId === page.pageId).map((value: IPageHeader): IHeader => value.header);
+    const fallback: IHeader = headers[0].header;
     if (!pageHeaders.length && !reviewHeaderlessPage(page, lines, fallback, result)) {
         return;
     }
-    const sections: TableSection[] = tableSections(page, lines, pageHeaders, fallback, titles, result);
+    const sections: ITableSection[] = tableSections(page, lines, pageHeaders, fallback, titles, result);
     let counter: number = 0;
     for (const section of sections) {
         counter = parseTable(page, lines, section, counter, dateBasis, basisEvidence, result);
@@ -349,30 +357,30 @@ function parse(input: BankImportInput): BankImportResult {
         return emptyImportResult(null, 'failed', importIssue('invalid-input', 'The extracted statement data does not satisfy the import contract.'));
     }
     input = checkedInput.data;
-    const pages: { page: ImportPage; lines: Line[]; }[] = input.pages.map((page: ImportPage): { page: ImportPage; lines: Line[]; } => ({ page, lines: linesOf(page) }));
-    const content: string = pages.flatMap(({ lines }: { page: ImportPage; lines: Line[]; }): string[] => lines.map((line: Line): string => joined(line.spans))).join('\n');
-    const headers: { page: ImportPage; header: Header; }[] = pages.flatMap(({ page, lines }: { page: ImportPage; lines: Line[]; }): { page: ImportPage; header: Header; }[] => lines.flatMap((line: Line): { page: ImportPage; header: Header; }[] => {
-        const header: Header | null = headerOf(line); return header ? [{ page, header }] : [];
+    const pages: IPageLines[] = input.pages.map((page: ImportPage): IPageLines => ({ page, lines: linesOf(page) }));
+    const content: string = pages.flatMap(({ lines }: IPageLines): string[] => lines.map((line: ILine): string => joined(line.spans))).join('\n');
+    const headers: IPageHeader[] = pages.flatMap(({ page, lines }: IPageLines): IPageHeader[] => lines.flatMap((line: ILine): IPageHeader[] => {
+        const header: IHeader | null = headerOf(line); return header ? [{ page, header }] : [];
     }));
     if (!/\bairwallex\b/i.test(content) || !headers.length) {
         return emptyImportResult(input, input.pages.every((page: ImportPage): boolean => page.status === 'failed') ? 'failed' : 'unsupported',
         importIssue('unsupported-layout', 'The supported Airwallex transaction columns were not found.'));
     }
-    const titles: { page: ImportPage; line: Line; currency: string; }[] = pages.flatMap(({ page, lines }: { page: ImportPage; lines: Line[]; }): { page: ImportPage; line: Line; currency: string; }[] => lines.flatMap((line: Line): { page: ImportPage; line: Line; currency: string; }[] => {
+    const titles: IPageTitle[] = pages.flatMap(({ page, lines }: IPageLines): IPageTitle[] => lines.flatMap((line: ILine): IPageTitle[] => {
         const match: RegExpExecArray | null = /^([A-Z]{3}) Account Activity(?: \(Continued\))?(?:\s+.*)?$/.exec(joined(line.spans));
         return match && line.spans[0].region.x < headers[0].header.detailsLeft - 5 ? [{ page, line, currency: match[1] }] : [];
     }));
-    if (!titles.length || titles.some((title: { page: ImportPage; line: Line; currency: string; }): boolean => title.currency !== 'EUR')) {
+    if (!titles.length || titles.some((title: IPageTitle): boolean => title.currency !== 'EUR')) {
         return emptyImportResult(input, 'unsupported',
         importIssue('unsupported-currency', 'This Airwallex adapter requires explicit, consistent EUR wallet activity.',
-            titles.flatMap(({ page, line }: { page: ImportPage; line: Line; currency: string; }): SourceEvidence[] => evidence(page, line.spans))));
+            titles.flatMap(({ page, line }: IPageTitle): SourceEvidence[] => evidence(page, line.spans))));
     }
-    const currencyEvidence: SourceEvidence[] = titles.flatMap(({ page, line }: { page: ImportPage; line: Line; currency: string; }): SourceEvidence[] => evidence(page, line.spans));
-    const informationPages: { page: ImportPage; lines: Line[]; }[] = pages.filter(({ page, lines }: { page: ImportPage; lines: Line[]; }): boolean => !headers.some((value: { page: ImportPage; header: Header; }): boolean => value.page.pageId === page.pageId) &&
-        lines.map((line: Line): string => joined(line.spans)).join(' ').includes('Important information'));
-    const informationText: string = informationPages.flatMap(({ lines }: { page: ImportPage; lines: Line[]; }): string[] => lines.map((line: Line): string => joined(line.spans))).join(' ');
-    const basisEvidence: SourceEvidence[] = informationPages.flatMap(({ page, lines }: { page: ImportPage; lines: Line[]; }): SourceEvidence[] =>
-        lines.filter((line: Line): boolean => joined(line.spans).includes('Central European Time')).flatMap((line: Line): SourceEvidence[] => evidence(page, line.spans)));
+    const currencyEvidence: SourceEvidence[] = titles.flatMap(({ page, line }: IPageTitle): SourceEvidence[] => evidence(page, line.spans));
+    const informationPages: IPageLines[] = pages.filter(({ page, lines }: IPageLines): boolean => !headers.some((value: IPageHeader): boolean => value.page.pageId === page.pageId) &&
+        lines.map((line: ILine): string => joined(line.spans)).join(' ').includes('Important information'));
+    const informationText: string = informationPages.flatMap(({ lines }: IPageLines): string[] => lines.map((line: ILine): string => joined(line.spans))).join(' ');
+    const basisEvidence: SourceEvidence[] = informationPages.flatMap(({ page, lines }: IPageLines): SourceEvidence[] =>
+        lines.filter((line: ILine): boolean => joined(line.spans).includes('Central European Time')).flatMap((line: ILine): SourceEvidence[] => evidence(page, line.spans)));
     const printedBasis: boolean = informationText.replace(/\s+/g, ' ').includes('Balances and account activities in this report were generated using Central European Time.');
     const dateBasis: "Date" | "Date (Central European Time)" = printedBasis && basisEvidence.length ? 'Date (Central European Time)' : 'Date';
     // Printed Global Account details do not identify the wallet whose activity is reported.
@@ -391,7 +399,7 @@ function parse(input: BankImportInput): BankImportResult {
 }
 
 export const airwallexAdapter: IBankAdapter = { metadata, parse, identify: (input: BankImportInput): boolean => {
-    const lines: Line[] = input.pages.flatMap(linesOf);
-    return /\bairwallex\b/i.test(lines.map((line: Line): string => joined(line.spans)).join('\n')) &&
-        lines.some((line: Line): boolean => /^[A-Z]{3} Account Activity\b/.test(joined(line.spans))) && lines.some((line: Line): boolean => headerOf(line) !== null);
+    const lines: ILine[] = input.pages.flatMap(linesOf);
+    return /\bairwallex\b/i.test(lines.map((line: ILine): string => joined(line.spans)).join('\n')) &&
+        lines.some((line: ILine): boolean => /^[A-Z]{3} Account Activity\b/.test(joined(line.spans))) && lines.some((line: ILine): boolean => headerOf(line) !== null);
 } };

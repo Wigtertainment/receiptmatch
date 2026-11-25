@@ -11,12 +11,12 @@ import { approvalSelectionFor, type ReviewApprovalState } from '../../src/shared
 import { commandSchema, type IWorkspaceView } from '../../src/shared/protocol.js';
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
 import type { TransactionCandidate } from '../../src/shared/bank-import.js';
-import { createWorkspace, loadWorkspace, newMetadata, type SavedWorkspace } from '../../electron/store.js';
+import { createWorkspace, loadWorkspace, newMetadata, type ISavedWorkspace } from '../../electron/store.js';
 import { WorkspaceSession } from '../../electron/workspace-session.js';
 import { referenceEvidence } from '../../electron/matching.js';
 import { hasFullDocumentReference } from '../../electron/documents/interpret.js';
 import { receiptAnalysisVersionSchema } from '../../electron/documents/analysis-history.js';
-import { prepareReceiptAnalysisVersion, type ReceiptVersionPlan } from '../../electron/documents/prepare-analysis-version.js';
+import { prepareReceiptAnalysisVersion, type IReceiptVersionPlan } from '../../electron/documents/prepare-analysis-version.js';
 import { SupportingDocumentState } from '../../electron/documents/document-state.js';
 import { documentFieldConfirmationIssue, documentFieldSignature, isDocumentFieldConfirmed, type DocumentFieldReview } from '../../src/shared/document-field-reviews.js';
 import { documentRun, retainedBank, retainedDocument } from './document-fixtures.js';
@@ -156,7 +156,7 @@ test('new field edits survive save and reopen, reject stale input and make exist
     assert.equal(session.matchSummaries(session.state().workspace!.matchRevision)?.find((row: NonNullable<ReturnType<typeof session.matchSummaries>>[number]): boolean => row.transactionId === transactionId)?.approvalStatus.status, 'stale');
     assert.match((await session.dispatch({ ...edit, type: 'correct-document-field', revision: before.matchRevision })).error!, /changed/);
     assert.equal((await session.dispatch({ type: 'save' })).error, null);
-    const saved: SavedWorkspace = await loadWorkspace(file);
+    const saved: ISavedWorkspace = await loadWorkspace(file);
     assert.deepEqual(saved.documentImports[0].files[0], { status: 'imported', record: document });
     assert.equal(saved.documentCorrections.get(documentCorrectionKey(edit, edit.change.kind))!.change.value, 'Edited Workshop');
     assert.equal((await session.dispatch({ type: 'open' })).error, null);
@@ -171,7 +171,7 @@ test('new AI analyses retain matching manual text fields while blocking replacem
     const proposed: SupportingDocument = structuredClone(document.result);
     proposed.input!.extraction.runId = randomUUID();
     proposed.sections[0].currencies.find((field: DocumentSection['currencies'][number]): boolean => field.id === currency.id)!.candidates = ['JPY'];
-    const plan: ReceiptVersionPlan = prepareReceiptAnalysisVersion(document, proposed, edits);
+    const plan: IReceiptVersionPlan = prepareReceiptAnalysisVersion(document, proposed, edits);
     assert.equal(plan.blockingConflict, undefined);
     const effective: SupportingDocument = new SupportingDocumentState(plan.analysis, edits).effective;
     assert.deepEqual(effective.sections[0].merchants[0].candidates, ['Edited Workshop']);

@@ -19,17 +19,16 @@ import {
     type IExtractionBridge,
     type ExtractionJob,
     type ExtractionProgress,
-    type ExtractionResult
+    type ExtractionResult,
+    type OcrRaster
 } from '../../src/shared/pdf-extraction.js';
-import { embeddedTextGeometry, ocrWordGeometry, type GeometryResult } from './geometry.js';
+import { embeddedTextGeometry, ocrWordGeometry, type IGeometryResult } from './geometry.js';
 import { assertImageDimensions, imageInputDimensions, IMAGE_MIME_TYPES, ImageInputError } from './image-input.js';
 import type { ZodSafeParseResult } from 'zod';
 
-declare global {
-    interface Window {
-        receiptMatchExtraction: IExtractionBridge;
-    }
-}
+type ExtractionWindow = typeof window & Record<'receiptMatchExtraction', IExtractionBridge>;
+type RecognizedWord = Pick<Tesseract.Word, 'text'> & Tesseract.Word['bbox'];
+
 pdfjs.GlobalWorkerOptions.workerSrc = new URL('./pdf/pdf.worker.min.mjs', location.href).href;
 const imageOperations: Set<number> = new Set([
     pdfjs.OPS.paintImageXObject,
@@ -101,7 +100,7 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
     const issues: ImportIssue[] = [];
     const pages: ImportPage[] = [];
     const progress: (phase: ExtractionProgress["phase"], pageCount: number | null) => void = (phase: ExtractionProgress['phase'], pageCount: number | null): void =>
-        window.receiptMatchExtraction.report({ type: 'progress', progress: { phase, pageNumber, pageCount, completedPages: pages.length } });
+        (window as ExtractionWindow).receiptMatchExtraction.report({ type: 'progress', progress: { phase, pageNumber, pageCount, completedPages: pages.length } });
 
     const issue: (code: string, message: string, pageId: string, severity?: "warning" | "error") => void = (code: string, message: string, pageId: string, severity: 'warning' | 'error' = 'warning'): void => {
         if (issues.length >= 1000) {
@@ -124,7 +123,9 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
         totalText += span.text.length;
     };
 
-    const recognizeStandard: (canvas: HTMLCanvasElement, pageCount: number) => Promise<{ x0: number; y0: number; x1: number; y1: number; text: string; }[]> = async (canvas: HTMLCanvasElement, pageCount: number): Promise<{ x0: number; y0: number; x1: number; y1: number; text: string; }[]> => {
+    const recognizeStandard: (canvas: HTMLCanvasElement, pageCount: number) => Promise<RecognizedWord[]> = async (
+        canvas: HTMLCanvasElement, pageCount: number
+    ): Promise<RecognizedWord[]> => {
         if (ocrUnavailable) {
             throw new ExtractionFault('ocr-unavailable', 'The bundled English OCR resources are unavailable for this job.');
         }
@@ -155,7 +156,7 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
             throw new ExtractionFault('ocr-result', 'OCR returned text without positioned word evidence.');
         }
         return (recognized.data.blocks ?? []).flatMap((block: Tesseract.Block): Tesseract.Word[] => block.paragraphs.flatMap((paragraph: Tesseract.Paragraph): Tesseract.Word[] => paragraph.lines.flatMap((line: Tesseract.Line): Tesseract.Word[] => line.words)))
-            .filter((word: Tesseract.Word): string => word.text.trim()).map((word: Tesseract.Word): { x0: number; y0: number; x1: number; y1: number; text: string; } => ({ text: word.text, ...word.bbox }));
+            .filter((word: Tesseract.Word): string => word.text.trim()).map((word: Tesseract.Word): RecognizedWord => ({ text: word.text, ...word.bbox }));
     };
 
     async function sendRaster(canvas: HTMLCanvasElement, page: ImportPage, pageCount: number): Promise<void> {
@@ -165,8 +166,8 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
             if (!blob) {
                 throw new Error('Raster serialization failed.');
             }
-            const raster: { pageNumber: number; width: number; height: number; png: Uint8Array<ArrayBuffer>; } = { pageNumber: page.pageNumber, width: canvas.width, height: canvas.height, png: new Uint8Array(await blob.arrayBuffer()) };
-            await window.receiptMatchExtraction.sendRaster(raster);
+            const raster: OcrRaster = { pageNumber: page.pageNumber, width: canvas.width, height: canvas.height, png: new Uint8Array(await blob.arrayBuffer()) };
+            await (window as ExtractionWindow).receiptMatchExtraction.sendRaster(raster);
         } catch {
             throw new ExtractionFault('receipt-raster', 'The receipt page could not be rendered within the local image limits.');
         }
@@ -177,9 +178,9 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
             await sendRaster(canvas, page, pageCount);
             return;
         }
-        const words: { text: string; x0: number; y0: number; x1: number; y1: number; }[] = await recognizeStandard(canvas, pageCount);
+        const words: RecognizedWord[] = await recognizeStandard(canvas, pageCount);
         for (const { text, ...bounds } of words) {
-            const box: GeometryResult = ocrWordGeometry(bounds, page, canvas);
+            const box: IGeometryResult = ocrWordGeometry(bounds, page, canvas);
             if (!box.region || box.clipped) {
                 issue('geometry-warning', 'An OCR region touches or exceeds the visible page bounds.', page.pageId);
             }
@@ -205,7 +206,7 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
     };
 
     async function extractImage(format: Exclude<ExtractionJob['format'], 'pdf'>): Promise<ExtractionResult> {
-        const header: { width: number; height: number; } = imageInputDimensions(job.bytes, format);
+        const header: ReturnType<typeof imageInputDimensions> = imageInputDimensions(job.bytes, format);
         pageNumber = 1;
         let bitmap: ImageBitmap | undefined;
         let canvas: HTMLCanvasElement | undefined;
@@ -247,7 +248,7 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
                 continue;
             }
             try {
-                const box: GeometryResult = embeddedTextGeometry(item, content.styles[item.fontName] ?? {}, viewport);
+                const box: IGeometryResult = embeddedTextGeometry(item, content.styles[item.fontName] ?? {}, viewport);
                 if (box.region) {
                     append(page, { text: item.str, region: box.region, method: 'embedded-text' });
                 }
@@ -360,19 +361,20 @@ async function execute(job: ExtractionJob): Promise<ExtractionResult> {
     }
 }
 let received: boolean = false;
-window.receiptMatchExtraction.onJob((value: unknown): void => {
+(window as ExtractionWindow).receiptMatchExtraction.onJob((value: unknown): void => {
     if (received) {
         return;
     }
     received = true;
     const checked: ZodSafeParseResult<ExtractionJob> = extractionJobSchema.safeParse(value);
     if (!checked.success) {
-        window.receiptMatchExtraction.report({ type: 'result', result: failed('invalid-job', 'The extraction job did not satisfy its input contract.') });
+        (window as ExtractionWindow).receiptMatchExtraction.report({ type: 'result', result: failed('invalid-job', 'The extraction job did not satisfy its input contract.') });
         return;
     }
     void execute(checked.data).then(
-        (result: { status: "complete"; input: BankImportInput; } | { status: "partial"; input: BankImportInput; } | { status: "failed"; issues: ImportIssue[]; } | { status: "cancelled"; issues: ImportIssue[]; }): void => window.receiptMatchExtraction.report({ type: 'result', result }),
-        (): void => window.receiptMatchExtraction.report({ type: 'result', result: failed('engine-failed', 'The local extraction engine could not finish safely.') })
+        (result: ExtractionResult): void => (window as ExtractionWindow).receiptMatchExtraction.report({ type: 'result', result }),
+        (): void => (window as ExtractionWindow).receiptMatchExtraction.report({ type: 'result',
+            result: failed('engine-failed', 'The local extraction engine could not finish safely.') })
     );
 });
-window.receiptMatchExtraction.ready();
+(window as ExtractionWindow).receiptMatchExtraction.ready();

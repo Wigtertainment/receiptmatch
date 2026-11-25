@@ -1,6 +1,4 @@
-import type { StoredSupportingDocument } from "../src/shared/workspace-documents.js";
-import type { ImportIssue, TransactionCandidate } from "../src/shared/bank-import.js";
-import type { SupportingDocument } from "../src/shared/supporting-document.js";
+import type { TransactionCandidate } from '../src/shared/bank-import.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { BigIntStats } from 'node:fs';
 import { link, lstat, mkdir, open, realpath, stat, unlink, type FileHandle } from 'node:fs/promises';
@@ -9,29 +7,35 @@ import type { DocumentExportOutcome, IDocumentExportReport } from '../src/shared
 import { renderExportFilename } from '../src/shared/export-filename.js';
 import type { Money } from '../src/shared/money.js';
 import type { MatchApproval } from '../src/shared/match-approvals.js';
-import type { StoredDocumentImport } from '../src/shared/workspace-documents.js';
+import type { originalSourceExtensions } from '../src/shared/original-preview.js';
+import type { DocumentFileResult, StoredDocumentImport } from '../src/shared/workspace-documents.js';
 import type { StoredBankImport } from '../src/shared/workspace-import.js';
 import { readSourceSnapshot } from './import/source.js';
-import type { OriginalSource } from './original-preview.js';
+import type { IOriginalSource } from './original-preview.js';
 
-export interface ApprovedExportDocument {
+export interface IApprovedExportDocument {
 	transactionId: string;
 	documentId: string;
 	date: string;
 	counterparty: string | null;
 	amount: Money;
-	source: (OriginalSource & { relocatedPath?: string }) | null;
+	source: (IOriginalSource & Partial<Record<'relocatedPath', string>>) | null;
 }
+
+interface IExportOriginal extends Readonly<IOriginalSource> { readonly relocatedPath: string | undefined }
+type ExportItem = Pick<DocumentExportOutcome, 'transactionId' | 'documentId' | 'sourceName' | 'sourcePath'>;
+type RenderExportFilenameResult = ReturnType<typeof renderExportFilename>;
 
 export function approvedExportDocuments(
 	imports: readonly StoredBankImport[], documentImports: readonly StoredDocumentImport[], approvals: ReadonlyMap<string, MatchApproval>,
 	relocations?: ReadonlyMap<string, string>,
-): ApprovedExportDocument[] {
-	const originals: Map<string, { readonly filePath: string; readonly format: "png" | "jpeg" | "pdf"; readonly sha256: string; readonly relocatedPath: string | undefined; }> = new Map(documentImports.flatMap((record: StoredDocumentImport): (readonly [string, { readonly filePath: string; readonly format: "png" | "jpeg" | "pdf"; readonly sha256: string; readonly relocatedPath: string | undefined; }])[] => record.files.flatMap((file: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "jpeg" | "pdf" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; }): [] | [readonly [string, { readonly filePath: string; readonly format: "png" | "jpeg" | "pdf"; readonly sha256: string; readonly relocatedPath: string | undefined; }]] => file.status === 'imported' ? [[file.record.id, {
-		filePath: file.record.filePath, format: file.record.format, sha256: file.record.result.input!.source.sha256,
-		relocatedPath: relocations?.get(file.record.result.input!.source.sourceId),
-	}] as const] : [])));
-	const documents: ApprovedExportDocument[] = [];
+): IApprovedExportDocument[] {
+	const originals: Map<string, IExportOriginal> = new Map(documentImports.flatMap((record: StoredDocumentImport): (readonly [string, IExportOriginal])[] =>
+		record.files.flatMap((file: DocumentFileResult): [] | [readonly [string, IExportOriginal]] => file.status === 'imported' ? [[file.record.id, {
+			filePath: file.record.filePath, format: file.record.format, sha256: file.record.result.input!.source.sha256,
+			relocatedPath: relocations?.get(file.record.result.input!.source.sourceId),
+		}] as const] : [])));
+	const documents: IApprovedExportDocument[] = [];
 	for (const record of imports) {
 		const rows: Map<string, TransactionCandidate> = new Map(record.result.transactions.map((row: TransactionCandidate): [string, TransactionCandidate] => [row.rowId, row]));
 		for (const { rowId, transactionId } of record.transactions) {
@@ -49,13 +53,20 @@ export function approvedExportDocuments(
 	return documents;
 }
 
-export interface ExportDirectory {
+export interface IExportDirectory {
 	path: string;
 	verify: () => Promise<void>;
 }
 
-const extensions: { readonly pdf: readonly [".pdf"]; readonly png: readonly [".png"]; readonly jpeg: readonly [".jpg", ".jpeg"]; } = { pdf: ['.pdf'], png: ['.png'], jpeg: ['.jpg', '.jpeg'] } as const;
-const filenames: { readonly '.pdf': "pdf"; readonly '.png': "png"; readonly '.jpg': "jpg"; readonly '.jpeg': "jpeg"; } = { '.pdf': 'pdf', '.png': 'png', '.jpg': 'jpg', '.jpeg': 'jpeg' } as const;
+interface IExportFilenameExtensions {
+	readonly '.pdf': 'pdf';
+	readonly '.png': 'png';
+	readonly '.jpg': 'jpg';
+	readonly '.jpeg': 'jpeg';
+}
+
+const extensions: typeof originalSourceExtensions = { pdf: ['.pdf'], png: ['.png'], jpeg: ['.jpg', '.jpeg'] } as const;
+const filenames: IExportFilenameExtensions = { '.pdf': 'pdf', '.png': 'png', '.jpg': 'jpg', '.jpeg': 'jpeg' } as const;
 
 export class ExportDestinationError extends Error {}
 
@@ -63,11 +74,12 @@ export function errorCode(error: unknown): string | undefined {
 	return (error as NodeJS.ErrnoException | null)?.code;
 }
 export class ExportFileCleanupError extends Error {
-	readonly code: string | undefined;
 	constructor(writeError: unknown) {
 		super('An incomplete export file could not be removed.', { cause: writeError });
 		this.code = errorCode(writeError);
 	}
+
+	readonly code: string | undefined;
 }
 function samePath(left: string, right: string): boolean {
 	return path.relative(left, right) === '';
@@ -100,7 +112,7 @@ async function originalDirectoryIdentities(directory: string, sourcePaths: reado
 	return sourceParents;
 }
 
-async function verifiedDirectory(directory: string, sourceParents: readonly BigIntStats[], parent?: ExportDirectory): Promise<ExportDirectory> {
+async function verifiedDirectory(directory: string, sourceParents: readonly BigIntStats[], parent?: IExportDirectory): Promise<IExportDirectory> {
 	const identity: BigIntStats = await directoryIdentity(directory);
 	if (sourceParents.some((source: BigIntStats): boolean => sameFile(source, identity))) {
 		throw new ExportDestinationError('Choose an export folder separate from the originals.');
@@ -115,7 +127,7 @@ async function verifiedDirectory(directory: string, sourceParents: readonly BigI
 	return { path: directory, verify };
 }
 
-export async function openExportDirectory(destination: string, sourcePaths: readonly string[] = []): Promise<ExportDirectory> {
+export async function openExportDirectory(destination: string, sourcePaths: readonly string[] = []): Promise<IExportDirectory> {
 	if (!path.isAbsolute(destination)) {
 		throw new ExportDestinationError('Choose an absolute export folder.');
 	}
@@ -130,8 +142,8 @@ export async function openExportDirectory(destination: string, sourcePaths: read
 	}
 }
 
-async function prepareDirectory(destination: string | ExportDirectory, sourcePaths: readonly string[]): Promise<ExportDirectory> {
-	const root: ExportDirectory = typeof destination === 'string' ? await openExportDirectory(destination, sourcePaths) : destination;
+async function prepareDirectory(destination: string | IExportDirectory, sourcePaths: readonly string[]): Promise<IExportDirectory> {
+	const root: IExportDirectory = typeof destination === 'string' ? await openExportDirectory(destination, sourcePaths) : destination;
 	const directory: string = path.join(root.path, 'documents');
 	const sourceParents: BigIntStats[] = await originalDirectoryIdentities(directory, sourcePaths);
 	await root.verify();
@@ -195,11 +207,11 @@ async function writeExclusive(file: string, bytes: Uint8Array, verify: () => Pro
 	}
 }
 
-export async function writeExportFile(directory: ExportDirectory, filename: string, bytes: Uint8Array): Promise<boolean> {
+export async function writeExportFile(directory: IExportDirectory, filename: string, bytes: Uint8Array): Promise<boolean> {
 	if (!filename || filename === '.' || filename === '..' || path.basename(filename) !== filename) {
 		throw new Error('The export filename is invalid.');
 	}
-	const { verify }: ExportDirectory = directory;
+	const { verify }: IExportDirectory = directory;
 	await verify();
 	const target: string = path.join(directory.path, filename);
 	const temporary: string = path.join(directory.path, '.receiptmatch-' + randomUUID() + '.tmp');
@@ -237,11 +249,11 @@ export async function writeExportFile(directory: ExportDirectory, filename: stri
 }
 
 async function exportDocument(
-	document: ApprovedExportDocument, directory: ExportDirectory, pattern: string,
+	document: IApprovedExportDocument, directory: IExportDirectory, pattern: string,
 ): Promise<DocumentExportOutcome> {
-	const { transactionId, documentId, source }: ApprovedExportDocument = document;
+	const { transactionId, documentId, source }: IApprovedExportDocument = document;
 	const sourcePath: string | null = source?.relocatedPath ?? source?.filePath ?? null;
-	const item: { transactionId: string; documentId: string; sourceName: string | null; sourcePath: string | null; } = { transactionId, documentId, sourceName: sourcePath ? path.basename(sourcePath) : null, sourcePath };
+	const item: ExportItem = { transactionId, documentId, sourceName: sourcePath ? path.basename(sourcePath) : null, sourcePath };
 	if (!source || !sourcePath) {
 		return { ...item, status: 'failed', filename: null, reason: 'source-missing' };
 	}
@@ -249,11 +261,11 @@ async function exportDocument(
 	if (!(extensions[source.format] as readonly string[]).includes(ext)) {
 		return { ...item, status: 'failed', filename: null, reason: 'source-unreadable' };
 	}
-	const name: { filename: string; error?: never; } | { filename?: never; error: string; } = renderExportFilename(pattern, { ...document, extension: filenames[ext as keyof typeof filenames] });
+	const name: RenderExportFilenameResult = renderExportFilename(pattern, { ...document, extension: filenames[ext as keyof typeof filenames] });
 	if (!name.filename) {
 		return { ...item, status: 'failed', filename: null, reason: 'invalid-filename' };
 	}
-	const { filename }: { filename: string; error?: never; } = name;
+	const { filename }: Extract<RenderExportFilenameResult, Record<'filename', string>> = name;
 	let bytes: Uint8Array;
 	try {
 		bytes = await readSourceSnapshot(sourcePath, extensions[source.format]);
@@ -275,14 +287,14 @@ async function exportDocument(
 }
 
 export async function copyApprovedDocuments(
-	destination: string | ExportDirectory, pattern: string, documents: readonly ApprovedExportDocument[], sourcePaths: readonly string[],
+	destination: string | IExportDirectory, pattern: string, documents: readonly IApprovedExportDocument[], sourcePaths: readonly string[],
 ): Promise<IDocumentExportReport> {
 	if (!documents.length) {
 		return { directory: null, outcomes: [] };
 	}
-	const originalPaths: string[] = [...sourcePaths, ...documents.flatMap(({ source }: ApprovedExportDocument): string[] =>
+	const originalPaths: string[] = [...sourcePaths, ...documents.flatMap(({ source }: IApprovedExportDocument): string[] =>
 		source ? [source.filePath, ...(source.relocatedPath ? [source.relocatedPath] : [])] : [])];
-	const directory: ExportDirectory = await prepareDirectory(destination, originalPaths).catch((error: unknown): never => {
+	const directory: IExportDirectory = await prepareDirectory(destination, originalPaths).catch((error: unknown): never => {
 		if (error instanceof ExportDestinationError) {
 			throw error;
 		}

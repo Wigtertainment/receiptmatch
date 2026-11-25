@@ -7,7 +7,7 @@ import { compareDocuments } from '../source-comparison.js';
 import { SupportingDocumentState } from './document-state.js';
 import { hasFullDocumentReference, mergedLegacySections, recordedDocumentPayments } from './interpret.js';
 
-export interface ReceiptVersionPlan {
+export interface IReceiptVersionPlan {
     analysis: SupportingDocument;
     changes: IReceiptAiChange[];
     conflicts: string[];
@@ -19,13 +19,13 @@ type AmountField = DocumentSection['amounts'][number];
 type DateField = DocumentSection['dates'][number];
 type ReadField = DocumentSection['amounts' | 'dates' | 'merchants' | 'references' | 'currencies'][number];
 type DocumentPairing = ReturnType<typeof compareDocuments>;
-interface IdentifiedField { id: string; role: string }
+interface IIdentifiedField { id: string; role: string }
 
 function fields(section: DocumentSection): ReadField[] {
     return [...section.amounts, ...section.dates, ...section.merchants, ...section.references, ...section.currencies];
 }
 
-function pairedCorrectionField<T extends IdentifiedField>(before: T[], after: T[], id: string, pairedId: string | undefined): T | undefined {
+function pairedCorrectionField<T extends IIdentifiedField>(before: T[], after: T[], id: string, pairedId: string | undefined): T | undefined {
     const exact: T | undefined = after.find((field: T): boolean => field.id === pairedId);
     if (exact) {
         return exact;
@@ -161,7 +161,7 @@ function effectiveWithCorrections(analysis: SupportingDocument, corrections: rea
 }
 
 export function prepareReceiptAnalysisVersion(previous: StoredSupportingDocument, proposed: SupportingDocument, corrections: readonly DocumentCorrection[],
-    sameAnalysis: boolean = false): ReceiptVersionPlan {
+    sameAnalysis: boolean = false): IReceiptVersionPlan {
     const applicable: DocumentCorrection[] = corrections.filter((correction: DocumentCorrection): boolean => correction.documentId === previous.id);
     let analysis: SupportingDocument = proposed;
     let mapped: boolean = true;

@@ -6,7 +6,7 @@ import { supportingDocumentSchema, type DocumentSection, type SupportingDocument
 import type { StoredSupportingDocument } from '../../src/shared/workspace-documents.js';
 import { SupportingDocumentState } from '../../electron/documents/document-state.js';
 import { interpretSupportingDocument } from '../../electron/documents/interpret.js';
-import { prepareReceiptAnalysisVersion, type ReceiptVersionPlan } from '../../electron/documents/prepare-analysis-version.js';
+import { prepareReceiptAnalysisVersion, type IReceiptVersionPlan } from '../../electron/documents/prepare-analysis-version.js';
 import { extractedDocument, retainedDocument } from './document-fixtures.js';
 
 function modelProposal(previous: StoredSupportingDocument, total: string = 'EUR 9007199254740993.27', omitDate: boolean = false): SupportingDocument {
@@ -56,7 +56,7 @@ test('preserves a manual total at a newly keyed, uniquely paired field and keeps
     proposed.status = 'partial';
     proposed.issues.push({ code: 'warning', severity: 'warning', message: 'Check the tax notice.', sectionId: 'model-section', fieldId: tax.id, field: 'tax', evidence: tax.evidence });
     const snapshot: SupportingDocument = structuredClone(proposed);
-    const plan: ReceiptVersionPlan = prepareReceiptAnalysisVersion(previous, proposed, [correction]);
+    const plan: IReceiptVersionPlan = prepareReceiptAnalysisVersion(previous, proposed, [correction]);
     assert.equal(plan.blockingConflict, undefined);
     assert.equal(plan.invalidatesApproval, false);
     assert.equal(plan.analysis.sections[0].sectionId, correction.sectionId);
@@ -76,14 +76,14 @@ test('requires renewed approval for changed amount or reference eligibility, and
     const same: SupportingDocument = modelProposal(previous);
     assert.notDeepEqual(same.input, previous.result.input);
     assert.equal(prepareReceiptAnalysisVersion(previous, same, []).invalidatesApproval, false);
-    const changed: ReceiptVersionPlan = prepareReceiptAnalysisVersion(previous, modelProposal(previous, 'EUR 48.75'), []);
+    const changed: IReceiptVersionPlan = prepareReceiptAnalysisVersion(previous, modelProposal(previous, 'EUR 48.75'), []);
     assert.equal(changed.invalidatesApproval, true);
-    assert.ok(changed.changes.some((change: ReceiptVersionPlan['changes'][number]): boolean => change.after === '48.75 EUR'));
+    assert.ok(changed.changes.some((change: IReceiptVersionPlan['changes'][number]): boolean => change.after === '48.75 EUR'));
     const reference: DocumentSection['references'][number] = same.sections[0].references[0];
     reference.evidence[0].rawText = 'Invoice Number: A-DIFFERENT-REFERENCE';
-    const eligibility: ReceiptVersionPlan = prepareReceiptAnalysisVersion(previous, same, []);
+    const eligibility: IReceiptVersionPlan = prepareReceiptAnalysisVersion(previous, same, []);
     assert.equal(eligibility.invalidatesApproval, true);
-    assert.ok(eligibility.changes.some((change: ReceiptVersionPlan['changes'][number]): boolean => change.label === 'Matching evidence'));
+    assert.ok(eligibility.changes.some((change: IReceiptVersionPlan['changes'][number]): boolean => change.label === 'Matching evidence'));
 });
 
 test('keeps fields from unpaired invoice sections with their respective current and proposed sections', (): void => {
@@ -91,30 +91,30 @@ test('keeps fields from unpaired invoice sections with their respective current 
     const proposed: SupportingDocument = modelProposal(previous, 'EUR 48.75');
     proposed.sections[0].references[0].candidates = ['DIFFERENT-INVOICE'];
     previous.result.sections[0].amounts.push({ ...billedTotal(previous.result), id: 'unrecognized-tax', role: 'tax', label: 'Tax', candidates: [] });
-    const { changes, conflicts }: ReceiptVersionPlan = prepareReceiptAnalysisVersion(previous, proposed, []);
-    const sections: ReceiptVersionPlan['changes'] = changes.filter((change: ReceiptVersionPlan['changes'][number]): boolean => change.kind === 'section');
+    const { changes, conflicts }: IReceiptVersionPlan = prepareReceiptAnalysisVersion(previous, proposed, []);
+    const sections: IReceiptVersionPlan['changes'] = changes.filter((change: IReceiptVersionPlan['changes'][number]): boolean => change.kind === 'section');
     assert.equal(sections.length, 2);
     assert.equal(sections[0].before, sections[1].after);
-    const totals: ReceiptVersionPlan['changes'] = changes.filter((change: ReceiptVersionPlan['changes'][number]): boolean => change.label === 'Billed total');
+    const totals: IReceiptVersionPlan['changes'] = changes.filter((change: IReceiptVersionPlan['changes'][number]): boolean => change.label === 'Billed total');
     assert.equal(totals.length, 2);
     assert.equal(totals[0].section, sections[0].before);
     assert.equal(totals[0].after, null);
     assert.equal(totals[1].section, sections[1].after);
     assert.equal(totals[1].before, null);
-    assert.ok(changes.some((change: ReceiptVersionPlan['changes'][number]): boolean => change.label === 'Tax' && change.section === sections[0].before && change.unrecognized === true));
+    assert.ok(changes.some((change: IReceiptVersionPlan['changes'][number]): boolean => change.label === 'Tax' && change.section === sections[0].before && change.unrecognized === true));
     assert.ok(conflicts.some((conflict: string): boolean => conflict.includes('could not be matched')));
 });
 
 test('blocks adoption when a manually corrected total has a conflicting currency or ambiguous candidates', (): void => {
     const previous: StoredSupportingDocument = retainedDocument('fixtures');
     const correction: DocumentCorrection = amountCorrection(previous);
-    const changed: ReceiptVersionPlan = prepareReceiptAnalysisVersion(previous, modelProposal(previous, 'USD 48.75'), [correction]);
+    const changed: IReceiptVersionPlan = prepareReceiptAnalysisVersion(previous, modelProposal(previous, 'USD 48.75'), [correction]);
     assert.ok(changed.blockingConflict);
 
     const ambiguous: SupportingDocument = modelProposal(previous, 'EUR 48.75');
     const total: DocumentSection['amounts'][number] = billedTotal(ambiguous);
     ambiguous.sections[0].amounts.push({ ...total, id: 'alternate-total', candidates: [{ coefficient: '4900', currency: 'EUR', scale: 2 }] });
-    const conflict: ReceiptVersionPlan = prepareReceiptAnalysisVersion(previous, ambiguous, [correction]);
+    const conflict: IReceiptVersionPlan = prepareReceiptAnalysisVersion(previous, ambiguous, [correction]);
     assert.ok(conflict.blockingConflict);
     assert.ok(conflict.conflicts.includes(conflict.blockingConflict));
 });
@@ -124,7 +124,7 @@ test('keeps manually supplied missing fields when still absent and flags an extr
     const previous: StoredSupportingDocument = { ...document, result: modelProposal(document, undefined, true) };
     const edit: DocumentCorrection = { documentId: document.id, sectionId: previous.result.sections[0].sectionId, fieldId: null, revision: 2,
         change: { kind: 'date', value: '2032-05-20' } };
-    const missing: ReceiptVersionPlan = prepareReceiptAnalysisVersion(previous, modelProposal(document, undefined, true), [edit]);
+    const missing: IReceiptVersionPlan = prepareReceiptAnalysisVersion(previous, modelProposal(document, undefined, true), [edit]);
     assert.equal(missing.blockingConflict, undefined);
     assert.equal(missing.invalidatesApproval, false);
     assert.ok(prepareReceiptAnalysisVersion(previous, modelProposal(document), [edit]).blockingConflict);

@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { test, type TestContext } from 'vitest';
-import { createWorkspace, loadWorkspace, newMetadata, SCHEMA_VERSION, type SavedWorkspace } from '../../electron/store.js';
+import { createWorkspace, loadWorkspace, newMetadata, SCHEMA_VERSION, type ISavedWorkspace } from '../../electron/store.js';
 import { WorkspaceSession } from '../../electron/workspace-session.js';
 import { defaultExportFilenamePattern } from '../../src/shared/export-filename.js';
 import { approvalSelectionFor } from '../../src/shared/match-approvals.js';
@@ -77,7 +77,7 @@ test('relinks both source types, preserves provenance and approval, and uses the
 	assert.equal(copy.outcomes[0].sourcePath, receiptPath);
 	assert.equal((await session.dispatch({ type: 'save' })).error, null);
 	assert.equal(state().dirty, false);
-	const saved: SavedWorkspace = await loadWorkspace(file);
+	const saved: ISavedWorkspace = await loadWorkspace(file);
 	assert.equal(saved.sourceRelocations.get(bank.result.sourceProvenance!.sourceId), bankPath);
 	assert.equal(saved.sourceRelocations.get(receipt.result.input!.source.sourceId), receiptPath);
 	assert.deepEqual(saved.reviewApprovals, approvals);
@@ -127,7 +127,7 @@ test('opens a version 9 workspace and migrates its source links only on save', a
 	assert.deepEqual(await relink('document', receiptPath), { status: 'linked' });
 	assert.deepEqual(await readFile(file), before);
 	assert.equal((await session.dispatch({ type: 'save' })).error, null);
-	const saved: SavedWorkspace = await loadWorkspace(file);
+	const saved: ISavedWorkspace = await loadWorkspace(file);
 	assert.equal(saved.schemaVersion, SCHEMA_VERSION);
 	assert.deepEqual([...saved.sourceRelocations.values()], [receiptPath]);
 });

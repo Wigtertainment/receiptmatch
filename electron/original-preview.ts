@@ -11,7 +11,7 @@ const previewUrl: "receiptmatch-extraction://preview/index.html" = `${origin}/in
 const types: Record<string, string> = { '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.mjs': 'application/javascript', '.wasm': 'application/wasm' };
 const policy: string = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; style-src 'self'__STYLE_NONCE__; img-src 'self' blob: data:; font-src 'self' blob:; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'";
 
-export interface OriginalSource {
+export interface IOriginalSource {
     filePath: string;
     sha256: string;
     format: IOriginalPreviewData['format'];
@@ -68,11 +68,6 @@ async function createPreviewSession(): Promise<Session> {
 }
 
 export class OriginalPreviewWindows {
-    private readonly windows: Map<string, BrowserWindow> = new Map<string, BrowserWindow>();
-    private readonly payloads: Map<Electron.WebContents, IOriginalPreviewData> = new Map<WebContents, IOriginalPreviewData>();
-    private previewSession?: Promise<Session>;
-    private generation: number = 0;
-
     constructor(private readonly hidden: boolean, private readonly icon: string) {
         ipcMain.handle('preview:read', (event: Electron.IpcMainInvokeEvent, ...args: unknown[]): IOriginalPreviewData => {
             const data: IOriginalPreviewData | undefined = this.payloads.get(event.sender);
@@ -83,6 +78,11 @@ export class OriginalPreviewWindows {
             return data;
         });
     }
+
+    private readonly windows: Map<string, BrowserWindow> = new Map<string, BrowserWindow>();
+    private readonly payloads: Map<Electron.WebContents, IOriginalPreviewData> = new Map<WebContents, IOriginalPreviewData>();
+    private previewSession?: Promise<Session>;
+    private generation: number = 0;
 
     closeAll(): void {
         this.generation++;
@@ -95,7 +95,7 @@ export class OriginalPreviewWindows {
         this.payloads.clear();
     }
 
-    async open(key: string, source: OriginalSource): Promise<IOriginalPreviewResult> {
+    async open(key: string, source: IOriginalSource): Promise<IOriginalPreviewResult> {
         const generation: number = this.generation;
         let bytes: Uint8Array;
         try {
@@ -142,10 +142,10 @@ export class OriginalPreviewWindows {
                 }
                 this.payloads.delete(contents);
             });
-            contents.setWindowOpenHandler((): { action: "deny"; } => ({ action: 'deny' }));
+            contents.setWindowOpenHandler((): Record<'action', 'deny'> => ({ action: 'deny' }));
             contents.on('will-frame-navigate', (event: Electron.Event<Electron.WebContentsWillFrameNavigateEventParams>): void => event.preventDefault());
             contents.on('will-redirect', (event: Electron.Event<Electron.WebContentsWillRedirectEventParams>): void => event.preventDefault());
-            contents.on('will-attach-webview', (event: { preventDefault: () => void; readonly defaultPrevented: boolean; }): void => event.preventDefault());
+            contents.on('will-attach-webview', (event: Pick<Electron.Event, 'preventDefault' | 'defaultPrevented'>): void => event.preventDefault());
             await preview.loadURL(previewUrl);
             if (!this.hidden && !preview.isDestroyed()) {
                 preview.show();

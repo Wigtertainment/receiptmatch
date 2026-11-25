@@ -12,7 +12,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test, vi, type Mock, type TestContext } from 'vitest';
-import { copyApprovedDocuments, type ApprovedExportDocument } from '../../electron/document-export.js';
+import { copyApprovedDocuments, type IApprovedExportDocument } from '../../electron/document-export.js';
 import { createWorkspace, newMetadata } from '../../electron/store.js';
 import { WorkspaceSession } from '../../electron/workspace-session.js';
 import { defaultExportFilenamePattern, exportFilenameExample } from '../../src/shared/export-filename.js';
@@ -31,7 +31,7 @@ async function fixture(context: TestContext): Promise<{ root: string; originals:
 	return { root, originals, destination };
 }
 
-function approved(filePath: string, content: string, counterparty: string, format: 'pdf' | 'jpeg' = 'pdf'): ApprovedExportDocument {
+function approved(filePath: string, content: string, counterparty: string, format: 'pdf' | 'jpeg' = 'pdf'): IApprovedExportDocument {
 	return { ...exportFilenameExample, transactionId: randomUUID(), documentId: randomUUID(), counterparty,
 		source: { filePath, format, sha256: createHash('sha256').update(content).digest('hex') } };
 }
@@ -76,15 +76,15 @@ test('exports only current approvals using effective bookings and leaves the wor
 
 test('reports collisions and source failures independently and preserves the JPEG extension', async (context: TestContext & object): Promise<void> => {
 	const { originals, destination }: { root: string; originals: string; destination: string; } = await fixture(context);
-	const first: ApprovedExportDocument = approved(path.join(originals, 'first.pdf'), 'first', 'Same');
-	const second: ApprovedExportDocument = approved(path.join(originals, 'second.pdf'), 'second', 'Same');
-	const changed: ApprovedExportDocument = approved(path.join(originals, 'changed.pdf'), 'old', 'Changed');
-	const missing: ApprovedExportDocument = approved(path.join(originals, 'missing.pdf'), 'missing', 'Missing');
-	const jpeg: ApprovedExportDocument = approved(path.join(originals, 'photo.JPEG'), 'photo', 'Photo', 'jpeg');
-	const documents: ApprovedExportDocument[] = [first, second, changed, missing, jpeg];
+	const first: IApprovedExportDocument = approved(path.join(originals, 'first.pdf'), 'first', 'Same');
+	const second: IApprovedExportDocument = approved(path.join(originals, 'second.pdf'), 'second', 'Same');
+	const changed: IApprovedExportDocument = approved(path.join(originals, 'changed.pdf'), 'old', 'Changed');
+	const missing: IApprovedExportDocument = approved(path.join(originals, 'missing.pdf'), 'missing', 'Missing');
+	const jpeg: IApprovedExportDocument = approved(path.join(originals, 'photo.JPEG'), 'photo', 'Photo', 'jpeg');
+	const documents: IApprovedExportDocument[] = [first, second, changed, missing, jpeg];
 	await Promise.all([fs.writeFile(first.source!.filePath, 'first'), fs.writeFile(second.source!.filePath, 'second'),
 		fs.writeFile(changed.source!.filePath, 'new'), fs.writeFile(jpeg.source!.filePath, 'photo')]);
-	const sources: string[] = documents.map((document: ApprovedExportDocument): string => document.source!.filePath);
+	const sources: string[] = documents.map((document: IApprovedExportDocument): string => document.source!.filePath);
 	const result: IDocumentExportReport = await copyApprovedDocuments(destination, '{counterparty}', documents, sources);
 	assert.deepEqual(result.outcomes.map((outcome: DocumentExportOutcome): (string | null)[] => [outcome.status, outcome.filename, 'reason' in outcome ? outcome.reason : null]), [
 		['copied', 'Same.pdf', null], ['skipped', 'Same.pdf', 'collision'], ['failed', 'Changed.pdf', 'source-changed'],
@@ -100,7 +100,7 @@ test('reports collisions and source failures independently and preserves the JPE
 
 test('rejects original directories and linked destinations, and leaves existing hard-linked files intact', async (context: TestContext & object): Promise<void> => {
 	const { originals, destination }: { root: string; originals: string; destination: string; } = await fixture(context);
-	const item: ApprovedExportDocument = approved(path.join(originals, 'original.pdf'), 'original', 'Original');
+	const item: IApprovedExportDocument = approved(path.join(originals, 'original.pdf'), 'original', 'Original');
 	const source: string = item.source!.filePath;
 	await fs.writeFile(source, 'original');
 	await assert.rejects(copyApprovedDocuments(path.dirname(originals), '{counterparty}', [item], []), /separate from the originals/);
@@ -127,7 +127,7 @@ test('protects imported and relocated originals from use as a document export di
 	const relocatedPath: string = path.join(movedDirectory, 'renamed.pdf');
 	await fs.mkdir(movedDirectory);
 	await fs.writeFile(relocatedPath, 'original');
-	const item: ApprovedExportDocument = approved(original, 'original', 'Relocated');
+	const item: IApprovedExportDocument = approved(original, 'original', 'Relocated');
 	item.source!.relocatedPath = relocatedPath;
 	await assert.rejects(copyApprovedDocuments(originals, '{counterparty}', [item], []), /separate from the originals/);
 	await assert.rejects(copyApprovedDocuments(movedDirectory, '{counterparty}', [item], []), /separate from the originals/);
@@ -145,8 +145,8 @@ test('protects imported and relocated originals from use as a document export di
 
 test('removes an incomplete copy and keeps exporting after a write failure', async (context: TestContext & object): Promise<void> => {
 	const { originals, destination }: { root: string; originals: string; destination: string; } = await fixture(context);
-	const broken: ApprovedExportDocument = approved(path.join(originals, 'broken.pdf'), 'broken', 'Broken');
-	const healthy: ApprovedExportDocument = approved(path.join(originals, 'healthy.pdf'), 'healthy', 'Healthy');
+	const broken: IApprovedExportDocument = approved(path.join(originals, 'broken.pdf'), 'broken', 'Broken');
+	const healthy: IApprovedExportDocument = approved(path.join(originals, 'healthy.pdf'), 'healthy', 'Healthy');
 	const sources: string[] = [broken.source!.filePath, healthy.source!.filePath];
 	await Promise.all([fs.writeFile(sources[0], 'broken'), fs.writeFile(sources[1], 'healthy')]);
 	const realOpen: (path: PathLike, flags?: string | number, mode?: Mode) => Promise<fs.FileHandle> = fs.open;

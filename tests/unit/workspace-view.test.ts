@@ -4,14 +4,14 @@ import assert from 'node:assert/strict';
 import { copyFile, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createWorkspace, newMetadata } from '../../electron/store.js';
-import { WorkspaceSession, type WorkspaceDialogs } from '../../electron/workspace-session.js';
+import { WorkspaceSession, type IWorkspaceDialogs } from '../../electron/workspace-session.js';
 
 test('successful loads invalidate view snapshots even for identical workspace IDs, while ordinary actions and rejected loads keep the snapshot', async (): Promise<void> => {
     await mkdir('artifacts', { recursive: true }); const root: string = await mkdtemp(path.resolve('artifacts/view-'));
     const original: string = path.join(root, 'original.receiptmatch'); const copied: string = path.join(root, 'copied.receiptmatch'); const corrupt: string = path.join(root, 'corrupt.receiptmatch');
     await createWorkspace(original, newMetadata()); await copyFile(original, copied); await writeFile(corrupt, 'not a workspace');
     const opens: (string | null)[] = [original];
-    const dialogs: WorkspaceDialogs = { open: async (): Promise<string | null> => Promise.resolve(opens.shift() ?? null), save: async (): Promise<string> => Promise.resolve(path.join(root, 'new.receiptmatch')), unsaved: async (): Promise<"cancel"> => Promise.resolve('cancel') };
+    const dialogs: IWorkspaceDialogs = { open: async (): Promise<string | null> => Promise.resolve(opens.shift() ?? null), save: async (): Promise<string> => Promise.resolve(path.join(root, 'new.receiptmatch')), unsaved: async (): Promise<"cancel"> => Promise.resolve('cancel') };
     const session: WorkspaceSession = new WorkspaceSession(dialogs);
     const first: IWorkspaceView = (await session.dispatch({ type: 'open' })).workspace!;
     await session.dispatch({ type: 'rename', name: 'Saved name' });

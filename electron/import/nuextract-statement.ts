@@ -3,24 +3,27 @@ import { z } from 'zod';
 import { BANK_IMPORT_LIMITS, bankImportInputSchema, importIssue, type BankImportInput, type BankImportResult, type ImportIssue } from '../../src/shared/bank-import.js';
 import { RECEIPT_RASTER_LIMITS } from '../../src/shared/pdf-extraction.js';
 import type { NuExtractDevice } from '../../src/shared/local-ocr-settings.js';
-import type { ExtractionOptions, renderDocumentImages } from '../extraction/host.js';
-import { NuExtractGpuCheckCancelledError, NuExtractGpuUnavailableError, NuExtractRuntime, type NuExtractRuntimeFiles } from '../extraction/nuextract-runtime.js';
+import type { IExtractionOptions, renderDocumentImages } from '../extraction/host.js';
+import { NuExtractGpuCheckCancelledError, NuExtractGpuUnavailableError, NuExtractRuntime, type INuExtractRuntimeFiles } from '../extraction/nuextract-runtime.js';
 import { proposeStatementTransactions } from './statement-table.js';
 
-export type StatementProposalExtraction = { status: 'proposed'; result: BankImportResult } |
-    { status: 'failed' | 'cancelled' | 'unavailable'; issues: ImportIssue[] };
+interface IStatementProposal { status: 'proposed'; result: BankImportResult }
+interface IStatementProposalFailure { status: 'failed' | 'cancelled' | 'unavailable'; issues: ImportIssue[] }
+export type StatementProposalExtraction = IStatementProposal | IStatementProposalFailure;
 
-interface StatementRecognitionDependencies {
-    runtimeFiles(signal?: AbortSignal): Promise<NuExtractRuntimeFiles | undefined>;
+interface IStatementRecognitionDependencies {
     render: typeof renderDocumentImages;
-    start?: (files: NuExtractRuntimeFiles, signal?: AbortSignal) => Promise<Pick<NuExtractRuntime, 'extract' | 'close'>>;
+    start?: (files: INuExtractRuntimeFiles, signal?: AbortSignal) => Promise<Pick<NuExtractRuntime, 'extract' | 'close'>>;
+    runtimeFiles(signal?: AbortSignal): Promise<INuExtractRuntimeFiles | undefined>;
+}
+
+interface IStatementTableShape {
+    headings: z.ZodArray<z.ZodString>;
+    rows: z.ZodArray<z.ZodObject<Record<'cells', z.ZodArray<z.ZodNullable<z.ZodString>>>, z.core.$strict>>;
 }
 
 const cell: z.ZodString = z.string().max(BANK_IMPORT_LIMITS.spanText);
-const tableSchema: z.ZodObject<{
-    headings: z.ZodArray<z.ZodString>;
-    rows: z.ZodArray<z.ZodObject<{ cells: z.ZodArray<z.ZodNullable<z.ZodString>> }, z.core.$strict>>;
-}, z.core.$strict> = z.strictObject({
+const tableSchema: z.ZodObject<z.core.util.Flatten<IStatementTableShape>, z.core.$strict> = z.strictObject({
     headings: z.array(cell).min(3).max(BANK_IMPORT_LIMITS.evidence),
     rows: z.array(z.strictObject({ cells: z.array(cell.nullable()).max(BANK_IMPORT_LIMITS.evidence) })).max(BANK_IMPORT_LIMITS.rows)
 });
@@ -42,8 +45,8 @@ function readTable(output: Record<string, unknown>): string[][] | undefined {
     return [headings, ...rows.map(({ cells }: typeof rows[number]): string[] => cells.map((value: string | null): string => value ?? ''))];
 }
 
-async function recognizePages(files: NuExtractRuntimeFiles, images: Uint8Array[], input: BankImportInput, options: ExtractionOptions,
-    start: NonNullable<StatementRecognitionDependencies['start']>): Promise<Map<number, string[][]>> {
+async function recognizePages(files: INuExtractRuntimeFiles, images: Uint8Array[], input: BankImportInput, options: IExtractionOptions,
+    start: NonNullable<IStatementRecognitionDependencies['start']>): Promise<Map<number, string[][]>> {
     const runtime: Pick<NuExtractRuntime, 'extract' | 'close'> = await start(files, options.signal);
     const device: NuExtractDevice = files.gpuDevice ? 'gpu' : 'cpu';
     const tables: Map<number, string[][]> = new Map();
@@ -67,8 +70,8 @@ async function recognizePages(files: NuExtractRuntimeFiles, images: Uint8Array[]
     }
 }
 
-export async function proposeNuExtractStatement(bytes: Uint8Array, input: BankImportInput, dependencies: StatementRecognitionDependencies,
-    options: ExtractionOptions = {}): Promise<StatementProposalExtraction> {
+export async function proposeNuExtractStatement(bytes: Uint8Array, input: BankImportInput, dependencies: IStatementRecognitionDependencies,
+    options: IExtractionOptions = {}): Promise<StatementProposalExtraction> {
     options.signal?.throwIfAborted();
     const checked: z.ZodSafeParseResult<BankImportInput> = bankImportInputSchema.safeParse(input);
     if (!checked.success || createHash('sha256').update(bytes).digest('hex') !== input.source.sha256) {
@@ -79,7 +82,7 @@ export async function proposeNuExtractStatement(bytes: Uint8Array, input: BankIm
         return { status: 'failed', issues: [importIssue('page-limit', `NuExtract3 can review up to ${RECEIPT_RASTER_LIMITS.pages} statement pages at a time.`)] };
     }
     try {
-        const files: NuExtractRuntimeFiles | undefined = await dependencies.runtimeFiles(options.signal);
+        const files: INuExtractRuntimeFiles | undefined = await dependencies.runtimeFiles(options.signal);
         options.signal?.throwIfAborted();
         if (!files) {
             return { status: 'unavailable', issues: [importIssue('local-model-unavailable', 'Download NuExtract3 and select a compatible device under Settings → Document recognition.')] };
@@ -92,8 +95,8 @@ export async function proposeNuExtractStatement(bytes: Uint8Array, input: BankIm
         if (rendered.images.length !== source.pages.length) {
             return { status: 'failed', issues: [importIssue('invalid-provenance', 'The rendered pages do not match the original statement analysis.')] };
         }
-        const start: NonNullable<StatementRecognitionDependencies['start']> = dependencies.start ??
-            ((model: NuExtractRuntimeFiles, signal?: AbortSignal): Promise<NuExtractRuntime> => NuExtractRuntime.start(model, signal));
+        const start: NonNullable<IStatementRecognitionDependencies['start']> = dependencies.start ??
+            ((model: INuExtractRuntimeFiles, signal?: AbortSignal): Promise<NuExtractRuntime> => NuExtractRuntime.start(model, signal));
         const tables: Map<number, string[][]> = await recognizePages(files, rendered.images, source, options, start);
         options.signal?.throwIfAborted();
         const result: BankImportResult = proposeStatementTransactions(source, tables);

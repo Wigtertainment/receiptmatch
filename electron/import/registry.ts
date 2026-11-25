@@ -24,7 +24,7 @@ export function parseBankStatement(payload: unknown, adapters: readonly IBankAda
     try {
         const ids: Set<string> = new Set<string>();
         for (const adapter of adapters) {
-            const metadata: { bankId: string; adapterId: string; version: string; layouts: { layoutId: string; version: string; }[]; } = adapterMetadataSchema.parse(adapter.metadata);
+            const metadata: IBankAdapter['metadata'] = adapterMetadataSchema.parse(adapter.metadata);
             if (ids.has(metadata.adapterId)) {
                 throw new Error('Duplicate adapter registration.');
             }
@@ -55,7 +55,8 @@ export function parseBankStatement(payload: unknown, adapters: readonly IBankAda
             (result.adapter.adapterId !== adapter.metadata.adapterId ||
                 result.adapter.bankId !== adapter.metadata.bankId ||
                 result.adapter.version !== adapter.metadata.version ||
-                !adapter.metadata.layouts.some((layout: { layoutId: string; version: string; }): boolean => layout.layoutId === result.adapter?.layoutId && layout.version === result.adapter.layoutVersion))
+                !adapter.metadata.layouts.some((layout: IBankAdapter['metadata']['layouts'][number]): boolean =>
+                    layout.layoutId === result.adapter?.layoutId && layout.version === result.adapter.layoutVersion))
         ) {
             return emptyImportResult(input, 'failed', importIssue('invalid-adapter-version', 'The adapter result claims an unregistered adapter or layout version.'));
         }

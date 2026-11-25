@@ -18,7 +18,7 @@ import { test, vi, type Mock, type TestContext } from 'vitest';
 import { interpretSupportingDocument } from '../../electron/documents/interpret.js';
 import { reconciliationRows } from '../../electron/reconciliation-csv.js';
 import { writeReconciliationExport } from '../../electron/reconciliation-export.js';
-import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, type SavedWorkspace } from '../../electron/store.js';
+import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, type ISavedWorkspace } from '../../electron/store.js';
 import { WorkspaceSession } from '../../electron/workspace-session.js';
 import { defaultExportFilenamePattern } from '../../src/shared/export-filename.js';
 import { advanceReviewRevision, approvalSelectionFor, type ReviewApprovalState } from '../../src/shared/match-approvals.js';
@@ -27,7 +27,7 @@ import { documentRun, retainedBank, retainedDocument } from './document-fixtures
 import { statement } from './bank-fixtures.js';
 import type { PathLike } from 'node:fs';
 
-async function fixture(context: TestContext, approve: boolean = true): Promise<{ destination: string; file: string; snapshot: SavedWorkspace; first: string; second: string; document: StoredSupportingDocument; }> {
+async function fixture(context: TestContext, approve: boolean = true): Promise<{ destination: string; file: string; snapshot: ISavedWorkspace; first: string; second: string; document: StoredSupportingDocument; }> {
 	const root: string = await fs.mkdtemp(path.join(await fs.realpath(tmpdir()), 'receiptmatch-reconciliation-export-'));
 	context.onTestFinished((): Promise<void> => fs.rm(root, { recursive: true, force: true }));
 	const originals: string = path.join(root, 'originals');
@@ -43,7 +43,7 @@ async function fixture(context: TestContext, approve: boolean = true): Promise<{
 	const approvals: Map<string, { associationRevision: number; approval: { batchId: `${string}-${string}-${string}-${string}-${string}`; approvedAt: string; transactionId: string; documentId: string; transactionRevision: number; documentRevision: number; associationRevision: number; }; }> = new Map([...decisions].map(([transactionId, documentId]: [string, string]): [string, { associationRevision: number; approval: { batchId: `${string}-${string}-${string}-${string}-${string}`; approvedAt: string; transactionId: string; documentId: string; transactionRevision: number; documentRevision: number; associationRevision: number; }; }] => [transactionId, {
 		associationRevision: 1, approval: { ...approvalSelectionFor(transactionId, documentId), batchId: randomUUID(), approvedAt: '2032-03-01T12:00:00.000Z' },
 	}]));
-	const snapshot: SavedWorkspace = await createWorkspace(file, newMetadata(), [bank], [documentRun(originals, [document, missing])], decisions, new Map(), new Map(),
+	const snapshot: ISavedWorkspace = await createWorkspace(file, newMetadata(), [bank], [documentRun(originals, [document, missing])], decisions, new Map(), new Map(),
 		approve ? approvals : new Map());
 	return { destination, file, snapshot, first, second, document };
 }
@@ -104,7 +104,7 @@ test('reads approved copies from the saved relocation and keeps imported filenam
 	const sourceRelocations: Map<string, string> = new Map([[document.result.input!.source.sourceId, movedFile]]);
 	await saveWorkspace(snapshot, snapshot.metadata, snapshot.imports, snapshot.documentImports, snapshot.matchDecisions, snapshot.bankCorrections,
 		snapshot.documentCorrections, snapshot.reviewApprovals, snapshot.duplicateDecisions, sourceRelocations);
-	const reopened: SavedWorkspace = await loadWorkspace(file);
+	const reopened: ISavedWorkspace = await loadWorkspace(file);
 
 	await assert.rejects(writeReconciliationExport(reopened, movedDirectory, defaultExportFilenamePattern), /separate from the originals/);
 	const result: IReconciliationExportReport = await writeReconciliationExport(reopened, destination, defaultExportFilenamePattern);
@@ -155,7 +155,7 @@ test('exports the primary booking and its approved document without the confirme
 	const file: string = path.join(root, 'workspace.receiptmatch');
 	await createWorkspace(file, newMetadata(), [first, second], [documentRun(originals, [document, archived])],
 		new Map([[primaryId, document.id]]), new Map(), new Map(), approvals, duplicates);
-	const snapshot: SavedWorkspace = await loadWorkspace(file);
+	const snapshot: ISavedWorkspace = await loadWorkspace(file);
 
 	assert.equal(snapshot.matches.find((match: TransactionMatch): boolean => match.transactionId === primaryId)?.status, 'uncertain');
 	assert.ok(snapshot.matches.some((match: TransactionMatch): boolean => match.transactionId === excludedId));
@@ -251,7 +251,7 @@ test('persists an ignored booking, suppresses it from matching and exports, and 
 	assert.equal((await loadWorkspace(file)).ignoredTransactions.size, 0);
 
 	assert.equal((await session.dispatch({ type: 'save' })).error, null);
-	const saved: SavedWorkspace = await loadWorkspace(file);
+	const saved: ISavedWorkspace = await loadWorkspace(file);
 	assert.deepEqual(saved.ignoredTransactions, new Set([first]));
 	assert.deepEqual(saved.imports, snapshot.imports);
 	assert.equal(saved.matchDecisions.get(first), document.id);
@@ -309,7 +309,7 @@ test('applies and removes a local ignore rule across workspaces and keeps indepe
 	for (const [index, bank] of banks.entries()) {
 		bank.filePath = path.join(root, 'bank-' + index + '.pdf');
 	}
-	const next: SavedWorkspace = await createWorkspace(future, newMetadata(), banks);
+	const next: ISavedWorkspace = await createWorkspace(future, newMetadata(), banks);
 	await saveWorkspace(next, next.metadata, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
 		new Set([independentlyIgnored]));
 

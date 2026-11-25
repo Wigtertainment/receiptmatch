@@ -8,8 +8,8 @@ import { receiptAnalysisVersionSchema } from '../../electron/documents/analysis-
 import { WorkspaceDocumentState } from '../../electron/documents/document-state.js';
 import { interpretSupportingDocument } from '../../electron/documents/interpret.js';
 import { suggestWorkspaceMatches } from '../../electron/matching.js';
-import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERSION, type SavedWorkspace } from '../../electron/store.js';
-import { WorkspaceSession, type WorkspaceDialogs } from '../../electron/workspace-session.js';
+import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERSION, type ISavedWorkspace } from '../../electron/store.js';
+import { WorkspaceSession, type IWorkspaceDialogs } from '../../electron/workspace-session.js';
 import { documentCorrectionKey, type DocumentCorrection } from '../../src/shared/document-corrections.js';
 import { activeDocumentFieldDisposition, documentFieldConfirmationIssue, documentFieldReviewKey, documentFieldReviewSchema, documentFieldSignature,
     isDocumentFieldConfirmed, type DocumentFieldDisposition, type DocumentFieldReview, type DocumentFieldReviewTarget } from '../../src/shared/document-field-reviews.js';
@@ -55,7 +55,7 @@ async function temporary(context: TestContext): Promise<string> {
     return root;
 }
 
-function dialogs(file: string): WorkspaceDialogs {
+function dialogs(file: string): IWorkspaceDialogs {
     return { open: async (): Promise<string> => Promise.resolve(file), save: async (): Promise<string> => Promise.resolve(file), unsaved: async (): Promise<'discard'> => Promise.resolve('discard') };
 }
 
@@ -178,7 +178,7 @@ test('required-field decisions persist and reset, invalidate approvals, reject s
     await setDisposition(reopened, target, null);
     assert.deepEqual(imported(snapshot(reopened).reports).sections, document.result.sections);
     await reopened.dispatch({ type: 'save' });
-    const saved: SavedWorkspace = await loadWorkspace(file);
+    const saved: ISavedWorkspace = await loadWorkspace(file);
     assert.deepEqual(imported(saved.documentImports), document.result, 'original analysis remains unchanged');
     assert.equal(saved.documentFieldReviews.get(documentFieldReviewKey(target))!.disposition, undefined);
     assert.equal(documentRevisionIndex(saved.documentCorrections.values(), saved.documentFieldReviews.values()).get(document.id), 3);
@@ -255,7 +255,7 @@ test('version 15 opens without mutation and upgrades on explicit save', async (c
     db.pragma('user_version=15');
     db.close();
     const bytes: NonSharedBuffer = await readFile(file);
-    const old: SavedWorkspace = await loadWorkspace(file);
+    const old: ISavedWorkspace = await loadWorkspace(file);
     assert.equal(old.schemaVersion, 15);
     assert.deepEqual(await readFile(file), bytes);
     assert.equal((await saveWorkspace(old, old.metadata)).schemaVersion, SCHEMA_VERSION);

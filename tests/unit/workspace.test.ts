@@ -7,16 +7,16 @@ import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { createWorkspace, fingerprint, loadWorkspace, moneySchema, newMetadata, saveWorkspace, SCHEMA_VERSION, type SavedWorkspace } from '../../electron/store.js';
-import { WorkspaceSession, type WorkspaceDialogs } from '../../electron/workspace-session.js';
+import { createWorkspace, fingerprint, loadWorkspace, moneySchema, newMetadata, saveWorkspace, SCHEMA_VERSION, type ISavedWorkspace } from '../../electron/store.js';
+import { WorkspaceSession, type IWorkspaceDialogs } from '../../electron/workspace-session.js';
 
 async function directory(): Promise<string> {
   await mkdir('artifacts', { recursive: true }); return mkdtemp(path.resolve('artifacts/unit-'));
 }
 
-function scriptedDialogs(): { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; dialogs: WorkspaceDialogs; } {
+function scriptedDialogs(): { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; dialogs: IWorkspaceDialogs; } {
   const plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ('save' | 'discard' | 'cancel')[] } = { saves: [], opens: [], choices: [] };
-  const dialogs: WorkspaceDialogs = { save: async (): Promise<string | null> => Promise.resolve(plan.saves.shift() ?? null), open: async (): Promise<string | null> => Promise.resolve(plan.opens.shift() ?? null), unsaved: async (): Promise<"discard" | "save" | "cancel"> => Promise.resolve(plan.choices.shift() ?? 'cancel') };
+  const dialogs: IWorkspaceDialogs = { save: async (): Promise<string | null> => Promise.resolve(plan.saves.shift() ?? null), open: async (): Promise<string | null> => Promise.resolve(plan.opens.shift() ?? null), unsaved: async (): Promise<"discard" | "save" | "cancel"> => Promise.resolve(plan.choices.shift() ?? 'cancel') };
   return { plan, dialogs };
 }
 
@@ -31,9 +31,9 @@ test('workspace stores exact canonical amounts, source references and independen
     INSERT INTO associations VALUES('x1','t1','d1','uncertain',1,'1:1:1'); INSERT INTO associations VALUES('x2','t1','d2','reliable',1,NULL); INSERT INTO associations VALUES('x3','t2','d1','reliable',1,NULL);`);
   assert.throws((): Database.RunResult => db.prepare('INSERT INTO statements VALUES(?,?,?)').run('invalid', 'missing', 's1'), /FOREIGN KEY/);
   db.close();
-  const loaded: SavedWorkspace = await loadWorkspace(file);
+  const loaded: ISavedWorkspace = await loadWorkspace(file);
   await saveWorkspace(loaded, { ...loaded.metadata, name: 'Business — November' });
-  const reopened: SavedWorkspace = await loadWorkspace(file); assert.equal(reopened.metadata.name, 'Business — November');
+  const reopened: ISavedWorkspace = await loadWorkspace(file); assert.equal(reopened.metadata.name, 'Business — November');
   const read: Database.Database = new Database(file, { readonly: true });
   assert.equal((read.prepare('SELECT coefficient FROM transactions WHERE id=?').get('t1') as { coefficient: string }).coefficient, '9007199254740993');
   assert.deepEqual(read.prepare('SELECT confidence,approved_revision FROM associations ORDER BY id').all(), [{ confidence: 'uncertain', approved_revision: '1:1:1' }, { confidence: 'reliable', approved_revision: null }, { confidence: 'reliable', approved_revision: null }]);
@@ -50,31 +50,31 @@ test('foreign, corrupt and future workspaces are read-only rejected; existing fi
   const future: string = path.join(root, 'future.receiptmatch'); await createWorkspace(future, newMetadata()); const futureDb: Database.Database = new Database(future); futureDb.pragma(`user_version=${SCHEMA_VERSION + 1}`); futureDb.close();
   const corrupt: string = path.join(root, 'corrupt.receiptmatch'); await writeFile(corrupt, 'not a database');
   for (const file of [foreign, future, corrupt]) {
-    const before: string = await fingerprint(file); await assert.rejects((): Promise<SavedWorkspace> => loadWorkspace(file)); assert.equal(await fingerprint(file), before);
+    const before: string = await fingerprint(file); await assert.rejects((): Promise<ISavedWorkspace> => loadWorkspace(file)); assert.equal(await fingerprint(file), before);
   }
-  const before: NonSharedBuffer = await readFile(foreign); await assert.rejects((): Promise<SavedWorkspace> => createWorkspace(foreign, newMetadata()), { code: 'EEXIST' }); assert.deepEqual(await readFile(foreign), before);
+  const before: NonSharedBuffer = await readFile(foreign); await assert.rejects((): Promise<ISavedWorkspace> => createWorkspace(foreign, newMetadata()), { code: 'EEXIST' }); assert.deepEqual(await readFile(foreign), before);
 });
 
 test('external changes are not overwritten by an existing workspace save', async (): Promise<void> => {
-  const root: string = await directory(); const file: string = path.join(root, 'workspace.receiptmatch'); const saved: SavedWorkspace = await createWorkspace(file, newMetadata());
+  const root: string = await directory(); const file: string = path.join(root, 'workspace.receiptmatch'); const saved: ISavedWorkspace = await createWorkspace(file, newMetadata());
   const external: Database.Database = new Database(file); external.prepare('UPDATE workspace SET name=?').run('External change'); external.close();
   const before: string = await fingerprint(file);
-  await assert.rejects((): Promise<SavedWorkspace> => saveWorkspace(saved, { ...saved.metadata, name: 'Overwrite' }), /changed outside/);
+  await assert.rejects((): Promise<ISavedWorkspace> => saveWorkspace(saved, { ...saved.metadata, name: 'Overwrite' }), /changed outside/);
   assert.equal(await fingerprint(file), before);
 });
 
 test('two concurrent saves from the same revision cannot silently overwrite one another', async (): Promise<void> => {
-  const root: string = await directory(); const file: string = path.join(root, 'workspace.receiptmatch'); const saved: SavedWorkspace = await createWorkspace(file, newMetadata());
-  const results: [PromiseSettledResult<SavedWorkspace>, PromiseSettledResult<SavedWorkspace>] = await Promise.allSettled([saveWorkspace(saved, { ...saved.metadata, name: 'First writer' }), saveWorkspace(saved, { ...saved.metadata, name: 'Second writer' })]);
-  assert.equal(results.filter((result: PromiseSettledResult<SavedWorkspace>): result is PromiseFulfilledResult<SavedWorkspace> => result.status === 'fulfilled').length, 1);
-  assert.equal(results.filter((result: PromiseSettledResult<SavedWorkspace>): result is PromiseRejectedResult => result.status === 'rejected').length, 1);
-  const reopened: SavedWorkspace = await loadWorkspace(file); assert.ok(['First writer', 'Second writer'].includes(reopened.metadata.name));
+  const root: string = await directory(); const file: string = path.join(root, 'workspace.receiptmatch'); const saved: ISavedWorkspace = await createWorkspace(file, newMetadata());
+  const results: [PromiseSettledResult<ISavedWorkspace>, PromiseSettledResult<ISavedWorkspace>] = await Promise.allSettled([saveWorkspace(saved, { ...saved.metadata, name: 'First writer' }), saveWorkspace(saved, { ...saved.metadata, name: 'Second writer' })]);
+  assert.equal(results.filter((result: PromiseSettledResult<ISavedWorkspace>): result is PromiseFulfilledResult<ISavedWorkspace> => result.status === 'fulfilled').length, 1);
+  assert.equal(results.filter((result: PromiseSettledResult<ISavedWorkspace>): result is PromiseRejectedResult => result.status === 'rejected').length, 1);
+  const reopened: ISavedWorkspace = await loadWorkspace(file); assert.ok(['First writer', 'Second writer'].includes(reopened.metadata.name));
 });
 
 for (const operation of ['create', 'save'] as const) {
   test(`${operation} captures its committed fingerprint while competing SQLite writers remain excluded`, async (): Promise<void> => {
   const root: string = await directory(); const file: string = path.join(root, 'protected.receiptmatch'); const metadata: { name: string; id: string; createdAt: string; savedAt: string | null; } = { ...newMetadata(), name: 'Protected revision' };
-  const existing: SavedWorkspace | null = operation === 'save' ? await createWorkspace(file, newMetadata()) : null;
+  const existing: ISavedWorkspace | null = operation === 'save' ? await createWorkspace(file, newMetadata()) : null;
   const originalRead: { (fd: number, buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: fsModule.ReadPosition | null): number; (fd: number, buffer: NodeJS.ArrayBufferView, opts?: fsModule.ReadOptions): number; } = fsModule.readSync; let reads: number = 0; let attempts: number = 0;
   const captureRead: 1 | 3 = operation === 'create' ? 1 : 3;
   const probe: Mock<{ (fd: number, buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: fsModule.ReadPosition | null): number; (fd: number, buffer: NodeJS.ArrayBufferView, opts?: fsModule.ReadOptions): number; }> = vi.spyOn(fsModule, 'readSync').mockImplementation(((selected: number, ...rest: [buffer: NodeJS.ArrayBufferView, options?: fsModule.ReadOptions] | [buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: fsModule.ReadPosition | null]): number => {
@@ -86,7 +86,7 @@ for (const operation of ['create', 'save'] as const) {
     return Reflect.apply(originalRead, fsModule, [selected, ...rest]) as number;
   }));
   syncBuiltinESMExports();
-  let saved: SavedWorkspace;
+  let saved: ISavedWorkspace;
   try {
     saved = existing ? await saveWorkspace(existing, { ...existing.metadata, name: metadata.name }) : await createWorkspace(file, metadata);
   } finally {
@@ -98,7 +98,7 @@ for (const operation of ['create', 'save'] as const) {
 }
 
 test('cancelled and failed saves block replacement/close and retain the unsaved workspace', async (): Promise<void> => {
-  const root: string = await directory(); const { plan, dialogs }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; dialogs: WorkspaceDialogs; } = scriptedDialogs(); const session: WorkspaceSession = new WorkspaceSession(dialogs);
+  const root: string = await directory(); const { plan, dialogs }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; dialogs: IWorkspaceDialogs; } = scriptedDialogs(); const session: WorkspaceSession = new WorkspaceSession(dialogs);
   await session.dispatch({ type: 'new' }); await session.dispatch({ type: 'rename', name: 'Current work' }); const id: string = session.state().workspace!.id;
   plan.choices.push('save'); plan.saves.push(null); await session.dispatch({ type: 'new' });
   assert.equal(session.state().workspace!.id, id); assert.equal(session.state().workspace!.dirty, true);
@@ -114,7 +114,7 @@ test('cancelled and failed saves block replacement/close and retain the unsaved 
 });
 
 test('discard only replaces current work after Open succeeds; cancelled/invalid Open preserves it', async (): Promise<void> => {
-  const root: string = await directory(); const { plan, dialogs }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; dialogs: WorkspaceDialogs; } = scriptedDialogs(); const session: WorkspaceSession = new WorkspaceSession(dialogs);
+  const root: string = await directory(); const { plan, dialogs }: { plan: { saves: (string | null)[]; opens: (string | null)[]; choices: ("save" | "discard" | "cancel")[]; }; dialogs: IWorkspaceDialogs; } = scriptedDialogs(); const session: WorkspaceSession = new WorkspaceSession(dialogs);
   await session.dispatch({ type: 'new' }); await session.dispatch({ type: 'rename', name: 'Keep me' }); const id: string = session.state().workspace!.id;
   plan.choices.push('discard'); plan.opens.push(null); await session.dispatch({ type: 'open' }); assert.equal(session.state().workspace!.id, id);
   plan.choices.push('discard'); plan.opens.push(path.join(root, 'missing.receiptmatch')); await session.dispatch({ type: 'open' }); assert.equal(session.state().workspace!.name, 'Keep me'); assert.equal(session.state().workspace!.dirty, true);
@@ -125,7 +125,7 @@ test('discard only replaces current work after Open succeeds; cancelled/invalid 
 
 test('concurrent native operations cannot replace or rename a workspace during save', async (): Promise<void> => {
   let release: ((value: string | null) => void) | undefined;
-  const dialogs: WorkspaceDialogs = { save: (): Promise<string | null> => new Promise((resolve: (value: string | PromiseLike<string | null> | null) => void): void => {
+  const dialogs: IWorkspaceDialogs = { save: (): Promise<string | null> => new Promise((resolve: (value: string | PromiseLike<string | null> | null) => void): void => {
     release = resolve;
   }), open: async (): Promise<null> => Promise.resolve(null), unsaved: async (): Promise<"cancel"> => Promise.resolve('cancel') };
   const session: WorkspaceSession = new WorkspaceSession(dialogs); await session.dispatch({ type: 'new' });

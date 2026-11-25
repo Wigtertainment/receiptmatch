@@ -5,7 +5,7 @@ import type { StatementAnalysisVersion } from '../../src/shared/statement-analys
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
 import { prepareStatementAnalysisVersion } from './statement-analyses.js';
 
-export interface StatementAnalysisPlan { version: StatementAnalysisVersion; changes: IStatementAiChange[]; summary: IStatementAiSummary; conflicts: string[]; blockingConflict?: string }
+export interface IStatementAnalysisPlan { version: StatementAnalysisVersion; changes: IStatementAiChange[]; summary: IStatementAiSummary; conflicts: string[]; blockingConflict?: string }
 
 function identifiedRows(record: StoredBankImport): IStatementAiRow[] {
     const transactions: Map<string, string> = new Map(record.transactions.map((item: StoredBankImport['transactions'][number]): [string, string] => [item.rowId, item.transactionId]));
@@ -81,7 +81,7 @@ function changeKind(before: IStatementAiRow, after: IStatementAiRow): IStatement
     return isDeepStrictEqual(values(before), values(after)) ? 'unchanged' : 'changed';
 }
 
-export function prepareStatementAnalysis(original: StoredBankImport, current: StoredBankImport, proposed: BankImportResult, protectedIds: ReadonlySet<string> = new Set()): StatementAnalysisPlan {
+export function prepareStatementAnalysis(original: StoredBankImport, current: StoredBankImport, proposed: BankImportResult, protectedIds: ReadonlySet<string> = new Set()): IStatementAnalysisPlan {
     const version: StatementAnalysisVersion = prepareStatementAnalysisVersion(original, current, proposed);
     const before: IStatementAiRow[] = identifiedRows(current), after: IStatementAiRow[] = identifiedRows(version.record);
     const pairs: Map<string, IStatementAiRow> = pairRows(before, after);

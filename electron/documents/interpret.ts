@@ -1,20 +1,42 @@
 import type { ZodSafeParseResult } from 'zod';
 import { bankImportInputSchema, calendarDateSchema, type BankImportInput, type ImportPage, type PositionedSpan, type SourceEvidence } from '../../src/shared/bank-import.js';
 import { recoveredReceiptTaxPrefix } from '../../src/shared/document-display.js';
+import type { Money } from '../../src/shared/money.js';
 import { documentScalarConflicts, supportingDocumentSchema, type DocumentIssue, type DocumentSection, type SupportingDocument } from '../../src/shared/supporting-document.js';
 
-interface Line { page: ImportPage; spans: PositionedSpan[]; text: string; }
-interface PageInterpretation { paymentBlock: SourceEvidence[]; fxPage: boolean; }
+interface ILine { page: ImportPage; spans: PositionedSpan[]; text: string; }
+interface IPageInterpretation { paymentBlock: SourceEvidence[]; fxPage: boolean; }
 
 
 type AmountField = DocumentSection['amounts'][number];
 type AmountCandidate = AmountField['candidates'][number];
+type DecimalAmount = Pick<AmountCandidate, 'coefficient' | 'scale'>;
+type AmountWithoutCurrency = DecimalAmount & Record<'currency', null>;
+type ParsedAmountField = Pick<AmountField, 'id' | 'role' | 'label' | 'candidates' | 'evidence'>;
+type RecoveredAmountField = Omit<ParsedAmountField, 'candidates'> & Record<'candidates', Money[]>;
+type RecoveredBilledTotal = Omit<RecoveredAmountField, 'role'> & Record<'role', 'billed-total'>;
 type DateField = DocumentSection['dates'][number];
 type ReferenceField = DocumentSection['references'][number];
 type CurrencyField = DocumentSection['currencies'][number];
+type MerchantField = Pick<DocumentSection['merchants'][number], 'role' | 'candidates' | 'id' | 'label' | 'evidence'>;
 type AmountRole = DocumentSection['amounts'][number]['role'];
 type DateRole = DocumentSection['dates'][number]['role'];
 type ReferenceRole = DocumentSection['references'][number]['role'];
+
+interface IAmountRoleMatch { role: AmountRole; end: number; priority: number }
+interface IAmountCell { label: string; role: AmountRole; value: string; evidence: SourceEvidence[] }
+interface ISummaryHeading { index: number; span: PositionedSpan }
+interface ILineSpan { line: ILine; span: PositionedSpan }
+interface IReceiptVatTotal { originalFields: AmountField[]; amounts: Money[]; evidence: SourceEvidence[]; reconstructed: boolean; totalEvidence: SourceEvidence[] }
+interface IReceiptItemTotal { existing: AmountField; amount: Money; evidence: SourceEvidence[] }
+interface IRecoveredReceipt { lines: ILine[]; total: RecoveredAmountField }
+interface IDateRoleMatch { role: DateRole; index: number }
+interface ILabelledDateContext { labelled: true; evidence: SourceEvidence | null }
+interface IUnlabelledDateContext { labelled: false; evidence: SourceEvidence }
+interface ILabelledReference { label: string; value: string }
+interface IEvidencedText { text: string; evidence: SourceEvidence[] }
+interface ISettlementCurrency { declared: string[]; currency: string | null }
+
 const code: "(?:EUR|USD|GBP|CHF|CAD|AUD|NZD|JPY|CNY|HKD|SGD|SEK|NOK|DKK|PLN|CZK|RON|HUF|INR|BRL|ZAR|AED|ILS|TRY)" = '(?:EUR|USD|GBP|CHF|CAD|AUD|NZD|JPY|CNY|HKD|SGD|SEK|NOK|DKK|PLN|CZK|RON|HUF|INR|BRL|ZAR|AED|ILS|TRY)';
 const currencyPattern: RegExp = new RegExp(`\\b${code}\\b`, 'g');
 const numberPattern: RegExp = /(?<![\p{L}\d])(?:[-−+(]\s*)*(?:[$€£]\s*)?(?:[-−+(]\s*)*\d[\d.,'’]*(?: \d{3}(?!\d)(?:[.,'’]\d+)*)*(?:\s*\))?[\p{L}?+−-]*/gu;
@@ -38,13 +60,13 @@ function sameVisualRow(a: PositionedSpan['region'], b: PositionedSpan['region'])
 	return overlap > 0 && overlap >= Math.min(a.height, b.height) / 2;
 }
 
-function linesOf(page: ImportPage): Line[] {
-	const lines: Line[] = [];
+function linesOf(page: ImportPage): ILine[] {
+	const lines: ILine[] = [];
 	for (const span of page.spans) {
 		if (!span.text.trim()) {
 			continue;
 		}
-		const current: Line | undefined = lines.at(-1);
+		const current: ILine | undefined = lines.at(-1);
 		if (current && Math.abs(current.spans[0].region.y - span.region.y) <= Math.min(2.5, span.region.height / 2)) {
 			current.spans.push(span);
 		} else {
@@ -58,7 +80,7 @@ function linesOf(page: ImportPage): Line[] {
 	return lines;
 }
 
-function source(line: Line): SourceEvidence[] {
+function source(line: ILine): SourceEvidence[] {
 	return (['embedded-text', 'local-ocr'] as const).flatMap((method: "embedded-text" | "local-ocr"): SourceEvidence[] => {
 		const spans: PositionedSpan[] = line.spans.filter((span: PositionedSpan): boolean => span.method === method);
 		if (!spans.length) {
@@ -134,11 +156,12 @@ function amountRole(raw: string, kind: DocumentSection['kind'], paymentBlock: bo
 		['tax', /tax amount|\btax\b|\bvat\b|umsatzsteuer|mehrwertsteuer|mwst/gi],
 		['line-item', /\b(?:price|amount|credit|charge|discount|adjustment|line item|line-item|unit|preis|betrag)\b/gi]
 	];
-	const matches: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; end: number; priority: number; }[] = labels.flatMap(([role, pattern]: ["unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item", RegExp], priority: number): { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; end: number; priority: number; }[] => [...raw.matchAll(pattern)].map((match: RegExpExecArray): { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; end: number; priority: number; } => ({ role, end: match.index + match[0].length, priority })));
-	return matches.sort((a: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; end: number; priority: number; }, b: { role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; end: number; priority: number; }): number => b.end - a.end || a.priority - b.priority)[0]?.role ?? (paymentBlock ? 'payment' : null);
+	const matches: IAmountRoleMatch[] = labels.flatMap(([role, pattern]: [AmountRole, RegExp], priority: number): IAmountRoleMatch[] =>
+		[...raw.matchAll(pattern)].map((match: RegExpExecArray): IAmountRoleMatch => ({ role, end: match.index + match[0].length, priority })));
+	return matches.sort((a: IAmountRoleMatch, b: IAmountRoleMatch): number => b.end - a.end || a.priority - b.priority)[0]?.role ?? (paymentBlock ? 'payment' : null);
 }
 
-function columnAmounts(line: Line, next: Line | undefined, kind: DocumentSection['kind'], previous: Line | undefined): { label: string; role: AmountRole; value: string; evidence: SourceEvidence[]; }[] {
+function columnAmounts(line: ILine, next: ILine | undefined, kind: DocumentSection['kind'], previous: ILine | undefined): IAmountCell[] {
 	if (next?.page.pageId !== line.page.pageId || next.spans[0].region.y - line.spans[0].region.y > 24) {
 		return [];
 	}
@@ -146,7 +169,7 @@ function columnAmounts(line: Line, next: Line | undefined, kind: DocumentSection
 		(/^(?:phone|telephone|tel\.?|fax|telefon|account|customer|invoice number|receipt number|order|table|reference|date)\b/i.test(previous.text) || /^[^\d]{1,80}:\s*$/.test(previous.text))) {
 			return [];
 		}
-	const cells: { label: string; role: AmountRole; value: string; evidence: SourceEvidence[] }[] = [];
+	const cells: IAmountCell[] = [];
 	const used: Set<PositionedSpan> = new Set<PositionedSpan>();
 	for (const label of next.spans) {
 		const role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item" | null = amountRole(label.text, kind, false, false);
@@ -183,14 +206,14 @@ function numericAmount(raw: string): string | null {
 	return numeric;
 }
 
-function numberCandidates(raw: string): { coefficient: string; scale: number }[] {
+function numberCandidates(raw: string): DecimalAmount[] {
 	const negative: boolean = /^\s*[-(−]/.test(raw.replace(/[€$£\s]/g, ''));
 	const value: string | null = numericAmount(raw);
 	if (value === null) {
 		return [];
 	}
 	const comma: number = value.lastIndexOf(','), dot: number = value.lastIndexOf('.');
-	const result: { coefficient: string; scale: number }[] = [];
+	const result: DecimalAmount[] = [];
 	const append: (integer: string, fraction?: string) => void = (integer: string, fraction: string = ''): void => {
 		if (fraction.length > 18 || integer.length + fraction.length > 127) {
 			return;
@@ -222,21 +245,23 @@ function appendMixedSeparators(value: string, separator: '.' | ',', append: (int
 	}
 }
 
-function invoiceSummaryTotal(lines: Line[], currency: string | null): Omit<DocumentSection['amounts'][number], 'id'> | null {
-	const headings: { index: number; span: PositionedSpan; }[] = lines.flatMap((line: Line, index: number): { index: number; span: PositionedSpan; }[] => line.spans.filter((span: PositionedSpan): boolean => /^invoicesummary:?$/i.test(span.text.replace(/\s/g, ''))).map((span: PositionedSpan): { index: number; span: PositionedSpan; } => ({ index, span })));
+function invoiceSummaryTotal(lines: ILine[], currency: string | null): Omit<DocumentSection['amounts'][number], 'id'> | null {
+	const headings: ISummaryHeading[] = lines.flatMap((line: ILine, index: number): ISummaryHeading[] => line.spans
+		.filter((span: PositionedSpan): boolean => /^invoicesummary:?$/i.test(span.text.replace(/\s/g, '')))
+		.map((span: PositionedSpan): ISummaryHeading => ({ index, span })));
 	if (headings.length !== 1) {
 		return null;
 	}
-	const { index, span }: { index: number; span: PositionedSpan; } = headings[0];
-	const [title, headers, net, tax, total]: Line[] = lines.slice(index, index + 5);
-	if (!total || [headers, net, tax, total].some((line: Line, offset: number): boolean => line.page !== title.page || line.spans[0].region.y - lines[index + offset].spans[0].region.y > 24)) {
+	const { index, span }: ISummaryHeading = headings[0];
+	const [title, headers, net, tax, total]: ILine[] = lines.slice(index, index + 5);
+	if (!total || [headers, net, tax, total].some((line: ILine, offset: number): boolean => line.page !== title.page || line.spans[0].region.y - lines[index + offset].spans[0].region.y > 24)) {
 		return null;
 	}
 	const netHeader: PositionedSpan = headers.spans.at(-1)!;
 	if (!/^net amount$/i.test(netHeader.text.trim()) || netHeader.region.x < span.region.x || total.spans.length !== 1) {
 		return null;
 	}
-	const rightCell: (line: Line) => PositionedSpan | undefined = (line: Line): PositionedSpan | undefined => {
+	const rightCell: (line: ILine) => PositionedSpan | undefined = (line: ILine): PositionedSpan | undefined => {
 		const cells: PositionedSpan[] = line.spans.filter((cell: PositionedSpan): boolean => cell.region.x >= netHeader.region.x);
 		return cells.length === 1 ? cells[0] : undefined;
 	};
@@ -257,13 +282,13 @@ function invoiceSummaryTotal(lines: Line[], currency: string | null): Omit<Docum
 	if (!established) {
 		return null;
 	}
-	const amounts: { coefficient: string; scale: number; }[][] = values.map((value: PositionedSpan): { coefficient: string; scale: number; }[] => numberCandidates(value.text.replace(currencyPattern, '')));
-	if (amounts.some((candidates: { coefficient: string; scale: number; }[]): boolean => candidates.length !== 1)) {
+	const amounts: DecimalAmount[][] = values.map((value: PositionedSpan): DecimalAmount[] => numberCandidates(value.text.replace(currencyPattern, '')));
+	if (amounts.some((candidates: DecimalAmount[]): boolean => candidates.length !== 1)) {
 		return null;
 	}
-	const [netAmount, taxAmount, totalAmount]: { coefficient: string; scale: number; }[] = amounts.map((candidates: { coefficient: string; scale: number; }[]): { coefficient: string; scale: number; } => candidates[0]);
+	const [netAmount, taxAmount, totalAmount]: DecimalAmount[] = amounts.map((candidates: DecimalAmount[]): DecimalAmount => candidates[0]);
 	const scale: number = Math.max(netAmount.scale, taxAmount.scale, totalAmount.scale);
-	const scaled: (value: { coefficient: string; scale: number; }) => bigint = (value: typeof totalAmount): bigint => BigInt(value.coefficient) * 10n ** BigInt(scale - value.scale);
+	const scaled: (value: DecimalAmount) => bigint = (value: typeof totalAmount): bigint => BigInt(value.coefficient) * 10n ** BigInt(scale - value.scale);
 	if (scaled(netAmount) + scaled(taxAmount) !== scaled(totalAmount)) {
 		return null;
 	}
@@ -271,8 +296,8 @@ function invoiceSummaryTotal(lines: Line[], currency: string | null): Omit<Docum
 		evidence: [...source({ ...title, spans: [span] }), ...source({ ...headers, spans: [netHeader] }), ...source({ ...net, spans: [netValue] }), ...source(tax), ...source(total)] };
 }
 
-interface VatLayout {
-	line: Line;
+interface IVatLayout {
+	line: ILine;
 	total: PositionedSpan;
 	vatRow: PositionedSpan;
 	breakdown: PositionedSpan[];
@@ -283,13 +308,14 @@ interface VatLayout {
 	rate: RegExpExecArray;
 }
 
-function receiptVatLayout(lines: Line[]): VatLayout | null {
-	const totals: { line: Line; span: PositionedSpan; }[] = lines.flatMap((line: Line): { line: Line; span: PositionedSpan; }[] => line.spans.filter((span: PositionedSpan): boolean => /^total\s*:?$/i.test(span.text.trim())).map((span: PositionedSpan): { line: Line; span: PositionedSpan; } => ({ line, span })));
+function receiptVatLayout(lines: ILine[]): IVatLayout | null {
+	const totals: ILineSpan[] = lines.flatMap((line: ILine): ILineSpan[] => line.spans
+		.filter((span: PositionedSpan): boolean => /^total\s*:?$/i.test(span.text.trim())).map((span: PositionedSpan): ILineSpan => ({ line, span })));
 	if (totals.length !== 1) {
 		return null;
 	}
-	const { line, span: total }: { line: Line; span: PositionedSpan; } = totals[0];
-	const spans: PositionedSpan[] = lines.filter((other: Line): boolean => other.page === line.page).flatMap((other: Line): PositionedSpan[] => other.spans);
+	const { line, span: total }: ILineSpan = totals[0];
+	const spans: PositionedSpan[] = lines.filter((other: ILine): boolean => other.page === line.page).flatMap((other: ILine): PositionedSpan[] => other.spans);
 	const columns: PositionedSpan[] = spans.filter((span: PositionedSpan): boolean => /^base$/i.test(span.text.trim()) && span.region.y > total.region.y && span.region.y - total.region.y <= total.region.height * 4);
 	if (columns.length !== 1) {
 		return null;
@@ -328,10 +354,10 @@ function receiptVatLayout(lines: Line[]): VatLayout | null {
 	return { line, total, vatRow, breakdown, totalRow, printed, net, tax, rate };
 }
 
-interface VatValues { currency: string; netValue: bigint; taxValue: bigint; sum: bigint; reconstructed: boolean; }
+interface IVatValues { currency: string; netValue: bigint; taxValue: bigint; sum: bigint; reconstructed: boolean; }
 
-function receiptVatValues(layout: VatLayout, declared: string | null): VatValues | null {
-	const { total, breakdown, totalRow, printed, net, tax, rate }: VatLayout = layout;
+function receiptVatValues(layout: IVatLayout, declared: string | null): IVatValues | null {
+	const { total, breakdown, totalRow, printed, net, tax, rate }: IVatLayout = layout;
 	const cellText: string = [...breakdown, ...totalRow].map((span: PositionedSpan): string => span.text.trim()).join(' ');
 	const codes: string[] = currencies(cellText);
 	if (codes.length > 1 || (declared && codes.some((code: string): boolean => code !== declared)) || /[$£¥]/.test(cellText)) {
@@ -357,36 +383,36 @@ function receiptVatValues(layout: VatLayout, declared: string | null): VatValues
 	return { currency, netValue, taxValue, sum, reconstructed };
 }
 
-function receiptVatTotal(section: DocumentSection, lines: Line[], declared: string | null): { originalFields: AmountField[]; amounts: { coefficient: string; scale: number; currency: string; }[]; evidence: SourceEvidence[]; reconstructed: boolean; totalEvidence: SourceEvidence[]; } | null {
+function receiptVatTotal(section: DocumentSection, lines: ILine[], declared: string | null): IReceiptVatTotal | null {
 	const taxFields: AmountField[] = section.amounts.filter((field: AmountField): boolean => field.role === 'tax');
 	if ((section.kind !== 'receipt' && section.kind !== 'unknown') || taxFields.length < 2 || section.amounts.some((field: AmountField): boolean => field.role === 'billed-total')) {
 		return null;
 	}
-	const layout: VatLayout | null = receiptVatLayout(lines);
+	const layout: IVatLayout | null = receiptVatLayout(lines);
 	if (!layout) {
 		return null;
 	}
-	const { line, total, vatRow, breakdown, totalRow }: VatLayout = layout;
-	const values: VatValues | null = receiptVatValues(layout, declared);
+	const { line, total, vatRow, breakdown, totalRow }: IVatLayout = layout;
+	const values: IVatValues | null = receiptVatValues(layout, declared);
 	if (!values) {
 		return null;
 	}
-	const { currency, netValue, taxValue, sum, reconstructed }: VatValues = values;
+	const { currency, netValue, taxValue, sum, reconstructed }: IVatValues = values;
 	const originalFields: AmountField[] = taxFields.filter((field: AmountField): boolean => field.evidence.some((evidence: SourceEvidence): boolean =>
 		evidence.pageId === line.page.pageId && /^vat\s+\d+\s*%/i.test(evidence.rawText) && sameVisualRow(evidence.region, vatRow.region)));
 	if (originalFields.length !== 2 || !originalFields.every((field: AmountField, index: number): boolean => field.candidates.length === 1 && field.candidates[0].scale === 2 &&
 		field.candidates[0].coefficient === (index === 0 ? netValue : taxValue).toString() && (!field.candidates[0].currency || field.candidates[0].currency === currency))) {
 			return null;
 		}
-	const amounts: { coefficient: string; scale: number; currency: string; }[] = [netValue, taxValue, sum].map((value: bigint): { coefficient: string; scale: number; currency: string; } => ({ coefficient: value.toString(), scale: 2, currency }));
+	const amounts: Money[] = [netValue, taxValue, sum].map((value: bigint): Money => ({ coefficient: value.toString(), scale: 2, currency }));
 	const evidence: SourceEvidence[] = source({ ...line, spans: breakdown });
 	return { originalFields, amounts, evidence, reconstructed, totalEvidence: [...source({ ...line, spans: [total, ...totalRow] }), ...evidence] };
 }
 
-interface ReceiptItemAmounts { cents: string; items: PositionedSpan[][]; }
+interface IReceiptItemAmounts { cents: string; items: PositionedSpan[][]; }
 
 function collectReceiptItems(spans: PositionedSpan[], label: PositionedSpan, amount: PositionedSpan, visualRow: (span: PositionedSpan) => PositionedSpan[],
-	established: string, suffix: string, totalRow: PositionedSpan[]): ReceiptItemAmounts | null {
+	established: string, suffix: string, totalRow: PositionedSpan[]): IReceiptItemAmounts | null {
 	const decimal: RegExp = /^\d{1,18}[.,]\d{2}$/;
 	const rightEdge: number = amount.region.x + amount.region.width;
 	const itemAmounts: PositionedSpan[] = spans.filter((span: PositionedSpan): boolean => span.method === 'local-ocr' && span.region.y < label.region.y &&
@@ -428,7 +454,7 @@ function collectReceiptItems(spans: PositionedSpan[], label: PositionedSpan, amo
 	return { cents, items };
 }
 
-function receiptItemTotal(section: DocumentSection, lines: Line[], currency: string | null): { existing: AmountField; amount: { coefficient: string; scale: number; currency: string; }; evidence: SourceEvidence[]; } | null {
+function receiptItemTotal(section: DocumentSection, lines: ILine[], currency: string | null): IReceiptItemTotal | null {
 	if (section.kind !== 'receipt' && section.kind !== 'unknown') {
 		return null;
 	}
@@ -436,12 +462,12 @@ function receiptItemTotal(section: DocumentSection, lines: Line[], currency: str
 	if (totals.length > 1 || section.amounts.some((field: AmountField): boolean => ['subtotal', 'payment', 'balance-due', 'refund-payment'].includes(field.role))) {
 		return null;
 	}
-	const printed: Line[] = lines.filter((line: Line): boolean => /^(?:\d{1,2}:\d{2}\s+)?(?:grand\s+)?total\b/i.test(line.text));
+	const printed: ILine[] = lines.filter((line: ILine): boolean => /^(?:\d{1,2}:\d{2}\s+)?(?:grand\s+)?total\b/i.test(line.text));
 	if (printed.length !== 1) {
 		return null;
 	}
-	const [line]: Line[] = printed;
-	const spans: PositionedSpan[] = lines.filter((other: Line): boolean => other.page === line.page).flatMap((other: Line): PositionedSpan[] => other.spans);
+	const [line]: ILine[] = printed;
+	const spans: PositionedSpan[] = lines.filter((other: ILine): boolean => other.page === line.page).flatMap((other: ILine): PositionedSpan[] => other.spans);
 	const label: PositionedSpan | undefined = line.spans.find((span: PositionedSpan): boolean => /^(?:grand\s+)?total:?$/i.test(span.text.trim()));
 	if (label?.method !== 'local-ocr') {
 		return null;
@@ -472,27 +498,27 @@ function receiptItemTotal(section: DocumentSection, lines: Line[], currency: str
 			return null;
 		}
 
-	const recovered: ReceiptItemAmounts | null = collectReceiptItems(spans, label, amount, visualRow, established, suffix, totalRow);
+	const recovered: IReceiptItemAmounts | null = collectReceiptItems(spans, label, amount, visualRow, established, suffix, totalRow);
 	if (!recovered) {
 		return null;
 	}
-	const { cents, items }: ReceiptItemAmounts = recovered;
+	const { cents, items }: IReceiptItemAmounts = recovered;
 	return { existing, amount: { coefficient: cents, scale: 2, currency: established },
 		evidence: [...source({ ...line, spans: totalRow }), ...items.reverse().flatMap((item: PositionedSpan[]): SourceEvidence[] => source({ ...line, spans: item }))] };
 }
 
-function defaultDocumentCurrency(lines: Line[]): "EUR" | null {
-	return lines.some(({ text }: Line): boolean => currencies(text).length > 0 || /\p{Sc}|\b(?:currency|währung)\s*[:=]\s*\p{L}/iu.test(text)) ? null : 'EUR';
+function defaultDocumentCurrency(lines: ILine[]): "EUR" | null {
+	return lines.some(({ text }: ILine): boolean => currencies(text).length > 0 || /\p{Sc}|\b(?:currency|währung)\s*[:=]\s*\p{L}/iu.test(text)) ? null : 'EUR';
 }
 
-function recoverStoredReceipt(result: SupportingDocument, section: DocumentSection): { lines: Line[]; total: { label: string; candidates: { coefficient: string; scale: number; currency: string; }[]; evidence: SourceEvidence[]; role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; id: string; }; } | undefined {
+function recoverStoredReceipt(result: SupportingDocument, section: DocumentSection): IRecoveredReceipt | undefined {
 	const total: AmountField | undefined = section.amounts.find((field: AmountField): boolean => field.role === 'billed-total');
 	if (result.sections.length !== 1 || !result.input || total?.candidates.length !== 1 || total.candidates[0].currency !== null ||
 		!total.evidence.some((item: SourceEvidence): boolean => item.method === 'local-ocr')) {
 			return undefined;
 		}
 	const pages: ImportPage[] = result.input.pages.filter((page: ImportPage): boolean => section.pageIds.includes(page.pageId));
-	const lines: Line[] = pages.flatMap((page: ImportPage): Line[] => linesOf({ ...page, spans: [...page.spans].sort(order) }));
+	const lines: ILine[] = pages.flatMap((page: ImportPage): ILine[] => linesOf({ ...page, spans: [...page.spans].sort(order) }));
 	const declared: Set<string> = new Set(section.currencies.filter((field: CurrencyField): boolean => field.role === 'settlement').flatMap((field: CurrencyField): string[] => field.candidates));
 	if (declared.size > 1) {
 		return undefined;
@@ -510,16 +536,16 @@ export function evaluateStoredReceipt(result: SupportingDocument): SupportingDoc
 	if (!section) {
 		return result;
 	}
-	const recovered: { lines: Line[]; total: { label: string; candidates: { coefficient: string; scale: number; currency: string; }[]; evidence: SourceEvidence[]; role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; id: string; }; } | undefined = recoverStoredReceipt(result, section);
+	const recovered: IRecoveredReceipt | undefined = recoverStoredReceipt(result, section);
 	if (!recovered) {
 		return result;
 	}
-	const { lines, total }: { lines: Line[]; total: { label: string; candidates: { coefficient: string; scale: number; currency: string; }[]; evidence: SourceEvidence[]; role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; id: string; }; } = recovered;
+	const { lines, total }: IRecoveredReceipt = recovered;
 	const falseTaxes: Set<string> = new Set(section.amounts.filter((field: AmountField): boolean | 0 => field.role === 'tax' &&
 		field.evidence.length && field.evidence.every((item: SourceEvidence): boolean => taxRegistration(item.rawText))).map((field: AmountField): string => field.id));
 	const amounts: AmountField[] = section.amounts.filter((field: AmountField): boolean => !falseTaxes.has(field.id)).map((field: AmountField): AmountField => field.id === total.id ? total : field);
 	const fieldIds: Set<string> = new Set([section.sectionId, ...[...section.amounts, ...section.dates, ...section.merchants, ...section.references, ...section.currencies]
-		.map((field: AmountField | CurrencyField | DateField | { role: "merchant"; candidates: string[]; id: string; label: string; evidence: SourceEvidence[]; } | ReferenceField): string => field.id)]);
+		.map((field: AmountField | CurrencyField | DateField | MerchantField | ReferenceField): string => field.id)]);
 	let taxNumber: number = 0;
 	for (const tax of receiptCategoryTaxes(section, lines, total.candidates[0].currency)) {
 		if (amounts.some((field: AmountField): boolean => field.role === 'tax' && field.label === tax.label)) {
@@ -537,7 +563,7 @@ export function evaluateStoredReceipt(result: SupportingDocument): SupportingDoc
 	return { ...result, sections: [{ ...section, amounts }], issues };
 }
 
-function receiptCategoryTax(line: Line, next: Line | undefined, kind: DocumentSection['kind'], currency: string | null): Omit<AmountField, 'id'> | null {
+function receiptCategoryTax(line: ILine, next: ILine | undefined, kind: DocumentSection['kind'], currency: string | null): Omit<AmountField, 'id'> | null {
 	const separate: boolean = !!next && sameVisualRow(line.spans[0].region, next.spans[0].region) &&
 		next.spans[0].region.x > line.spans.at(-1)!.region.x + line.spans.at(-1)!.region.width;
 	const split: boolean = separate && /%\s*$/.test(line.text);
@@ -551,21 +577,21 @@ function receiptCategoryTax(line: Line, next: Line | undefined, kind: DocumentSe
 		return null;
 	}
 	const evidence: SourceEvidence[] = [...source(line), ...(split ? source(next!) : [])];
-	return { role: 'tax', label: match[1], candidates: numberCandidates(match[3]).map((value: { coefficient: string; scale: number; }): { currency: string; coefficient: string; scale: number; } => ({ ...value, currency: codes[0] ?? currency })), evidence };
+	return { role: 'tax', label: match[1], candidates: numberCandidates(match[3]).map((value: DecimalAmount): Money => ({ ...value, currency: codes[0] ?? currency })), evidence };
 }
 
-function receiptCategoryTaxes(section: DocumentSection, lines: Line[], currency: string | null): Omit<DocumentSection['amounts'][number], 'id'>[] {
+function receiptCategoryTaxes(section: DocumentSection, lines: ILine[], currency: string | null): Omit<DocumentSection['amounts'][number], 'id'>[] {
 	if (section.kind !== 'receipt' && section.kind !== 'unknown') {
 		return [];
 	}
-	const totals: Line[] = lines.filter((line: Line): boolean => /^(?:\d{1,2}:\d{2}\s+)?(?:grand\s+)?total\s*:?\s*(?=[\d€$£]|[A-Z]{3}\s+\d|$)/i.test(line.text));
+	const totals: ILine[] = lines.filter((line: ILine): boolean => /^(?:\d{1,2}:\d{2}\s+)?(?:grand\s+)?total\s*:?\s*(?=[\d€$£]|[A-Z]{3}\s+\d|$)/i.test(line.text));
 	if (totals.length !== 1) {
 		return [];
 	}
-	const [total]: Line[] = totals;
-	const samePage: Line[] = lines.filter((line: Line): boolean => line.page === total.page);
-	const below: Line[] = samePage.slice(samePage.indexOf(total) + 1);
-	if (!below.some((line: Line): boolean => /\b(?:tax(?:es)?|vat)\s+(?:are\s+)?included\b/i.test(line.text))) {
+	const [total]: ILine[] = totals;
+	const samePage: ILine[] = lines.filter((line: ILine): boolean => line.page === total.page);
+	const below: ILine[] = samePage.slice(samePage.indexOf(total) + 1);
+	if (!below.some((line: ILine): boolean => /\b(?:tax(?:es)?|vat)\s+(?:are\s+)?included\b/i.test(line.text))) {
 		return [];
 	}
 	const candidates: Omit<DocumentSection['amounts'][number], 'id'>[] = [];
@@ -620,8 +646,9 @@ function dateRole(raw: string): DateRole {
 		['payment', /payment date|paid on|zahlung(?:sdatum)?/gi],
 		['service-period', /billing period|service period|service date|charge start|leistungsdatum|leistungszeitraum|abrechnungszeitraum/gi]
 	];
-	const matches: { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; index: number; }[] = labels.flatMap(([role, pattern]: ["unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end", RegExp]): { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; index: number; }[] => [...raw.matchAll(pattern)].map((match: RegExpExecArray): { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; index: number; } => ({ role, index: match.index })));
-	return matches.sort((a: { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; index: number; }, b: { role: "unknown" | "payment" | "issue" | "due" | "service-period" | "service-start" | "service-end"; index: number; }): number => b.index - a.index)[0]?.role ?? 'unknown';
+	const matches: IDateRoleMatch[] = labels.flatMap(([role, pattern]: [DateRole, RegExp]): IDateRoleMatch[] =>
+		[...raw.matchAll(pattern)].map((match: RegExpExecArray): IDateRoleMatch => ({ role, index: match.index })));
+	return matches.sort((a: IDateRoleMatch, b: IDateRoleMatch): number => b.index - a.index)[0]?.role ?? 'unknown';
 }
 const genericDateLabel: RegExp = /^date\s*:?$/i;
 
@@ -629,7 +656,7 @@ function receiptDateContext(section: DocumentSection, page: ImportPage, evidence
 	if (section.kind !== 'receipt' && section.kind !== 'unknown') {
 		return null;
 	}
-	const value: { x: number; y: number; width: number; height: number; } = evidence.region;
+	const value: SourceEvidence['region'] = evidence.region;
 	const nearby: PositionedSpan[] = page.spans.filter((span: PositionedSpan): boolean => span.method === evidence.method && span.region.y < value.y && value.y - span.region.y <= value.height * 4 &&
 		Math.abs(span.region.x - value.x) <= value.height * 2);
 	const original: PositionedSpan[] = nearby.filter((span: PositionedSpan): boolean => /^\(?\s*original\s*\)?$/i.test(span.text.trim()));
@@ -643,7 +670,7 @@ function receiptDateContext(section: DocumentSection, page: ImportPage, evidence
 	return { pageId: page.pageId, method: original[0].method, rawText: original[0].text.trim(), region: original[0].region };
 }
 
-type DateContext = { labelled: true; evidence: SourceEvidence | null } | { labelled: false; evidence: SourceEvidence };
+type DateContext = ILabelledDateContext | IUnlabelledDateContext;
 
 function genericDateContext(section: DocumentSection, field: DateField, pages: readonly ImportPage[]): DateContext | undefined {
 	let receiptDate: SourceEvidence | undefined;
@@ -661,7 +688,7 @@ function genericDateContext(section: DocumentSection, field: DateField, pages: r
 			continue;
 		}
 		const page: ImportPage | undefined = pages.find((page: ImportPage): boolean => page.pageId === evidence.pageId);
-		const value: { x: number; y: number; width: number; height: number; } = evidence.region;
+		const value: SourceEvidence['region'] = evidence.region;
 		// OCR can put words from the same printed row on separate lines because their top edges differ.
 		const before: PositionedSpan[] | undefined = page?.spans.filter(({ method, text, region }: PositionedSpan): boolean | "" =>
 			method === evidence.method && text.trim() && region.x + region.width <= value.x && sameVisualRow(region, value));
@@ -711,24 +738,26 @@ export function withGenericIssueDate(section: DocumentSection, pages: readonly I
 
 const referencePattern: RegExp = /\b(tax invoice number|credit note number|invoice (?:number|no\.?|#)|invoice\s*#|receipt (?:number|no\.?|#)|document no\.?|billing number|bill no\.?|order (?:number|no\.?|#)|customer (?:number|no\.?|#)|account (?:number|no\.?|#)|table (?:number|no\.?|#)|payment (?:reference|id)|reference|rechnungsnummer|rechnungsnr\.?|kundennummer|mandantennummer|auftragsnr\.?|bestellnummer|transaktions-id)\s*[:#]?\s*/ig;
 const referenceValue: RegExp = /^[\p{L}\d][\p{L}\d_\-/.]*(?:[ \t]+[\p{L}\d][\p{L}\d_\-/.]*)*$/u;
-function referencesOnLine(line: string): { label: string; value: string; }[] {
+function referencesOnLine(line: string): ILabelledReference[] {
 	const matches: RegExpExecArray[] = [...line.matchAll(referencePattern)];
-	return matches.map((match: RegExpExecArray, index: number): { label: string; value: string; } => ({ label: match[1], value: line.slice(match.index + match[0].length, matches[index + 1]?.index).trim() }));
+	return matches.map((match: RegExpExecArray, index: number): ILabelledReference => ({
+		label: match[1], value: line.slice(match.index + match[0].length, matches[index + 1]?.index).trim()
+	}));
 }
 
 export function hasFullDocumentReference(field: DocumentSection['references'][number], value: string): boolean {
 	if (field.confirmedByUser || field.correctedByUser) {
 		return field.candidates.includes(value);
 	}
-	const lines: { label: string; value: string; }[] = field.evidence.flatMap((item: SourceEvidence): { label: string; value: string; }[] => {
+	const lines: ILabelledReference[] = field.evidence.flatMap((item: SourceEvidence): ILabelledReference[] => {
 		const receipt: RegExpExecArray | null = field.role === 'receipt'
 			? /^(belegnummer|check\s*(?:number|no\.?|#)|chk)(?:\s*[:#]\s*|\s+|$)(.*)$/i.exec(item.rawText.trim())
 			: null;
 		return receipt ? [{ label: receipt[1], value: receipt[2].trim() }] : referencesOnLine(item.rawText);
 	});
-	const labelled: { label: string; value: string; }[] = lines.filter((line: { label: string; value: string; }): boolean => line.label.toLowerCase() === field.label.toLowerCase());
-	return labelled.some((line: { label: string; value: string; }): boolean => line.value === value) ||
-		(labelled.some((line: { label: string; value: string; }): boolean => !line.value) && field.evidence.some((item: SourceEvidence): boolean => item.rawText.trim() === value));
+	const labelled: ILabelledReference[] = lines.filter((line: ILabelledReference): boolean => line.label.toLowerCase() === field.label.toLowerCase());
+	return labelled.some((line: ILabelledReference): boolean => line.value === value) ||
+		(labelled.some((line: ILabelledReference): boolean => !line.value) && field.evidence.some((item: SourceEvidence): boolean => item.rawText.trim() === value));
 }
 
 function paymentEvidenceKey(item: SourceEvidence): string {
@@ -786,7 +815,7 @@ export function mergedLegacySections(result: SupportingDocument): Set<string> {
 	if (result.parserVersion !== '1' || !result.input) {
 		return merged;
 	}
-	const pageHeadings: Map<string, ("unknown" | "invoice" | "receipt" | "billing-summary" | "credit-note" | "payment-information" | null)[]> = new Map(result.input.pages.map((page: ImportPage): [string, ("unknown" | "invoice" | "receipt" | "billing-summary" | "credit-note" | "payment-information" | null)[]] => [page.pageId, linesOf(page).map((line: Line): "unknown" | "invoice" | "receipt" | "billing-summary" | "credit-note" | "payment-information" | null => heading(line.text))]));
+	const pageHeadings: Map<string, ("unknown" | "invoice" | "receipt" | "billing-summary" | "credit-note" | "payment-information" | null)[]> = new Map(result.input.pages.map((page: ImportPage): [string, ("unknown" | "invoice" | "receipt" | "billing-summary" | "credit-note" | "payment-information" | null)[]] => [page.pageId, linesOf(page).map((line: ILine): "unknown" | "invoice" | "receipt" | "billing-summary" | "credit-note" | "payment-information" | null => heading(line.text))]));
 	const possiblyMerged: DocumentSection[] = result.sections.filter((section: DocumentSection): boolean => (section.kind === 'invoice' || section.kind === 'receipt') &&
 		section.pageIds.flatMap((pageId: string): ("unknown" | "invoice" | "receipt" | "billing-summary" | "credit-note" | "payment-information" | null)[] => pageHeadings.get(pageId) ?? []).filter((kind: "unknown" | "invoice" | "receipt" | "billing-summary" | "credit-note" | "payment-information" | null): boolean => kind === section.kind).length > 1);
 	if (!possiblyMerged.length) {
@@ -866,7 +895,7 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 	}
 	const sections: DocumentSection[] = [], issues: DocumentIssue[] = [];
 	let current: DocumentSection | undefined, fieldNumber: number = 0, issueOverflow: boolean = false;
-	const sectionLines: Map<string, Line[]> = new Map<string, Line[]>();
+	const sectionLines: Map<string, ILine[]> = new Map<string, ILine[]>();
 	const nextId: () => string = (): string => `field-${++fieldNumber}`;
 
 	const addIssue: (code: string, message: string, section?: DocumentSection, fieldId?: string | null, field?: string | null, evidence?: SourceEvidence[]) => void = (code: string, message: string, section?: DocumentSection, fieldId: string | null = null, field: string | null = null, evidence: SourceEvidence[] = []): void => {
@@ -877,7 +906,7 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 		}
 	};
 
-	const createSection: (page: ImportPage, kind: DocumentSection["kind"], line?: Line) => DocumentSection = (page: ImportPage, kind: DocumentSection['kind'], line?: Line): DocumentSection => {
+	const createSection: (page: ImportPage, kind: DocumentSection["kind"], line?: ILine) => DocumentSection = (page: ImportPage, kind: DocumentSection['kind'], line?: ILine): DocumentSection => {
 		const section: DocumentSection = { sectionId: `section-${sections.length + 1}`, kind, pageIds: [page.pageId], evidence: line ? source(line) : [],
 			amounts: [], dates: [], merchants: [], references: [], currencies: [] };
 		sections.push(section); return section;
@@ -891,9 +920,10 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 		return true;
 	}
 
-	function referencesAfterHeading(lines: Line[], index: number): string[] {
-		const nextHeading: number = lines.findIndex((next: Line, nextIndex: number): boolean => nextIndex > index && heading(next.text) !== null);
-		return lines.slice(index + 1, nextHeading < 0 ? undefined : nextHeading).flatMap((next: Line): string[] => referencesOnLine(next.text).flatMap(({ label, value }: { label: string; value: string; }): string[] => {
+	function referencesAfterHeading(lines: ILine[], index: number): string[] {
+		const nextHeading: number = lines.findIndex((next: ILine, nextIndex: number): boolean => nextIndex > index && heading(next.text) !== null);
+		return lines.slice(index + 1, nextHeading < 0 ? undefined : nextHeading).flatMap((next: ILine): string[] => referencesOnLine(next.text)
+			.flatMap(({ label, value }: ILabelledReference): string[] => {
 				if (!/^(?:tax invoice|credit note|invoice|rechnungsnummer|rechnungsnr|document no|billing number)/i.test(label)) {
 					return [];
 				}
@@ -901,8 +931,8 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 			}));
 	}
 
-	function selectSection(page: ImportPage, lines: Line[], index: number, pageState: PageInterpretation): DocumentSection {
-		const line: Line = lines[index];
+	function selectSection(page: ImportPage, lines: ILine[], index: number, pageState: IPageInterpretation): DocumentSection {
+		const line: ILine = lines[index];
 		const kind: DocumentSection['kind'] | null = heading(line.text);
 		const pageStartHeading: boolean = index < 4 && kind !== null;
 		const followingReferences: string[] = kind ? referencesAfterHeading(lines, index) : [];
@@ -923,19 +953,19 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 		return kind !== 'payment-information' || pageStartHeading ? createSection(page, kind, line) : current;
 	}
 
-	function appendReferences(current: DocumentSection, line: Line, next: Line | undefined, evidence: SourceEvidence[]): boolean {
+	function appendReferences(current: DocumentSection, line: ILine, next: ILine | undefined, evidence: SourceEvidence[]): boolean {
 		for (const { label, value } of referencesOnLine(line.text)) {
 			if (fieldLimitReached()) {
 				return false;
 			}
-			const continuation: Line | null = !value && next && /^[\p{L}\d][\p{L}\d_\-/.]+$/u.test(next.text.trim()) ? next : null;
+			const continuation: ILine | null = !value && next && /^[\p{L}\d][\p{L}\d_\-/.]+$/u.test(next.text.trim()) ? next : null;
 			current.references.push({ id: nextId(), role: referenceRole(label, current), label, candidates: referenceValue.test(value) ? [value] : continuation ? [continuation.text.trim()] : [],
 				evidence: continuation ? [...evidence, ...source(continuation)] : evidence });
 		}
 		return true;
 	}
 
-	function appendContinuationDate(current: DocumentSection, line: Line, next: Line | undefined, dateMatches: RegExpExecArray[], evidence: SourceEvidence[]): void {
+	function appendContinuationDate(current: DocumentSection, line: ILine, next: ILine | undefined, dateMatches: RegExpExecArray[], evidence: SourceEvidence[]): void {
 		if (dateMatches.length || !next || !/^(?:issue date|invoice date|date of issue|date due|due date)\s*:?$/i.test(line.text)) {
 			return;
 		}
@@ -945,8 +975,8 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 		}
 	}
 
-	function appendDates(current: DocumentSection, lines: Line[], index: number, evidence: SourceEvidence[], hasPaymentBlock: boolean, informationalFx: boolean): RegExpExecArray[] | false {
-		const line: Line = lines[index];
+	function appendDates(current: DocumentSection, lines: ILine[], index: number, evidence: SourceEvidence[], hasPaymentBlock: boolean, informationalFx: boolean): RegExpExecArray[] | false {
+		const line: ILine = lines[index];
 		const dateMatches: RegExpExecArray[] = [...line.text.matchAll(datePattern)].filter((match: RegExpExecArray): boolean => dateRole(line.text.slice(0, match.index)) !== 'unknown' || dateCandidates(match[0]).length > 0 || !amountRole(line.text, current.kind, hasPaymentBlock, informationalFx));
 		const periodDates: RegExpExecArray[] = dateMatches.filter((match: RegExpExecArray): boolean => dateRole(line.text.slice(0, match.index)) === 'service-period');
 		for (const [dateIndex, match] of dateMatches.entries()) {
@@ -961,17 +991,17 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 		return dateMatches;
 	}
 
-	function appendColumnAmounts(current: DocumentSection, line: Line, next: Line | undefined, previous: Line | undefined): void {
+	function appendColumnAmounts(current: DocumentSection, line: ILine, next: ILine | undefined, previous: ILine | undefined): void {
 		for (const cell of columnAmounts(line, next, current.kind, previous)) {
 			const numeric: string = cell.value.replace(currencyPattern, '').trim(), own: string[] = currencies(cell.value);
-			const candidates: { currency: string | null; coefficient: string; scale: number; }[] = numberCandidates(numeric).map((value: { coefficient: string; scale: number; }): { currency: string | null; coefficient: string; scale: number; } => ({ ...value, currency: own.length === 1 ? own[0] : null }));
-			const field: { id: string; role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item"; label: string; candidates: { currency: string | null; coefficient: string; scale: number; }[]; evidence: SourceEvidence[]; } = { id: nextId(), role: cell.role, label: cell.label, candidates, evidence: cell.evidence };
+			const candidates: AmountCandidate[] = numberCandidates(numeric).map((value: DecimalAmount): AmountCandidate => ({ ...value, currency: own.length === 1 ? own[0] : null }));
+			const field: ParsedAmountField = { id: nextId(), role: cell.role, label: cell.label, candidates, evidence: cell.evidence };
 			current.amounts.push(field);
 			addIssue('unconfirmed-field-association', 'The amount is positioned above this label; confirm their association from the source.', current, field.id, field.role, field.evidence);
 		}
 	}
 
-	function appendAmount(current: DocumentSection, line: Line, match: RegExpExecArray, matchCount: number, amountKind: AmountRole,
+	function appendAmount(current: DocumentSection, line: ILine, match: RegExpExecArray, matchCount: number, amountKind: AmountRole,
 		ownCurrencies: string[], paymentBlock: SourceEvidence[], informationalFx: boolean, evidence: SourceEvidence[]): void {
 		if (line.text.slice(match.index + match[0].length).trimStart().startsWith('%')) {
 			return;
@@ -987,14 +1017,15 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 		const explicit: string[] = nearby.length ? nearby : soleCurrency(ownCurrencies, matchCount);
 		const prefixSign: string = new RegExp(`([-−+(]+)\\s*${code}$`).exec(before)?.[1] ?? '';
 		const token: string = match[0].endsWith(',') && /^\s/.test(line.text.slice(match.index + match[0].length)) ? match[0].slice(0, -1) : match[0];
-		const values: { coefficient: string; scale: number; }[] = numberCandidates(`${prefixSign}${token}`);
-		const candidates: AmountCandidate[] = values.flatMap<DocumentSection['amounts'][number]['candidates'][number]>((value: { coefficient: string; scale: number; }): { currency: string; coefficient: string; scale: number; }[] | { currency: null; coefficient: string; scale: number; }[] => explicit.length ? explicit.map((currency: string): { currency: string; coefficient: string; scale: number; } => ({ ...value, currency })) : [{ ...value, currency: null }]);
+		const values: DecimalAmount[] = numberCandidates(`${prefixSign}${token}`);
+		const candidates: AmountCandidate[] = values.flatMap<AmountCandidate>((value: DecimalAmount): Money[] | AmountWithoutCurrency[] =>
+			explicit.length ? explicit.map((currency: string): Money => ({ ...value, currency })) : [{ ...value, currency: null }]);
 		const role: "unknown" | "billed-total" | "balance-due" | "payment" | "refund-payment" | "credit-note-component" | "informational-fx" | "tax" | "subtotal" | "line-item" = amountKind === 'refund-payment' ? amountKind : amountRole(before, current.kind, paymentBlock.length > 0, informationalFx) ?? amountKind;
 		const amountEvidence: SourceEvidence[] = role === 'payment' ? [...paymentBlock, ...evidence] : evidence;
 		current.amounts.push({ id: nextId(), role, label: line.text.slice(0, 16384), candidates, evidence: amountEvidence });
 	}
 
-	function appendAmounts(current: DocumentSection, line: Line, dateMatches: RegExpExecArray[], amountKind: AmountRole,
+	function appendAmounts(current: DocumentSection, line: ILine, dateMatches: RegExpExecArray[], amountKind: AmountRole,
 		ownCurrencies: string[], paymentBlock: SourceEvidence[], informationalFx: boolean, evidence: SourceEvidence[]): boolean {
 		const withoutDates: string[] = line.text.split('');
 		for (const match of dateMatches) {
@@ -1010,14 +1041,14 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 		return true;
 	}
 
-	function appendCurrency(current: DocumentSection, line: Line, fxPage: boolean, ownCurrencies: string[], evidence: SourceEvidence[]): void {
+	function appendCurrency(current: DocumentSection, line: ILine, fxPage: boolean, ownCurrencies: string[], evidence: SourceEvidence[]): void {
 	if (ownCurrencies.length && (/\bcurrency\b|betrag in|\(EUR\)|\(USD\)|\(GBP\)/i.test(line.text) || current.kind === 'payment-information' && fxPage)) {
 		current.currencies.push({ id: nextId(), role: current.kind === 'payment-information' && fxPage || /pricing currency|exchange rate/i.test(line.text) ? 'informational-fx' : 'settlement',
 			label: line.text.slice(0, 16384), candidates: ownCurrencies, evidence });
 	}
 	}
 
-	function scanLine(page: ImportPage, lines: Line[], index: number, pageState: PageInterpretation): boolean {
+	function scanLine(page: ImportPage, lines: ILine[], index: number, pageState: IPageInterpretation): boolean {
 		if (fieldLimitReached()) {
 			return false;
 		}
@@ -1025,12 +1056,12 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 			addIssue('interpretation-limit', 'Further field interpretation exceeded the local limit; full source text is retained.');
 			return false;
 		}
-		const line: Line = lines[index];
+		const line: ILine = lines[index];
 		current = selectSection(page, lines, index, pageState);
 		if (!current.pageIds.includes(page.pageId)) {
 			current.pageIds.push(page.pageId);
 		}
-		const recordedLines: Line[] = sectionLines.get(current.sectionId) ?? [];
+		const recordedLines: ILine[] = sectionLines.get(current.sectionId) ?? [];
 		recordedLines.push(line); sectionLines.set(current.sectionId, recordedLines);
 		const evidence: SourceEvidence[] = source(line);
 		if (/\0|\(cid:\d+\)|�/.test(line.text)) {
@@ -1068,7 +1099,7 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 		return appendLineAmounts(current, line, dates, amountKind, ownCurrencies, pageState.paymentBlock, informationalFx, evidence);
 	}
 
-	function appendLineAmounts(current: DocumentSection, line: Line, dateMatches: RegExpExecArray[], amountKind: AmountRole,
+	function appendLineAmounts(current: DocumentSection, line: ILine, dateMatches: RegExpExecArray[], amountKind: AmountRole,
 		ownCurrencies: string[], paymentBlock: SourceEvidence[], informationalFx: boolean, evidence: SourceEvidence[]): boolean {
 		if (/^(?:.*\b(?:invoice|receipt|customer|account|table|order)\s*(?:number|no\.?|#)|rechnungsnummer)/i.test(line.text) || dateMatches.length && !/[$€£]|\b(?:EUR|USD|GBP)\b/.test(line.text)) {
 			return true;
@@ -1076,11 +1107,11 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 		return appendAmounts(current, line, dateMatches, amountKind, ownCurrencies, paymentBlock, informationalFx, evidence);
 	}
 
-	function appendMerchantCandidate(section: DocumentSection, lines: Line[]): void {
+	function appendMerchantCandidate(section: DocumentSection, lines: ILine[]): void {
 		if (section.merchants.length || section.kind === 'payment-information') {
 			return;
 		}
-		const candidates: { text: string; evidence: SourceEvidence[] }[] = [];
+		const candidates: IEvidencedText[] = [];
 		for (const line of lines) {
 			if (/\bbill to\b|\bsold to\b|rechnungsempfänger/i.test(line.text)) {
 				break;
@@ -1098,13 +1129,15 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 			}
 		}
 		if (candidates.length) {
-			const field: { id: string; role: "merchant"; label: string; candidates: string[]; evidence: SourceEvidence[]; } = { id: nextId(), role: 'merchant' as const, label: 'Unconfirmed supplier name', candidates: unique(candidates.slice(0, 8).map((value: { text: string; evidence: SourceEvidence[]; }): string => value.text)), evidence: candidates.slice(0, 8).flatMap((value: { text: string; evidence: SourceEvidence[]; }): SourceEvidence[] => value.evidence) };
+			const field: MerchantField = { id: nextId(), role: 'merchant' as const, label: 'Unconfirmed supplier name',
+				candidates: unique(candidates.slice(0, 8).map((value: IEvidencedText): string => value.text)),
+				evidence: candidates.slice(0, 8).flatMap((value: IEvidencedText): SourceEvidence[] => value.evidence) };
 			section.merchants.push(field);
 			addIssue('unconfirmed-merchant', 'A company name is retained as an unconfirmed supplier candidate; review its source context.', section, field.id, 'merchant', field.evidence);
 		}
 	}
 
-	function assignSectionCurrency(section: DocumentSection, defaultCurrency: string | null): { declared: string[]; currency: string | null; } {
+	function assignSectionCurrency(section: DocumentSection, defaultCurrency: string | null): ISettlementCurrency {
 		const declared: string[] = unique(section.currencies.filter((field: CurrencyField): boolean => field.role === 'settlement').flatMap((field: CurrencyField): string[] => field.candidates));
 		const currency: string | null = declared.length === 1 ? declared[0] : defaultCurrency;
 		if (!currency) {
@@ -1120,7 +1153,7 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 		return { declared, currency };
 	}
 
-	function appendInvoiceTotal(section: DocumentSection, lines: Line[], currency: string | null, declaredCount: number): void {
+	function appendInvoiceTotal(section: DocumentSection, lines: ILine[], currency: string | null, declaredCount: number): void {
 		if (section.kind === 'invoice' && declaredCount <= 1 && !section.amounts.some((field: AmountField): boolean => field.role === 'billed-total')) {
 			const summary: Omit<AmountField, "id"> | null = invoiceSummaryTotal(lines, currency);
 			if (summary) {
@@ -1129,23 +1162,25 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 		}
 	}
 
-	function restoreReceiptTotal(section: DocumentSection, lines: Line[], currency: string | null, declaredCount: number): void {
-		const breakdown: { originalFields: AmountField[]; amounts: { coefficient: string; scale: number; currency: string; }[]; evidence: SourceEvidence[]; reconstructed: boolean; totalEvidence: SourceEvidence[]; } | null = declaredCount <= 1 ? receiptVatTotal(section, lines, currency) : null;
+	function restoreReceiptTotal(section: DocumentSection, lines: ILine[], currency: string | null, declaredCount: number): void {
+		const breakdown: IReceiptVatTotal | null = declaredCount <= 1 ? receiptVatTotal(section, lines, currency) : null;
 		if (breakdown) {
-			const { originalFields: [net, tax], amounts: [netAmount, taxAmount, totalAmount], evidence, reconstructed, totalEvidence }: { originalFields: AmountField[]; amounts: { coefficient: string; scale: number; currency: string; }[]; evidence: SourceEvidence[]; reconstructed: boolean; totalEvidence: SourceEvidence[]; } = breakdown;
+			const { originalFields: [net, tax], amounts: [netAmount, taxAmount, totalAmount], evidence, reconstructed, totalEvidence }: IReceiptVatTotal = breakdown;
 			Object.assign(net, { role: 'subtotal', label: 'VAT base', candidates: [netAmount], evidence });
 			Object.assign(tax, { label: 'VAT amount', candidates: [taxAmount], evidence });
-			const total: { id: string; role: "billed-total"; label: string; candidates: { coefficient: string; scale: number; currency: string; }[]; evidence: SourceEvidence[]; } = { id: nextId(), role: 'billed-total' as const, label: reconstructed ? 'Total reconstructed from VAT breakdown' : 'Total', candidates: [totalAmount], evidence: totalEvidence };
+			const total: RecoveredBilledTotal = { id: nextId(), role: 'billed-total' as const, label: reconstructed ? 'Total reconstructed from VAT breakdown' : 'Total',
+				candidates: [totalAmount], evidence: totalEvidence };
 			section.amounts.push(total);
 			if (reconstructed) {
 				addIssue('reconstructed-total', 'The total was reconstructed from the printed net amount and VAT because the OCR missed a leading digit.',
 				section, total.id, total.role, totalEvidence);
 			}
 		}
-		const itemTotal: { existing: AmountField; amount: { coefficient: string; scale: number; currency: string; }; evidence: SourceEvidence[]; } | null = !breakdown && declaredCount <= 1 ? receiptItemTotal(section, lines, currency) : null;
+		const itemTotal: IReceiptItemTotal | null = !breakdown && declaredCount <= 1 ? receiptItemTotal(section, lines, currency) : null;
 		if (itemTotal) {
-			const { existing, amount, evidence }: { existing: AmountField; amount: { coefficient: string; scale: number; currency: string; }; evidence: SourceEvidence[]; } = itemTotal;
-			const total: { id: string; role: "billed-total"; label: string; candidates: { coefficient: string; scale: number; currency: string; }[]; evidence: SourceEvidence[]; } = { id: existing?.id ?? nextId(), role: 'billed-total' as const, label: 'Total reconstructed from receipt items', candidates: [amount], evidence };
+			const { existing, amount, evidence }: IReceiptItemTotal = itemTotal;
+			const total: RecoveredBilledTotal = { id: existing?.id ?? nextId(), role: 'billed-total' as const, label: 'Total reconstructed from receipt items',
+				candidates: [amount], evidence };
 			if (existing) {
 				Object.assign(existing, total);
 			} else {
@@ -1155,7 +1190,7 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 		}
 	}
 
-	function appendCategoryTaxes(section: DocumentSection, lines: Line[], currency: string | null): void {
+	function appendCategoryTaxes(section: DocumentSection, lines: ILine[], currency: string | null): void {
 		const totalCurrencies: string[] = unique(section.amounts.filter((field: AmountField): boolean => field.role === 'billed-total').flatMap((field: AmountField): (string | null)[] => field.candidates.map((value: AmountCandidate): string | null => value.currency)).filter((value: string | null): value is string => value !== null));
 		const taxCurrency: string | null = currency ?? (totalCurrencies.length === 1 ? totalCurrencies[0] : null);
 		for (const tax of receiptCategoryTaxes(section, lines, taxCurrency)) {
@@ -1201,12 +1236,12 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 	}
 
 	function scanPage(page: ImportPage): boolean {
-		const lines: Line[] = linesOf(page);
+		const lines: ILine[] = linesOf(page);
 		if (page.status === 'failed' || !lines.length) {
 			addIssue(page.status === 'failed' ? 'page-failed' : 'missing-text', 'This source page could not provide readable document text.');
 			return true;
 		}
-		const pageState: PageInterpretation = { paymentBlock: [], fxPage: lines.some((line: Line): boolean => /^(?:exchange rate|pricing currency)\b/i.test(line.text)) };
+		const pageState: IPageInterpretation = { paymentBlock: [], fxPage: lines.some((line: ILine): boolean => /^(?:exchange rate|pricing currency)\b/i.test(line.text)) };
 		for (const index of lines.keys()) {
 			if (!scanLine(page, lines, index, pageState)) {
 				return false;
@@ -1222,10 +1257,10 @@ export function interpretSupportingDocument(rawInput: unknown): SupportingDocume
 	}
 	const defaultCurrency: string | null = defaultDocumentCurrency([...sectionLines.values()].flat());
 	for (const section of sections) {
-		const lines: Line[] = sectionLines.get(section.sectionId) ?? [];
+		const lines: ILine[] = sectionLines.get(section.sectionId) ?? [];
 		section.dates = withGenericIssueDate(section, input.pages);
 		appendMerchantCandidate(section, lines);
-		const { declared, currency }: { declared: string[]; currency: string | null; } = assignSectionCurrency(section, defaultCurrency);
+		const { declared, currency }: ISettlementCurrency = assignSectionCurrency(section, defaultCurrency);
 		appendInvoiceTotal(section, lines, currency, declared.length);
 		restoreReceiptTotal(section, lines, currency, declared.length);
 		appendCategoryTaxes(section, lines, currency);

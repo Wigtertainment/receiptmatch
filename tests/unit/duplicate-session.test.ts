@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { test, type TestContext } from 'vitest';
-import { createWorkspace, loadWorkspace, newMetadata, SCHEMA_VERSION, type SavedWorkspace } from '../../electron/store.js';
+import { createWorkspace, loadWorkspace, newMetadata, SCHEMA_VERSION, type ISavedWorkspace } from '../../electron/store.js';
 import { WorkspaceSession } from '../../electron/workspace-session.js';
 import { approvalSelectionFor } from '../../src/shared/match-approvals.js';
 import type { WorkspaceCommand } from '../../src/shared/protocol.js';
@@ -66,7 +66,7 @@ test('archives an excluded review, revokes only its approval and restores the re
 	assert.deepEqual(await readFile(file), bytes);
 
 	assert.equal((await session.dispatch({ type: 'save' })).error, null);
-	const saved: SavedWorkspace = await loadWorkspace(file);
+	const saved: ISavedWorkspace = await loadWorkspace(file);
 	assert.equal(saved.duplicateDecisions.size, 1);
 	assert.equal(saved.matchDecisions.has(secondId), false);
 	assert.equal(saved.reviewApprovals.get(secondId)?.approval?.documentId, secondDocument);
@@ -160,7 +160,7 @@ test('opens a version 8 workspace without writing and migrates it on explicit sa
 	assert.equal((await decide('keep-first')).error, null);
 	assert.deepEqual(await readFile(file), before);
 	assert.equal((await session.dispatch({ type: 'save' })).error, null);
-	const saved: SavedWorkspace = await loadWorkspace(file);
+	const saved: ISavedWorkspace = await loadWorkspace(file);
 	assert.equal(saved.schemaVersion, SCHEMA_VERSION);
 	assert.equal(saved.duplicateDecisions.size, 1);
 	assert.equal(summaries().has(secondId), false);

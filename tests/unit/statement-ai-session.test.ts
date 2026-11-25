@@ -8,9 +8,9 @@ import type { BankImportInput } from '../../src/shared/bank-import.js';
 import { importIssue } from '../../src/shared/bank-import.js';
 import type { StatementFallbackState, IWorkspaceState } from '../../src/shared/protocol.js';
 import type { StoredBankImport } from '../../src/shared/workspace-import.js';
-import type { BankImportAttempt, BankImportOptions, BankImportService, StatementFallback, StatementFallbackResult } from '../../electron/import/service.js';
+import type { BankImportAttempt, IBankImportOptions, IBankImportService, IStatementFallback, StatementFallbackResult } from '../../electron/import/service.js';
 import { parseBankStatement } from '../../electron/import/registry.js';
-import { WorkspaceSession, type WorkspaceDialogs } from '../../electron/workspace-session.js';
+import { WorkspaceSession, type IWorkspaceDialogs } from '../../electron/workspace-session.js';
 import { row, statement } from './bank-fixtures.js';
 
 const pdf: string = 'Synthetic statement snapshot for session tests';
@@ -30,15 +30,15 @@ function proposal(filePath: string): StoredBankImport {
         drafts: result.unresolvedDrafts.map((item: StoredBankImport['result']['unresolvedDrafts'][number]): StoredBankImport['drafts'][number] => ({ rowId: item.rowId, draftId: randomUUID() })) };
 }
 
-function fixture(root: string, recognize?: StatementFallback['run'], cancelSelection?: () => boolean): {
-    session: WorkspaceSession; dialogs: WorkspaceDialogs; record: StoredBankImport; savedFile: string;
+function fixture(root: string, recognize?: IStatementFallback['run'], cancelSelection?: () => boolean): {
+    session: WorkspaceSession; dialogs: IWorkspaceDialogs; record: StoredBankImport; savedFile: string;
 } {
     const record: StoredBankImport = proposal(path.join(root, 'unknown.pdf'));
     const savedFile: string = path.join(root, 'workspace.receiptmatch');
-    const dialogs: WorkspaceDialogs = {
+    const dialogs: IWorkspaceDialogs = {
         save: (): Promise<string> => Promise.resolve(savedFile), open: (): Promise<string> => Promise.resolve(savedFile), unsaved: (): Promise<'discard'> => Promise.resolve('discard')
     };
-    const service: BankImportService = { run(options: BankImportOptions): Promise<BankImportAttempt> {
+    const service: IBankImportService = { run(options: IBankImportOptions): Promise<BankImportAttempt> {
         if (cancelSelection?.()) {
             return Promise.resolve({ status: 'cancelled' });
         }
@@ -133,7 +133,7 @@ test('rejects a changed PDF at confirmation and invalidates offers when switchin
 
 test('preserves the offer on unavailable recognition and cancellation until the user discards it', async (): Promise<void> => {
     let attempt: number = 0;
-    const { session }: ReturnType<typeof fixture> = fixture(tmpdir(), ({ signal }: Parameters<StatementFallback['run']>[0]): Promise<StatementFallbackResult> => {
+    const { session }: ReturnType<typeof fixture> = fixture(tmpdir(), ({ signal }: Parameters<IStatementFallback['run']>[0]): Promise<StatementFallbackResult> => {
         if (++attempt === 1) {
             return Promise.resolve({ status: 'unavailable', issues: [importIssue('model-unavailable', 'Install NuExtract3.')] });
         }

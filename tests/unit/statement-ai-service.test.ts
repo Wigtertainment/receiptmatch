@@ -6,7 +6,7 @@ import path from 'node:path';
 import { test } from 'vitest';
 import { importIssue, type BankImportInput, type BankImportResult, type PositionedSpan } from '../../src/shared/bank-import.js';
 import { PDF_EXTRACTION_VERSION, type ExtractionResult } from '../../src/shared/pdf-extraction.js';
-import { StatementImportService, type BankImportAttempt, type BankImportOptions, type StatementFallbackResult } from '../../electron/import/service.js';
+import { StatementImportService, type BankImportAttempt, type IBankImportOptions, type StatementFallbackResult } from '../../electron/import/service.js';
 import { proposeStatementTransactions } from '../../electron/import/statement-table.js';
 import type { StatementProposalExtraction } from '../../electron/import/nuextract-statement.js';
 import { span, statement } from './bank-fixtures.js';
@@ -83,7 +83,7 @@ test('validates recognized provenance and honors cancellation before the proposa
         const service: StatementImportService = new StatementImportService({
             choose: (): Promise<string> => Promise.resolve(file),
             extract: (bytes: Uint8Array, sourceId: string): Promise<ExtractionResult> => Promise.resolve(extract(bytes, sourceId)),
-            propose: (_bytes: Uint8Array, input: BankImportInput, options: Pick<BankImportOptions, 'signal' | 'onProgress'>): Promise<StatementProposalExtraction> => {
+            propose: (_bytes: Uint8Array, input: BankImportInput, options: Pick<IBankImportOptions, 'signal' | 'onProgress'>): Promise<StatementProposalExtraction> => {
                 const result: BankImportResult = proposeStatementTransactions(input, new Map([[1, table]]));
                 if (options.signal) {
                     aborted.abort();

@@ -17,23 +17,34 @@ import {
 } from '../../src/shared/bank-import.js';
 import { moneySchema, type Money } from '../../src/shared/money.js';
 
-interface Line {
+interface ILine {
     spans: PositionedSpan[];
     y: number;
 }
-interface Header {
-    line: Line;
+interface IHeader {
+    line: ILine;
     descriptionLeft: number;
     outLeft: number;
     outRight: number;
     inRight: number;
 }
-interface Row {
+interface IRow {
     rowId: string;
-    lines: Line[];
+    lines: ILine[];
 }
-const metadata: { bankId: string; adapterId: string; version: string; layouts: { layoutId: string; version: string; }[]; } = { bankId: 'revolut', adapterId: 'revolut-business', version: '1', layouts: [{ layoutId: 'business-english-eur', version: '1' }] };
-const selection: { bankId: string; adapterId: string; version: string; layoutId: string; layoutVersion: string; } = {
+interface IPageLines { page: ImportPage; lines: ILine[] }
+interface IPageHeader { page: ImportPage; header: IHeader }
+interface IPageLine { page: ImportPage; line: ILine }
+interface IMetadataMatch { match: RegExpExecArray; evidence: SourceEvidence[] }
+interface IParsedRow { transaction: BankImportResult['transactions'][number] | null; draft: UnresolvedDraft | null }
+interface ITableProgress { counter: number; sawLegend: boolean }
+type TransactionColumns = Record<'date' | 'description' | 'out' | 'incoming' | 'balance', PositionedSpan[]>;
+type ParsedRowData = Omit<UnresolvedDraft, 'issues' | 'valueDate'> & Record<'valueDate', null>;
+type StatementCurrency = BankImportResult['accountSections'][number]['currency'];
+type StatementAccountReference = NonNullable<BankImportResult['accountSections'][number]['accountReference']>;
+
+const metadata: IBankAdapter['metadata'] = { bankId: 'revolut', adapterId: 'revolut-business', version: '1', layouts: [{ layoutId: 'business-english-eur', version: '1' }] };
+const selection: NonNullable<BankImportResult['adapter']> = {
     bankId: metadata.bankId,
     adapterId: metadata.adapterId,
     version: metadata.version,
@@ -44,11 +55,11 @@ const months: string[] = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug'
 const fullMonths: string[] = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
 const amountPattern: "(?:0|[1-9]\\d*|[1-9]\\d{0,2}(?:,\\d{3})+|[1-9]\\d{0,2}(?:[ \\u00a0\\u202f]\\d{3})+)\\.\\d{2}" = '(?:0|[1-9]\\d*|[1-9]\\d{0,2}(?:,\\d{3})+|[1-9]\\d{0,2}(?:[ \\u00a0\\u202f]\\d{3})+)\\.\\d{2}';
 
-function linesOf(page: ImportPage): Line[] {
-    const lines: Line[] = [];
+function linesOf(page: ImportPage): ILine[] {
+    const lines: ILine[] = [];
     const spans: PositionedSpan[] = [...page.spans].sort((a: PositionedSpan, b: PositionedSpan): number => a.region.y - b.region.y || a.region.x - b.region.x || a.text.localeCompare(b.text));
     for (const span of spans) {
-        const line: Line | undefined = lines.at(-1);
+        const line: ILine | undefined = lines.at(-1);
         if (line && Math.abs(span.region.y - line.y) <= Math.min(2.5, span.region.height / 2)) {
             line.spans.push(span);
         } else {
@@ -61,14 +72,14 @@ function linesOf(page: ImportPage): Line[] {
     return lines;
 }
 
-function lineText(line: Line): string {
+function lineText(line: ILine): string {
     return line.spans
         .map((span: PositionedSpan): string => span.text.trim())
         .filter(Boolean)
         .join(' ');
 }
 
-function label(line: Line, value: string): PositionedSpan[] | null {
+function label(line: ILine, value: string): PositionedSpan[] | null {
     for (let start: number = 0; start < line.spans.length; start++) {
         for (let end: number = start + 1; end <= Math.min(line.spans.length, start + 3); end++) {
             const spans: PositionedSpan[] = line.spans.slice(start, end);
@@ -109,11 +120,11 @@ function evidence(page: ImportPage, spans: PositionedSpan[]): SourceEvidence[] {
     return values;
 }
 
-function rowEvidence(page: ImportPage, row: Row): SourceEvidence[] {
-    return row.lines.flatMap((line: Line): SourceEvidence[] => evidence(page, line.spans));
+function rowEvidence(page: ImportPage, row: IRow): SourceEvidence[] {
+    return row.lines.flatMap((line: ILine): SourceEvidence[] => evidence(page, line.spans));
 }
 
-function headerOf(line: Line): Header | null {
+function headerOf(line: ILine): IHeader | null {
     const date: PositionedSpan[] | null = label(line, 'Date (UTC)');
     const description: PositionedSpan[] | null = label(line, 'Description');
     const out: PositionedSpan[] | null = label(line, 'Money out');
@@ -129,7 +140,7 @@ function headerOf(line: Line): Header | null {
     return { line, descriptionLeft, outLeft, outRight: (right(out) + inLeft) / 2, inRight: (right(incoming) + balanceLeft) / 2 };
 }
 
-function columns(line: Line, header: Header): { date: PositionedSpan[]; description: PositionedSpan[]; out: PositionedSpan[]; incoming: PositionedSpan[]; balance: PositionedSpan[]; } {
+function columns(line: ILine, header: IHeader): TransactionColumns {
     const date: PositionedSpan[] = [];
     const description: PositionedSpan[] = [];
     const out: PositionedSpan[] = [];
@@ -159,7 +170,7 @@ function joined(spans: PositionedSpan[]): string {
         .join(' ');
 }
 
-function metadataField(page: ImportPage, line: Line, pattern: RegExp): { match: RegExpExecArray; evidence: SourceEvidence[]; } | null {
+function metadataField(page: ImportPage, line: ILine, pattern: RegExp): IMetadataMatch | null {
     for (let index: number = 0; index < line.spans.length; index++) {
         const selected: PositionedSpan[] = line.spans.slice(index);
         const match: RegExpExecArray | null = pattern.exec(joined(selected));
@@ -195,7 +206,7 @@ function amountOf(raw: string, currency: string, direction: 'incoming' | 'outgoi
     }
     const magnitude: bigint = BigInt(match[1].replace(/[,.\s]/g, ''));
     const coefficient: string = (direction === 'outgoing' ? -magnitude : magnitude).toString();
-    const parsed: ZodSafeParseResult<{ coefficient: string; currency: string; scale: number; }> = moneySchema.safeParse({ coefficient, currency, scale: 2 });
+    const parsed: ZodSafeParseResult<Money> = moneySchema.safeParse({ coefficient, currency, scale: 2 });
     return parsed.success ? parsed.data : null;
 }
 
@@ -206,7 +217,7 @@ function readOriginalAmount(raw: string, direction: UnresolvedDraft['direction']
         const original: RegExpExecArray | null = new RegExp(`^Original (?:payment )?amount:\\s*(?:([A-Z]{3})\\s+(${amountPattern})|(${amountPattern})\\s+([A-Z]{3}))$`, 'i').exec(raw);
         const originalCurrency: string | undefined = original?.[1] ?? original?.[4];
         const originalValue: string | undefined = original?.[2] ?? original?.[3];
-        const parsed: { coefficient: string; currency: string; scale: number; } | null = originalCurrency && originalValue && direction ? amountOf(originalValue, originalCurrency, direction) : null;
+        const parsed: Money | null = originalCurrency && originalValue && direction ? amountOf(originalValue, originalCurrency, direction) : null;
         if (!parsed || reportedOriginalAmount) {
                 issues.push(
                 importIssue(
@@ -251,11 +262,11 @@ function readRowDetails(page: ImportPage, rowId: string, cells: ReturnType<typeo
 
 type Settlement = Pick<UnresolvedDraft, 'direction' | 'accountAmount'>;
 
-function readSettlement(page: ImportPage, row: Row, out: PositionedSpan[], incoming: PositionedSpan[], issues: ImportIssue[]): Settlement {
+function readSettlement(page: ImportPage, row: IRow, out: PositionedSpan[], incoming: PositionedSpan[], issues: ImportIssue[]): Settlement {
     const direction: UnresolvedDraft['direction'] = Boolean(out.length) === Boolean(incoming.length) ? null : out.length ? 'outgoing' : 'incoming';
     const amountSpans: PositionedSpan[] = direction === 'outgoing' ? out : direction === 'incoming' ? incoming : [...out, ...incoming];
-    const amount: { coefficient: string; currency: string; scale: number; } | null = direction ? amountOf(joined(amountSpans), 'EUR', direction) : null;
-    const accountAmount: { value: { coefficient: string; currency: string; scale: number; }; evidence: SourceEvidence[]; } | null = amount ? { value: amount, evidence: evidence(page, amountSpans) } : null;
+    const amount: Money | null = direction ? amountOf(joined(amountSpans), 'EUR', direction) : null;
+    const accountAmount: UnresolvedDraft['accountAmount'] = amount ? { value: amount, evidence: evidence(page, amountSpans) } : null;
     if (!accountAmount) {
             issues.push(
             importIssue(
@@ -274,20 +285,20 @@ function rowDescription(page: ImportPage, descriptions: PositionedSpan[], text: 
     return text ? { value: text, evidence: evidence(page, descriptions) } : null;
 }
 
-function interpretRow(page: ImportPage, row: Row, header: Header): { transaction: BankImportResult['transactions'][number] | null; draft: UnresolvedDraft | null } {
-    const cells: { date: PositionedSpan[]; description: PositionedSpan[]; out: PositionedSpan[]; incoming: PositionedSpan[]; balance: PositionedSpan[]; }[] = row.lines.map((line: Line): { date: PositionedSpan[]; description: PositionedSpan[]; out: PositionedSpan[]; incoming: PositionedSpan[]; balance: PositionedSpan[]; } => columns(line, header));
+function interpretRow(page: ImportPage, row: IRow, header: IHeader): IParsedRow {
+    const cells: TransactionColumns[] = row.lines.map((line: ILine): TransactionColumns => columns(line, header));
     const source: SourceEvidence[] = rowEvidence(page, row);
     const issues: ImportIssue[] = [];
-    const dates: PositionedSpan[] = cells.flatMap((cell: { date: PositionedSpan[]; description: PositionedSpan[]; out: PositionedSpan[]; incoming: PositionedSpan[]; balance: PositionedSpan[]; }): PositionedSpan[] => cell.date);
-    const out: PositionedSpan[] = cells.flatMap((cell: { date: PositionedSpan[]; description: PositionedSpan[]; out: PositionedSpan[]; incoming: PositionedSpan[]; balance: PositionedSpan[]; }): PositionedSpan[] => cell.out);
-    const incoming: PositionedSpan[] = cells.flatMap((cell: { date: PositionedSpan[]; description: PositionedSpan[]; out: PositionedSpan[]; incoming: PositionedSpan[]; balance: PositionedSpan[]; }): PositionedSpan[] => cell.incoming);
-    const descriptions: PositionedSpan[] = cells.flatMap((cell: { date: PositionedSpan[]; description: PositionedSpan[]; out: PositionedSpan[]; incoming: PositionedSpan[]; balance: PositionedSpan[]; }): PositionedSpan[] => cell.description);
+    const dates: PositionedSpan[] = cells.flatMap((cell: TransactionColumns): PositionedSpan[] => cell.date);
+    const out: PositionedSpan[] = cells.flatMap((cell: TransactionColumns): PositionedSpan[] => cell.out);
+    const incoming: PositionedSpan[] = cells.flatMap((cell: TransactionColumns): PositionedSpan[] => cell.incoming);
+    const descriptions: PositionedSpan[] = cells.flatMap((cell: TransactionColumns): PositionedSpan[] => cell.description);
     const descriptionText: string = cells
-        .map((cell: { date: PositionedSpan[]; description: PositionedSpan[]; out: PositionedSpan[]; incoming: PositionedSpan[]; balance: PositionedSpan[]; }): string => joined(cell.description))
+        .map((cell: TransactionColumns): string => joined(cell.description))
         .filter(Boolean)
         .join('\n');
     const date: string | null = dateOf(joined(dates));
-    const bookingDate: { value: string; basisLabel: string; evidence: SourceEvidence[]; } | null = date ? { value: date, basisLabel: 'Date (UTC)', evidence: evidence(page, dates) } : null;
+    const bookingDate: UnresolvedDraft['bookingDate'] = date ? { value: date, basisLabel: 'Date (UTC)', evidence: evidence(page, dates) } : null;
     if (!bookingDate) {
             issues.push(
             importIssue(
@@ -305,7 +316,7 @@ function interpretRow(page: ImportPage, row: Row, header: Header): { transaction
         issues.push(importIssue('missing-field', 'The transaction description is missing.', source, row.rowId, 'description'));
     }
     const { references, counterpartyCandidate, reportedOriginalAmount }: RowDetails = readRowDetails(page, row.rowId, cells, direction, issues);
-    const base: { rowId: string; accountSectionId: string; bookingDate: { value: string; basisLabel: string; evidence: SourceEvidence[]; } | null; valueDate: null; accountAmount: { value: { coefficient: string; currency: string; scale: number; }; evidence: SourceEvidence[]; } | null; direction: "incoming" | "outgoing" | null; reportedOriginalAmount: { value: { coefficient: string; currency: string; scale: number; }; evidence: SourceEvidence[]; } | null; description: { value: string; evidence: SourceEvidence[]; } | null; counterpartyCandidate: { value: string; evidence: SourceEvidence[]; } | null; references: { label: string; value: string; evidence: SourceEvidence[]; }[]; evidence: SourceEvidence[]; } = {
+    const base: ParsedRowData = {
         rowId: row.rowId,
         accountSectionId: 'account-1',
         bookingDate,
@@ -331,8 +342,8 @@ function dateLooking(raw: string): boolean {
     return /^(?:\d{1,2}|\?+)\s+[A-Za-z?]+\s+\d{4}\b/.test(raw);
 }
 
-function possibleRow(line: Line, header: Header): boolean {
-    const cell: { date: PositionedSpan[]; description: PositionedSpan[]; out: PositionedSpan[]; incoming: PositionedSpan[]; balance: PositionedSpan[]; } = columns(line, header);
+function possibleRow(line: ILine, header: IHeader): boolean {
+    const cell: TransactionColumns = columns(line, header);
     if (dateLooking(joined(cell.date))) {
         return true;
     }
@@ -346,7 +357,7 @@ function possibleRow(line: Line, header: Header): boolean {
     return cell.description.length > 0 && (monetaryHint(cell.balance) || (!onlyMonetaryText && (monetaryHint(cell.out) || monetaryHint(cell.incoming))));
 }
 
-function unresolvedRow(page: ImportPage, row: Row, code: string, message: string): UnresolvedDraft {
+function unresolvedRow(page: ImportPage, row: IRow, code: string, message: string): UnresolvedDraft {
     const source: SourceEvidence[] = rowEvidence(page, row);
     const issue: ImportIssue = importIssue(code, message, source, row.rowId);
     return {
@@ -365,7 +376,7 @@ function unresolvedRow(page: ImportPage, row: Row, code: string, message: string
     };
 }
 
-function isTableBoundary(page: ImportPage, line: Line, raw: string, cell: ReturnType<typeof columns>): boolean {
+function isTableBoundary(page: ImportPage, line: ILine, raw: string, cell: ReturnType<typeof columns>): boolean {
     if (/^(?:Opening balance|Closing balance|Total money|Page \d+\b)/i.test(raw)) {
         return true;
     }
@@ -374,7 +385,7 @@ function isTableBoundary(page: ImportPage, line: Line, raw: string, cell: Return
     return footer && !dateLooking(joined(cell.date)) && !cell.out.length && !cell.incoming.length && !cell.balance.length;
 }
 
-function reportOutsideTableRow(page: ImportPage, line: Line, counter: number, result: BankImportResult): void {
+function reportOutsideTableRow(page: ImportPage, line: ILine, counter: number, result: BankImportResult): void {
     const draft: UnresolvedDraft = unresolvedRow(
         page,
         { rowId: `p${page.pageNumber}-r${counter}`, lines: [line] },
@@ -385,16 +396,16 @@ function reportOutsideTableRow(page: ImportPage, line: Line, counter: number, re
     result.issues.push(...draft.issues);
 }
 
-function parseTable(page: ImportPage, lines: Line[], header: Header, nextY: number, counter: number, result: BankImportResult): { counter: number; sawLegend: boolean } {
-    const body: Line[] = lines.filter((line: Line): boolean => line.y > header.line.y + 2 && line.y < nextY);
+function parseTable(page: ImportPage, lines: ILine[], header: IHeader, nextY: number, counter: number, result: BankImportResult): ITableProgress {
+    const body: ILine[] = lines.filter((line: ILine): boolean => line.y > header.line.y + 2 && line.y < nextY);
     let sawLegend: boolean = false;
-    let row: Row | null = null;
+    let row: IRow | null = null;
     let sectionEnded: boolean = false;
     const flush: () => void = (): void => {
         if (!row) {
             return;
         }
-        const parsed: { transaction: BankImportResult["transactions"][number] | null; draft: UnresolvedDraft | null; } = interpretRow(page, row, header);
+        const parsed: IParsedRow = interpretRow(page, row, header);
         if (parsed.transaction) {
             result.transactions.push(parsed.transaction);
         }
@@ -406,7 +417,7 @@ function parseTable(page: ImportPage, lines: Line[], header: Header, nextY: numb
     };
     for (const line of body) {
         const raw: string = lineText(line);
-        const cell: { date: PositionedSpan[]; description: PositionedSpan[]; out: PositionedSpan[]; incoming: PositionedSpan[]; balance: PositionedSpan[]; } = columns(line, header);
+        const cell: TransactionColumns = columns(line, header);
         const legend: boolean = /^Transaction types\b/i.test(raw);
         if (legend || isTableBoundary(page, line, raw, cell)) {
             flush();
@@ -434,19 +445,19 @@ function parseTable(page: ImportPage, lines: Line[], header: Header, nextY: numb
     return { counter, sawLegend };
 }
 
-function parseHeaderlessPage(page: ImportPage, lines: Line[], fallback: Header, legendStarted: boolean, result: BankImportResult): void {
+function parseHeaderlessPage(page: ImportPage, lines: ILine[], fallback: IHeader, legendStarted: boolean, result: BankImportResult): void {
     const content: string = lines.map(lineText).join('\n');
     if (
         legendStarted &&
         /Money sent/i.test(content) &&
         /Money received/i.test(content) &&
         /Card payments/i.test(content) &&
-        !lines.some((line: Line): boolean => possibleRow(line, fallback))
+        !lines.some((line: ILine): boolean => possibleRow(line, fallback))
     ) {
         return;
     }
     result.issues.push(importIssue('unclassified-page', 'A page has no supported transaction header and needs review.', evidence(page, lines[0]?.spans ?? [])));
-    for (const [index, line] of lines.filter((line: Line): boolean => possibleRow(line, fallback)).entries()) {
+    for (const [index, line] of lines.filter((line: ILine): boolean => possibleRow(line, fallback)).entries()) {
         const draft: UnresolvedDraft = unresolvedRow(
             page,
             { rowId: `p${page.pageNumber}-r${index + 1}`, lines: [line] },
@@ -458,19 +469,19 @@ function parseHeaderlessPage(page: ImportPage, lines: Line[], fallback: Header, 
     }
 }
 
-function parsePage(page: ImportPage, lines: Line[], headers: { page: ImportPage; header: Header }[], legendStarted: boolean, result: BankImportResult): boolean {
+function parsePage(page: ImportPage, lines: ILine[], headers: IPageHeader[], legendStarted: boolean, result: BankImportResult): boolean {
     if (page.status === 'failed') {
         result.issues.push({ ...importIssue('failed-page', 'A source page could not be extracted.'), pageId: page.pageId });
         return legendStarted;
     }
-    const pageHeaders: Header[] = headers.filter((value: { page: ImportPage; header: Header; }): boolean => value.page.pageId === page.pageId).map((value: { page: ImportPage; header: Header; }): Header => value.header);
+    const pageHeaders: IHeader[] = headers.filter((value: IPageHeader): boolean => value.page.pageId === page.pageId).map((value: IPageHeader): IHeader => value.header);
     if (!pageHeaders.length) {
         parseHeaderlessPage(page, lines, headers[0].header, legendStarted, result);
         return legendStarted;
     }
     let counter: number = 0;
     for (const [index, header] of pageHeaders.entries()) {
-        const section: { counter: number; sawLegend: boolean } = parseTable(page, lines, header, pageHeaders[index + 1]?.line.y ?? page.height, counter, result);
+        const section: ITableProgress = parseTable(page, lines, header, pageHeaders[index + 1]?.line.y ?? page.height, counter, result);
         counter = section.counter;
         legendStarted ||= section.sawLegend;
     }
@@ -483,10 +494,10 @@ function parse(input: BankImportInput): BankImportResult {
         return emptyImportResult(null, 'failed', importIssue('invalid-input', 'The extracted statement data does not satisfy the import contract.'));
     }
     input = validated.data;
-    const pages: { page: ImportPage; lines: Line[]; }[] = input.pages.map((page: ImportPage): { page: ImportPage; lines: Line[]; } => ({ page, lines: linesOf(page) }));
-    const headers: { page: ImportPage; header: Header; }[] = pages.flatMap(({ page, lines }: { page: ImportPage; lines: Line[]; }): { page: ImportPage; header: Header; }[] =>
-        lines.flatMap((line: Line): { page: ImportPage; header: Header; }[] => {
-            const header: Header | null = headerOf(line);
+    const pages: IPageLines[] = input.pages.map((page: ImportPage): IPageLines => ({ page, lines: linesOf(page) }));
+    const headers: IPageHeader[] = pages.flatMap(({ page, lines }: IPageLines): IPageHeader[] =>
+        lines.flatMap((line: ILine): IPageHeader[] => {
+            const header: IHeader | null = headerOf(line);
             return header ? [{ page, header }] : [];
         })
     );
@@ -497,38 +508,38 @@ function parse(input: BankImportInput): BankImportResult {
             importIssue('unsupported-layout', 'The supported Revolut transaction columns were not found.')
         );
         }
-    const metadataLines: { page: ImportPage; line: Line; }[] = pages.flatMap(({ page, lines }: { page: ImportPage; lines: Line[]; }): { page: ImportPage; line: Line; }[] => {
-        const firstHeader: { page: ImportPage; header: Header; } | undefined = headers.find((value: { page: ImportPage; header: Header; }): boolean => value.page.pageId === page.pageId);
-        return firstHeader ? lines.filter((line: Line): boolean => line.y < firstHeader.header.line.y).map((line: Line): { page: ImportPage; line: Line; } => ({ page, line })) : [];
+    const metadataLines: IPageLine[] = pages.flatMap(({ page, lines }: IPageLines): IPageLine[] => {
+        const firstHeader: IPageHeader | undefined = headers.find((value: IPageHeader): boolean => value.page.pageId === page.pageId);
+        return firstHeader ? lines.filter((line: ILine): boolean => line.y < firstHeader.header.line.y).map((line: ILine): IPageLine => ({ page, line })) : [];
     });
-    const currencyLines: { value: string; evidence: SourceEvidence[]; }[] = metadataLines.flatMap(({ page, line }: { page: ImportPage; line: Line; }): { value: string; evidence: SourceEvidence[]; }[] => {
-        const field: { match: RegExpExecArray; evidence: SourceEvidence[]; } | null = metadataField(page, line, /^Currency\s*:?\s+([A-Z]{3})$/);
+    const currencyLines: StatementCurrency[] = metadataLines.flatMap(({ page, line }: IPageLine): StatementCurrency[] => {
+        const field: IMetadataMatch | null = metadataField(page, line, /^Currency\s*:?\s+([A-Z]{3})$/);
         return field ? [{ value: field.match[1], evidence: field.evidence }] : [];
     });
-    if (!currencyLines.length || currencyLines.some((field: { value: string; evidence: SourceEvidence[]; }): boolean => field.value !== 'EUR')) {
+    if (!currencyLines.length || currencyLines.some((field: StatementCurrency): boolean => field.value !== 'EUR')) {
             return emptyImportResult(
             input,
             'unsupported',
             importIssue(
                 'unsupported-currency',
                 'This Revolut adapter requires an explicit, consistent EUR account currency.',
-                currencyLines.flatMap((field: { value: string; evidence: SourceEvidence[]; }): SourceEvidence[] => field.evidence)
+                currencyLines.flatMap((field: StatementCurrency): SourceEvidence[] => field.evidence)
             )
         );
         }
-    const currencyEvidence: SourceEvidence[] = currencyLines.flatMap((field: { value: string; evidence: SourceEvidence[]; }): SourceEvidence[] => field.evidence);
-    const accountLines: { label: string; value: string; evidence: SourceEvidence[]; }[] = metadataLines.flatMap(({ page, line }: { page: ImportPage; line: Line; }): { label: string; value: string; evidence: SourceEvidence[]; }[] => {
-        const field: { match: RegExpExecArray; evidence: SourceEvidence[]; } | null = metadataField(page, line, /^(IBAN|Account number|Account identifier)\s*:?\s+(.+)$/);
+    const currencyEvidence: SourceEvidence[] = currencyLines.flatMap((field: StatementCurrency): SourceEvidence[] => field.evidence);
+    const accountLines: StatementAccountReference[] = metadataLines.flatMap(({ page, line }: IPageLine): StatementAccountReference[] => {
+        const field: IMetadataMatch | null = metadataField(page, line, /^(IBAN|Account number|Account identifier)\s*:?\s+(.+)$/);
         return field ? [{ label: field.match[1], value: field.match[2], evidence: field.evidence }] : [];
     });
-    if (accountLines.length > 1 && accountLines.some((field: { label: string; value: string; evidence: SourceEvidence[]; }): boolean => field.label !== accountLines[0].label || field.value !== accountLines[0].value)) {
+    if (accountLines.length > 1 && accountLines.some((field: StatementAccountReference): boolean => field.label !== accountLines[0].label || field.value !== accountLines[0].value)) {
         return emptyImportResult(
             input,
             'unsupported',
             importIssue(
                 'unsupported-account-sections',
                 'Multiple account identifiers need a supported section mapping.',
-                accountLines.flatMap((field: { label: string; value: string; evidence: SourceEvidence[]; }): SourceEvidence[] => field.evidence)
+                accountLines.flatMap((field: StatementAccountReference): SourceEvidence[] => field.evidence)
             )
         );
     }
@@ -560,9 +571,9 @@ function parse(input: BankImportInput): BankImportResult {
 export const revolutAdapter: IBankAdapter = {
     metadata,
     identify: (input: BankImportInput): boolean => {
-        const lines: Line[] = input.pages.flatMap(linesOf);
+        const lines: ILine[] = input.pages.flatMap(linesOf);
         const content: string = lines.map(lineText).join('\n');
-        return /\brevolut\b/i.test(content) && /\bAccount statement\b/i.test(content) && lines.some((line: Line): boolean => headerOf(line) !== null);
+        return /\brevolut\b/i.test(content) && /\bAccount statement\b/i.test(content) && lines.some((line: ILine): boolean => headerOf(line) !== null);
     },
     parse
 };

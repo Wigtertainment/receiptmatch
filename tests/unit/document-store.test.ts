@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERSION, type SavedWorkspace } from "../../electron/store.js";
+import { createWorkspace, loadWorkspace, newMetadata, saveWorkspace, SCHEMA_VERSION, type ISavedWorkspace } from "../../electron/store.js";
 import { importIssue } from "../../src/shared/bank-import.js";
 import { storedDocumentImportSchema } from "../../src/shared/workspace-documents.js";
 import { documentRun, extractedDocument, retainedDocument, retainedBank } from "./document-fixtures.js";
@@ -51,8 +51,8 @@ test("document runs preserve exact fields, complete source evidence, failures an
 		analysis: null,
 	});
 	run.files.push({ status: "unsupported", filePath: path.join(root, "notes.txt"), issues: [importIssue("unsupported-format", "Unsupported fixture.")] });
-	const saved: SavedWorkspace = await createWorkspace(file, newMetadata(), [], [run]);
-	const loaded: SavedWorkspace = await loadWorkspace(file);
+	const saved: ISavedWorkspace = await createWorkspace(file, newMetadata(), [], [run]);
+	const loaded: ISavedWorkspace = await loadWorkspace(file);
 	assert.equal(saved.schemaVersion, SCHEMA_VERSION);
 	assert.deepEqual(loaded.documentImports, [run]);
 	const retained: { status: "imported"; record: StoredSupportingDocument; } | { status: "skipped"; filePath: string; sha256: string; existingSourceId: string; } | { status: "unsupported"; filePath: string; issues: ImportIssue[]; } | { status: "failed"; filePath: string; format: "png" | "pdf" | "jpeg" | null; sha256: string | null; issues: ImportIssue[]; analysis: SupportingDocument | null; } = loaded.documentImports[0].files[0];
@@ -64,7 +64,7 @@ test("document runs preserve exact fields, complete source evidence, failures an
 	assert.equal(loaded.sources[0].sha256, document.result.input!.source.sha256);
 	assert.equal(rows(file).documents.length, 1);
 	assert.equal(rows(file).sources.length, 1);
-	const renamed: SavedWorkspace = await saveWorkspace(loaded, { ...loaded.metadata, name: "Saved document report" });
+	const renamed: ISavedWorkspace = await saveWorkspace(loaded, { ...loaded.metadata, name: "Saved document report" });
 	assert.deepEqual(renamed.documentImports, [run]);
 	assert.deepEqual((await loadWorkspace(file)).documentImports, [run]);
 	assert.deepEqual(await readFile(document.filePath), original);
@@ -87,14 +87,14 @@ for (const version of [1, 2]) {
 		db.close();
 		const before: NonSharedBuffer = await readFile(file),
 			legacyRows: Record<string, unknown[]> = rows(file);
-		const opened: SavedWorkspace = await loadWorkspace(file);
+		const opened: ISavedWorkspace = await loadWorkspace(file);
 		assert.equal(opened.schemaVersion, version);
 		assert.deepEqual(opened.documentImports, []);
 		assert.equal(opened.sources.length, 3);
 		assert.deepEqual(await readFile(file), before);
 		const run: StoredDocumentImport = documentRun(root, []);
 		run.files.push({ status: "skipped", filePath: path.join(root, "alias.pdf"), sha256: "a".repeat(64), existingSourceId: "legacy-source" });
-		const saved: SavedWorkspace = await saveWorkspace(opened, opened.metadata, [], [run]);
+		const saved: ISavedWorkspace = await saveWorkspace(opened, opened.metadata, [], [run]);
 		assert.equal(saved.schemaVersion, SCHEMA_VERSION);
 		assert.deepEqual(rows(file), legacyRows);
 		assert.deepEqual((await loadWorkspace(file)).documentImports, [run]);
@@ -124,15 +124,15 @@ test("failed interpretation retains raw extraction and its identity but permits 
 		issues: [importIssue("interpretation-limit", "Synthetic interpretation failure.")],
 		analysis,
 	});
-	const saved: SavedWorkspace = await createWorkspace(file, newMetadata(), [], [failed]);
+	const saved: ISavedWorkspace = await createWorkspace(file, newMetadata(), [], [failed]);
 	assert.equal(saved.sources.length, 0);
 	assert.deepEqual((await loadWorkspace(file)).documentImports[0].files[0], failed.files[0]);
 	const retried: StoredDocumentImport = documentRun(root, [retainedDocument(root, "failed.pdf", "retry-content")]);
-	const done: SavedWorkspace = await saveWorkspace(saved, saved.metadata, [], [failed, retried]);
+	const done: ISavedWorkspace = await saveWorkspace(saved, saved.metadata, [], [failed, retried]);
 	assert.equal(done.sources.length, 1);
 	const collision: StoredDocumentImport = documentRun(root);
 	collision.id = extracted.input.source.sourceId;
-	await assert.rejects((): Promise<SavedWorkspace> => saveWorkspace(done, done.metadata, [], [failed, retried, collision]), /identity/);
+	await assert.rejects((): Promise<ISavedWorkspace> => saveWorkspace(done, done.metadata, [], [failed, retried, collision]), /identity/);
 });
 
 test("v2 bank manifests survive document migration and both import types share the global identity space", async (): Promise<void> => {
@@ -145,26 +145,26 @@ test("v2 bank manifests survive document migration and both import types share t
 		DROP TABLE match_results; DROP TABLE document_imports; PRAGMA user_version=2;`);
 	db.close();
 	const before: NonSharedBuffer = await readFile(file),
-		opened: SavedWorkspace = await loadWorkspace(file);
+		opened: ISavedWorkspace = await loadWorkspace(file);
 	assert.deepEqual(await readFile(file), before);
 	assert.deepEqual(opened.imports, [bank]);
 	const report: StoredDocumentImport = documentRun(root),
-		saved: SavedWorkspace = await saveWorkspace(opened, opened.metadata, opened.imports, [report]);
+		saved: ISavedWorkspace = await saveWorkspace(opened, opened.metadata, opened.imports, [report]);
 	assert.deepEqual((await loadWorkspace(file)).imports, [bank]);
 	assert.deepEqual(saved.documentImports, [report]);
 	const collidingDocument: StoredDocumentImport = documentRun(root, [retainedDocument(root, "other.pdf")]);
 	collidingDocument.id = bank.id;
-	await assert.rejects((): Promise<SavedWorkspace> => saveWorkspace(saved, saved.metadata, saved.imports, [report, collidingDocument]), /identity/);
+	await assert.rejects((): Promise<ISavedWorkspace> => saveWorkspace(saved, saved.metadata, saved.imports, [report, collidingDocument]), /identity/);
 	const collidingBank: StoredBankImport = retainedBank(root);
 	collidingBank.id = report.id;
-	await assert.rejects((): Promise<SavedWorkspace> => saveWorkspace(saved, saved.metadata, [bank, collidingBank]), /identity/);
+	await assert.rejects((): Promise<ISavedWorkspace> => saveWorkspace(saved, saved.metadata, [bank, collidingBank]), /identity/);
 });
 
 test("document manifests reject rewritten history, duplicate successful content, identity reuse and forged skips without writes", async (): Promise<void> => {
 	const root: string = await directory(),
 		file: string = path.join(root, "protected.receiptmatch"),
 		first: StoredDocumentImport = documentRun(root);
-	const saved: SavedWorkspace = await createWorkspace(file, newMetadata(), [], [first]);
+	const saved: ISavedWorkspace = await createWorkspace(file, newMetadata(), [], [first]);
 	const duplicate: StoredDocumentImport = documentRun(root);
 	const collision: StoredDocumentImport = documentRun(root, [retainedDocument(root, "other.pdf")]);
 	collision.id = saved.metadata.id;
@@ -174,7 +174,7 @@ test("document manifests reject rewritten history, duplicate successful content,
 	rewritten.folderPath = path.join(root, "rewritten");
 	for (const requested of [[], [rewritten], [first, duplicate], [first, collision], [first, forged]]) {
 		const before: NonSharedBuffer = await readFile(file);
-		await assert.rejects((): Promise<SavedWorkspace> => saveWorkspace(saved, saved.metadata, [], requested));
+		await assert.rejects((): Promise<ISavedWorkspace> => saveWorkspace(saved, saved.metadata, [], requested));
 		assert.deepEqual(await readFile(file), before);
 	}
 });
@@ -192,7 +192,7 @@ test("manifest and projected document/source tampering are rejected read-only", 
 		db.exec(sql);
 		db.close();
 		const before: NonSharedBuffer = await readFile(file);
-		await assert.rejects((): Promise<SavedWorkspace> => loadWorkspace(file));
+		await assert.rejects((): Promise<ISavedWorkspace> => loadWorkspace(file));
 		assert.deepEqual(await readFile(file), before);
 	}
 });
@@ -205,7 +205,7 @@ test("an append failure rolls back schema migration, document projection and met
 	db.exec(`DROP TABLE statement_analysis_versions; DROP TABLE document_field_reviews; DROP TABLE receipt_analysis_versions; DROP TABLE ignored_transactions; DROP TABLE source_replacement_reviews; DROP TABLE source_replacements; DROP TABLE source_relocations; DROP TABLE duplicate_decisions; DROP TABLE match_approval_state; DROP TABLE document_corrections; DROP TABLE bank_corrections; DROP TABLE match_reviews;
 		DROP TABLE match_results; DROP TABLE document_imports; PRAGMA user_version=2;`);
 	db.close();
-	const saved: SavedWorkspace = await loadWorkspace(file),
+	const saved: ISavedWorkspace = await loadWorkspace(file),
 		before: NonSharedBuffer = await readFile(file);
 	const original: (db: Database.Database, sql: string) => Database.Statement = Function.prototype.call.bind(Reflect.get(Database.prototype, 'prepare')) as (db: Database.Database, sql: string) => Database.Statement;
 	const patched: import("vitest").MockInstance<typeof Database.prototype.prepare> = vi.spyOn(Database.prototype, "prepare").mockImplementation(function (this: Database.Database, sql: string): Database.Statement<[object], unknown> | Database.Statement<unknown[], unknown> {
@@ -215,7 +215,7 @@ test("an append failure rolls back schema migration, document projection and met
 		return original(this, sql);
 	});
 	try {
-		await assert.rejects((): Promise<SavedWorkspace> => saveWorkspace(saved, { ...saved.metadata, name: "Never committed" }, [], [documentRun(root)]), /Synthetic/);
+		await assert.rejects((): Promise<ISavedWorkspace> => saveWorkspace(saved, { ...saved.metadata, name: "Never committed" }, [], [documentRun(root)]), /Synthetic/);
 	} finally {
 		patched.mockRestore();
 	}

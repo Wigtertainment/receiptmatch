@@ -6,10 +6,11 @@ import { moneySchema } from '../../src/shared/money.js';
 type ColumnRole = 'date' | 'description' | 'amount' | 'debit' | 'credit' | 'balance' | 'currency';
 type Columns = Partial<Record<ColumnRole, number>>;
 type Table = readonly (readonly string[])[];
-interface Line { center: number; height: number; spans: PositionedSpan[] }
-interface Header { line: Line; index: number; cells: PositionedSpan[][]; columns: Columns }
-interface SourceRow { cells: PositionedSpan[][]; values: string[]; crossesColumn: boolean }
-interface StatementPage { page: ImportPage; lines: Line[]; table: Table | undefined; header: Header | null }
+interface ILine { center: number; height: number; spans: PositionedSpan[] }
+interface IHeader { line: ILine; index: number; cells: PositionedSpan[][]; columns: Columns }
+interface ISourceRow { cells: PositionedSpan[][]; values: string[]; crossesColumn: boolean }
+interface IStatementPage { page: ImportPage; lines: ILine[]; table: Table | undefined; header: IHeader | null }
+interface ISplitMovement { role: 'debit' | 'credit'; value: Money; direction: TransactionCandidate['direction'] }
 type Currency = BankImportResult['accountSections'][number]['currency'];
 type Proposal = Pick<BankImportResult, 'transactions' | 'unresolvedDrafts' | 'issues'>;
 
@@ -42,12 +43,12 @@ function evidence(page: ImportPage, spans: readonly PositionedSpan[]): SourceEvi
     return spans.slice(0, BANK_IMPORT_LIMITS.evidence).map((span: PositionedSpan): SourceEvidence => ({ pageId: page.pageId, rawText: span.text, method: span.method, region: span.region }));
 }
 
-function linesOf(page: ImportPage): Line[] {
-    const lines: Line[] = [];
+function linesOf(page: ImportPage): ILine[] {
+    const lines: ILine[] = [];
     const centerY: (span: PositionedSpan) => number = (span: PositionedSpan): number => span.region.y + span.region.height / 2;
     for (const span of [...page.spans].sort((left: PositionedSpan, right: PositionedSpan): number => centerY(left) - centerY(right))) {
         const center: number = centerY(span);
-        const line: Line | undefined = lines.at(-1);
+        const line: ILine | undefined = lines.at(-1);
         if (line && center - line.center <= Math.min(line.height, span.region.height) * 0.45) {
             line.spans.push(span);
         } else {
@@ -95,8 +96,8 @@ function headerCells(row: readonly string[], spans: PositionedSpan[]): Positione
     return start === spans.length ? cells : null;
 }
 
-function headerOf(table: Table, lines: Line[]): Header | null {
-    let header: Header | null = null;
+function headerOf(table: Table, lines: ILine[]): IHeader | null {
+    let header: IHeader | null = null;
     for (const [index, row] of table.entries()) {
         const columns: Columns | null = classifyHeader(row);
         if (!columns) {
@@ -122,10 +123,10 @@ function cellCenter(spans: PositionedSpan[]): number {
     return (first.region.x + last.region.x + last.region.width) / 2;
 }
 
-function sourceRows(lines: Line[], header: Header): SourceRow[] {
+function sourceRows(lines: ILine[], header: IHeader): ISourceRow[] {
     const centers: number[] = header.cells.map(cellCenter);
     const boundaries: number[] = centers.slice(1).map((center: number, index: number): number => (center + centers[index]) / 2);
-    return lines.slice(lines.indexOf(header.line) + 1).map((line: Line): SourceRow => {
+    return lines.slice(lines.indexOf(header.line) + 1).map((line: ILine): ISourceRow => {
         const cells: PositionedSpan[][] = centers.map((): PositionedSpan[] => []);
         let crossesColumn: boolean = false;
         for (const span of line.spans) {
@@ -153,10 +154,10 @@ function looksLikeBooking(row: readonly string[], columns: Columns): boolean {
         (!!details && /\d/u.test(columnValue(row, columns, 'balance')));
 }
 
-function bookingRows(lines: Line[], header: Header): SourceRow[] {
+function bookingRows(lines: ILine[], header: IHeader): ISourceRow[] {
     const description: number = header.columns.description!;
-    const bookings: SourceRow[] = [];
-    let previous: SourceRow | undefined;
+    const bookings: ISourceRow[] = [];
+    let previous: ISourceRow | undefined;
     for (const row of sourceRows(lines, header)) {
         if (looksLikeBooking(row.values, header.columns)) {
             bookings.push(row);
@@ -221,7 +222,7 @@ function magnitude(raw: string, currency: string, direction: TransactionCandidat
     return parsed.success ? parsed.data : null;
 }
 
-function splitMovement(debit: string, credit: string, currency: string): { role: 'debit' | 'credit'; value: Money; direction: TransactionCandidate['direction'] } | null {
+function splitMovement(debit: string, credit: string, currency: string): ISplitMovement | null {
     const outgoing: Money | null = debit ? magnitude(debit, currency, 'outgoing') : null;
     const incoming: Money | null = credit ? magnitude(credit, currency, 'incoming') : null;
     if (debit.startsWith('+') || credit.startsWith('-') || (debit && !outgoing) || (credit && !incoming)) {
@@ -233,8 +234,8 @@ function splitMovement(debit: string, credit: string, currency: string): { role:
     return incoming && incoming.coefficient !== '0' ? { role: 'credit', value: incoming, direction: 'incoming' } : null;
 }
 
-function amountOf(page: ImportPage, row: SourceRow, header: Header, currency: string): Pick<TransactionCandidate, 'accountAmount' | 'direction'> | null {
-    const { columns }: Header = header;
+function amountOf(page: ImportPage, row: ISourceRow, header: IHeader, currency: string): Pick<TransactionCandidate, 'accountAmount' | 'direction'> | null {
+    const { columns }: IHeader = header;
     if (columns.amount !== undefined) {
         const raw: string = columnValue(row.values, columns, 'amount');
         const direction: TransactionCandidate['direction'] = raw.startsWith('-') ? 'outgoing' : 'incoming';
@@ -249,13 +250,13 @@ function amountOf(page: ImportPage, row: SourceRow, header: Header, currency: st
     return { direction: movement.direction, accountAmount: { value: movement.value, evidence: evidence(page, [...row.cells[index], ...header.cells[index]]) } };
 }
 
-function metadataLines({ header, lines }: StatementPage): Line[] {
-    const boundary: number = header ? lines.indexOf(header.line) : lines.findIndex((line: Line): boolean =>
+function metadataLines({ header, lines }: IStatementPage): ILine[] {
+    const boundary: number = header ? lines.indexOf(header.line) : lines.findIndex((line: ILine): boolean =>
         dateLike.test(line.spans[0].text.trim()) || classifyHeader(line.spans.map((span: PositionedSpan): string => span.text)) !== null);
     return boundary < 0 ? lines : lines.slice(0, boundary);
 }
 
-function hasConflictingAccounts(pages: StatementPage[]): boolean {
+function hasConflictingAccounts(pages: IStatementPage[]): boolean {
     const ibans: Set<string> = new Set();
     const numbers: Set<string> = new Set();
     for (const page of pages) {
@@ -271,7 +272,7 @@ function hasConflictingAccounts(pages: StatementPage[]): boolean {
     return ibans.size > 1 || numbers.size > 1;
 }
 
-function currencyOf(pages: StatementPage[]): Currency | null {
+function currencyOf(pages: IStatementPage[]): Currency | null {
     const currencies: Map<string, SourceEvidence[]> = new Map();
     for (const page of pages) {
         for (const line of metadataLines(page)) {
@@ -295,7 +296,7 @@ function pageIssue(page: ImportPage, code: string, message: string): ImportIssue
     return { ...importIssue(code, message), pageId: page.pageId };
 }
 
-function appendRow(result: Proposal, page: ImportPage, row: SourceRow, header: Header, currency: Currency, rowId: string, corroborated: boolean): void {
+function appendRow(result: Proposal, page: ImportPage, row: ISourceRow, header: IHeader, currency: Currency, rowId: string, corroborated: boolean): void {
     const dateIndex: number = header.columns.date!;
     const descriptionIndex: number = header.columns.description!;
     const date: string | null = bookingDate(row.values[dateIndex]);
@@ -318,15 +319,15 @@ function appendRow(result: Proposal, page: ImportPage, row: SourceRow, header: H
     }
 }
 
-function appendPage(result: Proposal, { page, lines, table, header }: StatementPage, currency: Currency): void {
+function appendPage(result: Proposal, { page, lines, table, header }: IStatementPage, currency: Currency): void {
     if (!table || !header) {
         result.issues.push(pageIssue(page, 'unverified-table-page', 'No transaction table could be verified against the original page.'));
         return;
     }
-    const rows: SourceRow[] = bookingRows(lines, header);
+    const rows: ISourceRow[] = bookingRows(lines, header);
     const modelRows: (readonly string[])[] = table.slice(header.index + 1).filter((row: readonly string[]): boolean => looksLikeBooking(row, header.columns));
     const modelCounts: Map<string, number> = rowCounts(modelRows.filter((row: readonly string[]): boolean => row.length === header.cells.length), header.columns);
-    const sourceCounts: Map<string, number> = rowCounts(rows.map((row: SourceRow): string[] => row.values), header.columns);
+    const sourceCounts: Map<string, number> = rowCounts(rows.map((row: ISourceRow): string[] => row.values), header.columns);
     let matched: number = 0;
     for (const [index, row] of rows.entries()) {
         const fingerprint: string = key(row.values, header.columns);
@@ -340,13 +341,13 @@ function appendPage(result: Proposal, { page, lines, table, header }: StatementP
 }
 
 export function proposeStatementTransactions(input: BankImportInput, tables: ReadonlyMap<number, Table>, recognitionIssues: readonly ImportIssue[] = []): BankImportResult {
-    const pages: StatementPage[] = input.pages.map((page: ImportPage): StatementPage => {
-        const lines: Line[] = linesOf(page);
+    const pages: IStatementPage[] = input.pages.map((page: ImportPage): IStatementPage => {
+        const lines: ILine[] = linesOf(page);
         const table: Table | undefined = tables.get(page.pageNumber);
         return { page, lines, table, header: table && page.status === 'complete' ? headerOf(table, lines) : null };
     });
     const rows: Proposal = { transactions: [], unresolvedDrafts: [], issues: [...input.issues, ...recognitionIssues] };
-    if (!pages.some((page: StatementPage): boolean => !!page.header)) {
+    if (!pages.some((page: IStatementPage): boolean => !!page.header)) {
         return emptyImportResult({ ...input, issues: rows.issues }, 'failed', importIssue('no-verified-table-pages', 'No transaction table could be verified against the original statement.'));
     }
     if (hasConflictingAccounts(pages)) {

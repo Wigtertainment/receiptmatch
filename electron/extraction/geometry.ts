@@ -1,21 +1,22 @@
+import type { Bbox } from 'tesseract.js';
 import type { PositionedSpan } from '../../src/shared/bank-import.js';
 
-interface ViewportGeometry {
+interface IViewportGeometry {
     width: number;
     height: number;
     transform: readonly number[];
 }
-interface TextGeometry {
+interface ITextGeometry {
     transform: readonly number[];
     width: number;
     height: number;
 }
-interface FontGeometry {
+interface IFontGeometry {
     ascent?: number;
     descent?: number;
     vertical?: boolean;
 }
-export interface GeometryResult {
+export interface IGeometryResult {
     region: PositionedSpan['region'] | null;
     clipped: boolean;
     approximate: boolean;
@@ -25,7 +26,7 @@ function transformed(matrix: readonly number[], x: number, y: number): [number, 
     return [matrix[0] * x + matrix[2] * y + matrix[4], matrix[1] * x + matrix[3] * y + matrix[5]];
 }
 
-function visibleBox(points: [number, number][], width: number, height: number): { region: PositionedSpan['region'] | null; clipped: boolean } {
+function visibleBox(points: [number, number][], width: number, height: number): Pick<IGeometryResult, 'region' | 'clipped'> {
     if (![width, height, ...points.flat()].every(Number.isFinite) || width <= 0 || height <= 0) {
         throw new Error('Invalid page geometry.');
     }
@@ -41,7 +42,7 @@ function visibleBox(points: [number, number][], width: number, height: number): 
     return { region: endX > x && endY > y ? { x, y, width: endX - x, height: endY - y } : null, clipped };
 }
 
-export function embeddedTextGeometry(item: TextGeometry, font: FontGeometry, viewport: ViewportGeometry): GeometryResult {
+export function embeddedTextGeometry(item: ITextGeometry, font: IFontGeometry, viewport: IViewportGeometry): IGeometryResult {
     if (item.transform.length !== 6 || viewport.transform.length !== 6 || ![...item.transform, ...viewport.transform, item.width, item.height].every(Number.isFinite)) {
         throw new Error('Invalid text transform.');
     }
@@ -73,11 +74,9 @@ export function embeddedTextGeometry(item: TextGeometry, font: FontGeometry, vie
     return { ...visibleBox(points, viewport.width, viewport.height), approximate: !validMetrics };
 }
 
-export function ocrWordGeometry(
-    bbox: { x0: number; y0: number; x1: number; y1: number },
-    page: { width: number; height: number },
-    canvas: { width: number; height: number }
-): GeometryResult {
+type PageDimensions = Pick<IViewportGeometry, 'width' | 'height'>;
+
+export function ocrWordGeometry(bbox: Bbox, page: PageDimensions, canvas: PageDimensions): IGeometryResult {
     if (
         ![bbox.x0, bbox.y0, bbox.x1, bbox.y1, canvas.width, canvas.height].every(Number.isFinite) ||
         canvas.width <= 0 ||
