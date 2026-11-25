@@ -170,8 +170,29 @@ test('reviews local AI statement changes safely, keeps drafts on discard and sup
         await page.getByRole('button', { name: 'Open workspace', exact: true }).click();
         await page.getByRole('navigation', { name: 'Workspace views' }).getByRole('button', { name: 'Sources', exact: true }).click();
         const panel: Locator = page.getByRole('region', { name: 'Bank statements', exact: true });
-        const analyze: Locator = panel.getByRole('button', { name: 'Analyze with local AI', exact: true });
-        await expect(analyze).toBeVisible();
+        const actions: Locator = panel.locator('.statement-summary-heading wig-icon-button');
+        const original: Locator = actions.getByRole('button', { name: `Open original ${path.basename(prepared.original.filePath)}`, exact: true });
+        const remove: Locator = actions.getByRole('button', { name: 'Remove statement', exact: true });
+        const analyze: Locator = actions.getByRole('button', { name: 'Analyze with local AI', exact: true });
+        for (const [action, tooltip] of [[original, 'Open original'], [remove, 'Remove statement'], [analyze, 'Analyze with local AI']] as const) {
+            await expect(action).toHaveText('');
+            await expect(action.locator('svg')).toBeVisible();
+            await action.hover();
+            await expect(page.getByRole('tooltip', { name: tooltip, exact: true })).toBeVisible();
+        }
+        const [previewWindow]: [Page, void] = await Promise.all([application.waitForEvent('window'), original.press('Enter')]);
+        await expect(previewWindow.getByRole('img', { name: 'Page 1 of 1', exact: true })).toBeVisible();
+        await previewWindow.close();
+        await remove.hover();
+        await expect(page.getByRole('tooltip', { name: 'Remove statement', exact: true })).toBeVisible();
+        await remove.click();
+        const removal: Locator = panel.getByRole('dialog', { name: 'Remove statement?', exact: true });
+        await expect(removal).toBeVisible();
+        const cancelRemoval: Locator = removal.getByRole('button', { name: 'Cancel', exact: true });
+        await expect(cancelRemoval).toBeFocused();
+        await cancelRemoval.press('Escape');
+        await expect(removal).not.toBeVisible();
+        await expect(remove).toBeFocused();
         const state: WorkspaceState = await page.evaluate((): Promise<WorkspaceState> => window.receiptmatch.command({ type: 'get-state' }));
         await nativeChecks(page, prepared.original.id, state.workspace!.loadRevision);
         await analyze.click();

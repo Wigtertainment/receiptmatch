@@ -1,6 +1,6 @@
-import { Component, DestroyRef, Injector, afterNextRender, computed, effect, inject, input, output, signal, untracked, viewChild,
-    type ElementRef, type InputSignal, type OutputEmitterRef, type Signal, type WritableSignal } from '@angular/core';
-import { WigButtonComponent } from '@wigtertainment-ltd/comp-lib';
+import { Component, DestroyRef, ElementRef, Injector, afterNextRender, computed, effect, inject, input, output, signal, untracked, viewChild,
+    type InputSignal, type OutputEmitterRef, type Signal, type WritableSignal } from '@angular/core';
+import { WigButtonComponent, WigIconButtonComponent } from '@wigtertainment-ltd/comp-lib';
 import type { BankImportResult } from '../shared/bank-import.js';
 import { formatCalendarDate, formatMoney } from '../shared/display.js';
 import type { LocalOcrStatus } from '../shared/local-ocr-settings.js';
@@ -8,6 +8,7 @@ import type { OriginalAdoptionResult } from '../shared/original-preview.js';
 import type { WorkspaceState, WorkspaceView } from '../shared/protocol.js';
 import type { StatementAiChange, StatementAiPreviewResult, StatementAiRequest, StatementAiRow } from '../shared/statement-ai.js';
 import type { StoredBankImport } from '../shared/workspace-import.js';
+import { LocalAiIcon } from './local-ai-icon.js';
 import { OriginalPreviewButton } from './original-preview-button.js';
 
 type Preview = Extract<StatementAiPreviewResult, { status: 'ready' }>;
@@ -54,7 +55,7 @@ class AnalysisBooking {
     }
 }
 
-@Component({ selector: 'app-statement-reanalysis', standalone: true, imports: [WigButtonComponent, OriginalPreviewButton, AnalysisBooking],
+@Component({ selector: 'app-statement-reanalysis', standalone: true, imports: [WigButtonComponent, WigIconButtonComponent, LocalAiIcon, OriginalPreviewButton, AnalysisBooking],
     templateUrl: './statement-reanalysis.html' })
 export class StatementReanalysis {
     readonly state: InputSignal<WorkspaceState> = input.required<WorkspaceState>();
@@ -64,7 +65,7 @@ export class StatementReanalysis {
     readonly settingsRequested: OutputEmitterRef<void> = output<void>();
     private readonly injector: Injector = inject(Injector);
     private readonly destroyed: DestroyRef = inject(DestroyRef);
-    private readonly trigger: Signal<WigButtonComponent | undefined> = viewChild<WigButtonComponent>('trigger');
+    private readonly trigger: Signal<ElementRef<HTMLElement> | undefined> = viewChild('trigger', { read: ElementRef<HTMLElement> });
     private readonly dialog: Signal<ElementRef<HTMLDialogElement> | undefined> = viewChild<ElementRef<HTMLDialogElement>>('reviewDialog');
     private readonly heading: Signal<ElementRef<HTMLHeadingElement> | undefined> = viewChild<ElementRef<HTMLHeadingElement>>('reviewHeading');
     private readonly changesHeading: Signal<ElementRef<HTMLHeadingElement> | undefined> = viewChild<ElementRef<HTMLHeadingElement>>('changesHeading');
@@ -231,7 +232,7 @@ export class StatementReanalysis {
     private restoreFocus(): void {
         requestAnimationFrame((): void => {
             if (!this.destroyed.destroyed && this.active()) {
-                this.trigger()?.nativeButton.focus();
+                this.trigger()?.nativeElement.querySelector('button')?.focus();
             }
         });
     }
